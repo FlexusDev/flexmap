@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    overflow: hidden;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #404040;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #525252;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-aura-surface border border-aura-border rounded-lg;
+  }
+
+  .btn {
+    @apply px-3 py-1.5 rounded-md text-sm font-medium transition-colors;
+  }
+
+  .btn-primary {
+    @apply btn bg-aura-accent text-white hover:bg-aura-accent-hover;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent text-aura-text-dim hover:bg-aura-hover hover:text-aura-text;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-900/50 text-red-400 hover:bg-red-900/80;
+  }
+
+  .input {
+    @apply bg-aura-bg border border-aura-border rounded-md px-3 py-1.5 text-sm text-aura-text
+           focus:outline-none focus:border-aura-accent transition-colors;
+  }
+
+  .slider {
+    @apply w-full h-1.5 bg-aura-border rounded-full appearance-none cursor-pointer
+           [&::-webkit-slider-thumb]:appearance-none
+           [&::-webkit-slider-thumb]:w-3.5
+           [&::-webkit-slider-thumb]:h-3.5
+           [&::-webkit-slider-thumb]:rounded-full
+           [&::-webkit-slider-thumb]:bg-aura-accent
+           [&::-webkit-slider-thumb]:cursor-pointer;
+  }
+}
