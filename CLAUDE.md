@@ -28,6 +28,11 @@ Every mutation command in `commands.rs` must:
 - High-frequency updates (property sliders, geometry during drag) must NOT push undo per-frame.
 - Discrete actions (add/remove/duplicate/reorder/set_source) push undo internally.
 
+### Mesh & Face Operations
+- Layers with mesh geometry support per-face operations: masking, UV overrides, face groups, and subdivision.
+- Commands: `toggle_face_mask`, `create_face_group`, `remove_face_group`, `rename_face_group`, `set_face_uv_override`, `clear_face_uv_override`, `subdivide_mesh`, `set_calibration_target`.
+- These follow the same IPC pattern (mutate state → sync render → return).
+
 ### Borrow Checker
 - When you need to clone + mutate on the same `RwLock<T>`, check existence with `.any()` first (immutable borrow ends), clone snapshot, then find with `.iter_mut().find()` (mutable borrow).
 - Never hold a read guard and write guard on the same lock simultaneously.
@@ -50,12 +55,16 @@ Every mutation command in `commands.rs` must:
 - Add TypeScript types in `types/index.ts` if new data structures are involved
 
 ### File Organization
-- Rust: `scene/` (state, layers, project, history), `renderer/` (gpu, pipeline, shaders, textures, engine), `input/` (adapter trait, protocol backends), `persistence/` (save/load/autosave)
+- Rust: `scene/` (state, layers, project, history), `renderer/` (gpu, pipeline, shaders, texture_manager, buffer_cache, engine, projector), `input/` (adapter trait, protocol backends), `persistence/` (save/load/autosave)
 - React: `components/` (editor, layers, properties, calibration, output, common), `store/`, `hooks/`, `lib/`, `types/`
 
 ### Windows
 - Main window: full editor UI with all panels. KeyboardOverlay lives HERE only.
 - Projector window: fullscreen output only. No UI overlays, no keyboard widget.
+
+### Git
+- `.claude/` directory should be in `.gitignore` (contains local settings).
+- `.claude.local.md` should also be gitignored if used.
 
 ### Testing
 - `cargo tauri dev` for full-stack testing
@@ -67,5 +76,5 @@ Every mutation command in `commands.rs` must:
 - **A: Core Shell** — Done (Tauri scaffolding, dual windows, persistence, autosave)
 - **B: 2D Editor** — Done (layer CRUD, geometry editing, drag/nudge, undo/redo, keyboard shortcuts)
 - **C: GPU Renderer** — Done (RenderEngine, pipelines, shaders, texture manager, GPU projector render loop with direct wgpu surface rendering)
-- **D: Input Routing** — Done (InputBackend trait, adapter, test pattern generator, media file backend, Spout backend with D3D11 shared texture capture, Syphon backend with Metal client via ObjC bridge; NDI stub only)
+- **D: Input Routing** — Done (InputBackend trait, adapter, test pattern generator, media file backend, Spout backend with D3D11 shared texture capture, Syphon backend with Metal client via ObjC bridge)
 - **E: Persistence** — Done (save/load .auramap JSON, autosave, crash recovery)

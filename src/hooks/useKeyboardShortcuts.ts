@@ -43,11 +43,20 @@ export function useKeyboardShortcuts() {
     const handler = (e: KeyboardEvent) => {
       if (isMarkedHandled(e)) return;
       const meta = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase();
+      const code = e.code;
+      const matchesKey = (expectedKey: string, expectedCode: string) =>
+        key === expectedKey || code === expectedCode;
       const state = useAppStore.getState();
       const target = e.target as EventTarget | null;
+      const selectedIds = state.selectedLayerIds.length > 0
+        ? state.selectedLayerIds
+        : state.selectedLayerId
+          ? [state.selectedLayerId]
+          : [];
 
       // Cmd+Z / Cmd+Shift+Z — Undo / Redo
-      if (meta && e.key === "z") {
+      if (meta && matchesKey("z", "KeyZ")) {
         e.preventDefault();
         markHandled(e);
         if (e.shiftKey) {
@@ -59,7 +68,7 @@ export function useKeyboardShortcuts() {
       }
 
       // Cmd+S / Cmd+Shift+S — Save / Save As
-      if (meta && e.key === "s") {
+      if (meta && matchesKey("s", "KeyS")) {
         e.preventDefault();
         markHandled(e);
         if (e.shiftKey) {
@@ -86,7 +95,7 @@ export function useKeyboardShortcuts() {
       }
 
       // Cmd+N — New Project
-      if (meta && e.key === "n") {
+      if (meta && matchesKey("n", "KeyN")) {
         e.preventDefault();
         markHandled(e);
         state.newProject();
@@ -94,7 +103,7 @@ export function useKeyboardShortcuts() {
       }
 
       // Cmd+O — Open Project
-      if (meta && e.key === "o") {
+      if (meta && matchesKey("o", "KeyO")) {
         e.preventDefault();
         markHandled(e);
         tauriOpenDialog({
@@ -106,11 +115,11 @@ export function useKeyboardShortcuts() {
       }
 
       // Cmd+D — Duplicate selected layer
-      if (meta && e.key === "d") {
+      if (meta && matchesKey("d", "KeyD")) {
         e.preventDefault();
         markHandled(e);
-        if (state.selectedLayerId) {
-          state.duplicateLayer(state.selectedLayerId);
+        if (selectedIds.length > 0) {
+          state.duplicateSelectedLayers();
         }
         return;
       }
@@ -120,7 +129,7 @@ export function useKeyboardShortcuts() {
         if (isTypingTarget(target) || e.repeat) return;
         e.preventDefault();
         markHandled(e);
-        if (state.selectedLayerId) {
+        if (selectedIds.length === 1) {
           state.toggleEditorSelectionMode();
         } else {
           state.setEditorSelectionMode("shape");
@@ -132,7 +141,7 @@ export function useKeyboardShortcuts() {
       if (
         (e.key === "Delete" || e.key === "Backspace") &&
         !meta &&
-        state.selectedLayerId
+        selectedIds.length > 0
       ) {
         // Don't delete if user is typing in an input
         if (isTypingTarget(target)) {
@@ -140,12 +149,12 @@ export function useKeyboardShortcuts() {
         }
         e.preventDefault();
         markHandled(e);
-        state.removeLayer(state.selectedLayerId);
+        state.removeSelectedLayers();
         return;
       }
 
       // Cmd+P — Toggle projector
-      if (meta && e.key === "p") {
+      if (meta && matchesKey("p", "KeyP")) {
         e.preventDefault();
         markHandled(e);
         if (state.projectorWindowOpen) {
@@ -157,7 +166,7 @@ export function useKeyboardShortcuts() {
       }
 
       // G — Toggle snap to grid
-      if (!meta && !e.altKey && e.key.toLowerCase() === "g") {
+      if (!meta && !e.altKey && matchesKey("g", "KeyG")) {
         if (isTypingTarget(target)) {
           return;
         }
@@ -187,20 +196,22 @@ export function useKeyboardShortcuts() {
         !e.altKey &&
         e.key >= "0" &&
         e.key <= "9" &&
-        state.selectedLayerId
+        selectedIds.length > 0
       ) {
         if (isTypingTarget(target)) {
           return;
         }
-
-        const layer = state.layers.find((l) => l.id === state.selectedLayerId);
-        if (!layer || layer.locked) return;
+        const selectedLayers = state.layers.filter((l) => selectedIds.includes(l.id));
+        const unlocked = selectedLayers.filter((l) => !l.locked);
+        if (unlocked.length === 0) return;
 
         e.preventDefault();
         markHandled(e);
         const digit = parseInt(e.key);
         const opacity = digit === 0 ? 1.0 : digit / 10;
-        state.updateProperties(layer.id, { ...layer.properties, opacity });
+        for (const layer of unlocked) {
+          state.updateProperties(layer.id, { ...layer.properties, opacity });
+        }
         return;
       }
     };

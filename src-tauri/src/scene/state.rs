@@ -1,4 +1,5 @@
 use parking_lot::RwLock;
+use std::collections::HashSet;
 use super::history::History;
 use super::layer::*;
 use super::project::*;
@@ -219,6 +220,32 @@ impl SceneState {
         }
     }
 
+    /// Remove multiple layers in one undo step.
+    pub fn remove_layers(&self, layer_ids: &[String]) -> bool {
+        if layer_ids.is_empty() {
+            return false;
+        }
+
+        let id_set: HashSet<&str> = layer_ids.iter().map(|s| s.as_str()).collect();
+        let mut proj = self.project.write();
+
+        if !proj.layers.iter().any(|l| id_set.contains(l.id.as_str())) {
+            return false;
+        }
+
+        self.history.push(proj.layers.clone());
+        let before_len = proj.layers.len();
+        proj.layers.retain(|l| !id_set.contains(l.id.as_str()));
+        let removed = proj.layers.len() != before_len;
+        drop(proj);
+
+        if removed {
+            self.mark_dirty();
+        }
+
+        removed
+    }
+
     pub fn duplicate_layer(&self, layer_id: &str) -> Option<Layer> {
         let proj = self.project.read();
         if let Some(layer) = proj.layers.iter().find(|l| l.id == layer_id) {
@@ -233,6 +260,47 @@ impl SceneState {
         } else {
             None
         }
+    }
+
+    /// Duplicate multiple layers in deterministic input order with one undo step.
+    pub fn duplicate_layers(&self, layer_ids: &[String]) -> Vec<Layer> {
+        if layer_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let mut proj = self.project.write();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut originals: Vec<Layer> = Vec::new();
+
+        for layer_id in layer_ids {
+            if !seen.insert(layer_id.as_str()) {
+                continue;
+            }
+            if let Some(layer) = proj.layers.iter().find(|l| l.id == *layer_id) {
+                originals.push(layer.clone());
+            }
+        }
+
+        if originals.is_empty() {
+            return Vec::new();
+        }
+
+        self.history.push(proj.layers.clone());
+
+        let mut next_z = proj.layers.iter().map(|l| l.z_index).max().unwrap_or(-1) + 1;
+        let mut duplicates = Vec::with_capacity(originals.len());
+        for mut dup in originals {
+            dup.id = uuid::Uuid::new_v4().to_string();
+            dup.name = format!("{} (copy)", dup.name);
+            dup.z_index = next_z;
+            next_z += 1;
+            proj.layers.push(dup.clone());
+            duplicates.push(dup);
+        }
+
+        drop(proj);
+        self.mark_dirty();
+        duplicates
     }
 
     /// Snapshot current layers for undo BEFORE a drag/interaction begins.
@@ -730,6 +798,11 @@ impl SceneState {
 
     pub fn set_monitor_preference(&self, monitor: Option<String>) {
         self.project.write().output.monitor_preference = monitor;
+        self.mark_dirty();
+    }
+
+    pub fn set_ui_state(&self, ui_state: serde_json::Value) {
+        self.project.write().ui_state = ui_state;
         self.mark_dirty();
     }
 

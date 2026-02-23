@@ -118,6 +118,29 @@ export interface OutputConfig {
   monitor_preference: string | null;
 }
 
+export type AspectRatioId =
+  | "1:1"
+  | "4:3"
+  | "5:4"
+  | "3:2"
+  | "16:10"
+  | "16:9"
+  | "17:9"
+  | "21:9"
+  | "32:9"
+  | "9:16"
+  | "3:4";
+
+export interface AspectRatioUiState {
+  lockEnabled: boolean;
+  ratioId: AspectRatioId;
+}
+
+export interface ProjectUiState {
+  aspectRatio?: Partial<AspectRatioUiState>;
+  [key: string]: unknown;
+}
+
 export type CalibrationPattern =
   | "grid"
   | "crosshair"

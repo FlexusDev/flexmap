@@ -1,6 +1,7 @@
 //! Tauri IPC commands — control actions from the React UI to Rust backend
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::scene::layer::*;
 use crate::scene::project::*;
 use crate::scene::state::SceneState;
@@ -9,7 +10,7 @@ use crate::input::adapter::SourceInfo;
 use crate::renderer::engine::RenderState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{Manager, State, WebviewUrl, webview::WebviewWindowBuilder};
+use tauri::{Manager, State, Size, PhysicalSize, WebviewUrl, webview::WebviewWindowBuilder};
 use tauri::window::WindowBuilder;
 use crate::renderer::projector::GpuProjector;
 
@@ -18,6 +19,160 @@ fn sync_render_state(scene: &SceneState, render: &Arc<RenderState>) {
     render.update_layers(scene.get_layers_snapshot());
     let project = scene.get_project_snapshot();
     render.update_calibration(project.calibration);
+}
+
+static PROJECTOR_RESIZE_ADJUSTING: AtomicBool = AtomicBool::new(false);
+
+const COMMON_ASPECT_RATIOS: [(&str, u32, u32); 11] = [
+    ("1:1", 1, 1),
+    ("4:3", 4, 3),
+    ("5:4", 5, 4),
+    ("3:2", 3, 2),
+    ("16:10", 16, 10),
+    ("16:9", 16, 9),
+    ("17:9", 17, 9),
+    ("21:9", 21, 9),
+    ("32:9", 32, 9),
+    ("9:16", 9, 16),
+    ("3:4", 3, 4),
+];
+
+fn ratio_from_id(id: &str) -> Option<(u32, u32)> {
+    COMMON_ASPECT_RATIOS
+        .iter()
+        .find_map(|(rid, w, h)| if *rid == id { Some((*w, *h)) } else { None })
+}
+
+fn infer_ratio_from_output(width: u32, height: u32) -> (u32, u32) {
+    let w = width.max(1);
+    let h = height.max(1);
+    for (_, rw, rh) in COMMON_ASPECT_RATIOS.iter().copied() {
+        if rw * h == rh * w {
+            return (rw, rh);
+        }
+    }
+    (16, 9)
+}
+
+fn resolve_main_window_ratio(project: &ProjectFile) -> Option<(u32, u32)> {
+    let mut lock_enabled = true;
+    let mut ratio = infer_ratio_from_output(project.output.width, project.output.height);
+
+    if let Some(aspect) = project
+        .ui_state
+        .get("aspectRatio")
+        .and_then(|v| v.as_object())
+    {
+        if let Some(lock) = aspect.get("lockEnabled").and_then(|v| v.as_bool()) {
+            lock_enabled = lock;
+        }
+        if let Some(ratio_id) = aspect.get("ratioId").and_then(|v| v.as_str()) {
+            if let Some((rw, rh)) = ratio_from_id(ratio_id) {
+                ratio = (rw, rh);
+            }
+        }
+    }
+
+    if lock_enabled { Some(ratio) } else { None }
+}
+
+fn compute_locked_window_size(width: u32, height: u32, rw: u32, rh: u32) -> (u32, u32) {
+    let w = width.max(1);
+    let h = height.max(1);
+
+    let h_from_w = ((w as f64 * rh as f64) / rw as f64).round().max(1.0) as u32;
+    let w_from_h = ((h as f64 * rw as f64) / rh as f64).round().max(1.0) as u32;
+
+    let h_delta = (h_from_w as i64 - h as i64).abs();
+    let w_delta = (w_from_h as i64 - w as i64).abs();
+
+    if h_delta <= w_delta {
+        (w, h_from_w)
+    } else {
+        (w_from_h, h)
+    }
+}
+
+/// Ensures the main editor window is always resizable (aspect lock does not apply to it).
+pub(crate) fn ensure_main_window_resizable(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        win.set_resizable(true).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Applies aspect ratio lock only to the projector window (when lock is on: non-resizable, size snapped).
+pub(crate) fn apply_projector_aspect_lock(
+    app: &tauri::AppHandle,
+    state: &SceneState,
+) -> Result<(), String> {
+    let project = state.get_project_snapshot();
+    let ratio = resolve_main_window_ratio(&project);
+
+    // Try native window (GPU path) first, then webview fallback.
+    if let Some(win) = app.get_window("projector") {
+        let size = win.inner_size().map_err(|e| e.to_string())?;
+        return apply_projector_aspect_lock_impl(
+            size.width,
+            size.height,
+            |resizable| win.set_resizable(resizable).map_err(|e| e.to_string()),
+            |w, h| win.set_size(Size::Physical(PhysicalSize::new(w, h))).map_err(|e| e.to_string()),
+            win.is_fullscreen().map_err(|e| e.to_string())?,
+            ratio,
+        );
+    }
+    if let Some(win) = app.get_webview_window("projector") {
+        let size = win.inner_size().map_err(|e| e.to_string())?;
+        return apply_projector_aspect_lock_impl(
+            size.width,
+            size.height,
+            |resizable| win.set_resizable(resizable).map_err(|e| e.to_string()),
+            |w, h| win.set_size(Size::Physical(PhysicalSize::new(w, h))).map_err(|e| e.to_string()),
+            win.is_fullscreen().map_err(|e| e.to_string())?,
+            ratio,
+        );
+    }
+    Ok(())
+}
+
+fn apply_projector_aspect_lock_impl<F, G>(
+    width: u32,
+    height: u32,
+    set_resizable: F,
+    set_size: G,
+    fullscreen: bool,
+    ratio: Option<(u32, u32)>,
+) -> Result<(), String>
+where
+    F: FnOnce(bool) -> Result<(), String>,
+    G: FnOnce(u32, u32) -> Result<(), String>,
+{
+    set_resizable(ratio.is_none()).map_err(|e| e.to_string())?;
+
+    if fullscreen {
+        return Ok(());
+    }
+
+    let Some((rw, rh)) = ratio else {
+        return Ok(());
+    };
+
+    let (target_w, target_h) = compute_locked_window_size(width, height, rw, rh);
+
+    if target_w == width && target_h == height {
+        return Ok(());
+    }
+
+    if PROJECTOR_RESIZE_ADJUSTING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    let set_result = set_size(target_w, target_h);
+    PROJECTOR_RESIZE_ADJUSTING.store(false, Ordering::SeqCst);
+    set_result
 }
 
 // =============================================================================
@@ -31,6 +186,7 @@ fn sync_render_state(scene: &SceneState, render: &Arc<RenderState>) {
 pub async fn open_projector_window(
     app: tauri::AppHandle,
     render: State<'_, Arc<RenderState>>,
+    state: State<'_, SceneState>,
 ) -> Result<(), String> {
     // Check if already running
     {
@@ -119,14 +275,25 @@ pub async fn open_projector_window(
                     )?;
                 }
 
+                // Apply aspect lock so projector opens with correct size/resizable when lock is on
+                let scene_state = app_handle.state::<SceneState>();
+                let _ = apply_projector_aspect_lock(&app_handle, &scene_state);
+
                 // Listen for window resize / close events
                 let resize_app = app_handle.clone();
                 win.on_window_event(move |event| {
                     match event {
                         tauri::WindowEvent::Resized(size) => {
+                            let scene_state = resize_app.state::<SceneState>();
+                            let _ = apply_projector_aspect_lock(&resize_app, &scene_state);
                             let rs = resize_app.state::<Arc<RenderState>>();
-                            *rs.output_width.write() = size.width.max(1);
-                            *rs.output_height.write() = size.height.max(1);
+                            let (w, h) = resize_app
+                                .get_window("projector")
+                                .and_then(|w| w.inner_size().ok())
+                                .map(|s| (s.width.max(1), s.height.max(1)))
+                                .unwrap_or((size.width.max(1), size.height.max(1)));
+                            *rs.output_width.write() = w;
+                            *rs.output_height.write() = h;
                             rs.request_redraw();
                         }
                         tauri::WindowEvent::CloseRequested { .. } => {
@@ -155,7 +322,7 @@ pub async fn open_projector_window(
 
     // Fallback: webview-based projector (GPU not ready yet)
     log::warn!("GPU not ready, falling back to webview projector");
-    WebviewWindowBuilder::new(
+    let win = WebviewWindowBuilder::new(
         &app,
         "projector",
         WebviewUrl::App("index.html#/projector".into()),
@@ -167,6 +334,17 @@ pub async fn open_projector_window(
     .title("AuraMap Projector Output")
     .build()
     .map_err(|e: tauri::Error| e.to_string())?;
+
+    let resize_app = app.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::Resized(_) = event {
+            let scene_state = resize_app.state::<SceneState>();
+            let _ = apply_projector_aspect_lock(&resize_app, &scene_state);
+        }
+    });
+
+    let _ = ensure_main_window_resizable(&app);
+    let _ = apply_projector_aspect_lock(&app, &state);
 
     log::info!("Webview projector window opened (GPU fallback)");
     Ok(())
@@ -188,6 +366,33 @@ pub async fn close_projector_window(app: tauri::AppHandle) -> Result<(), String>
         win.close().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn set_projector_fullscreen(
+    app: tauri::AppHandle,
+    fullscreen: bool,
+) -> Result<(), String> {
+    if let Some(win) = app.get_window("projector") {
+        win.set_fullscreen(fullscreen).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    if let Some(win) = app.get_webview_window("projector") {
+        win.set_fullscreen(fullscreen).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err("Projector window not found".to_string())
+}
+
+#[tauri::command]
+pub async fn get_projector_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
+    if let Some(win) = app.get_window("projector") {
+        return win.is_fullscreen().map_err(|e| e.to_string());
+    }
+    if let Some(win) = app.get_webview_window("projector") {
+        return win.is_fullscreen().map_err(|e| e.to_string());
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -290,6 +495,19 @@ pub async fn remove_layer(
 }
 
 #[tauri::command]
+pub async fn remove_layers(
+    layer_ids: Vec<String>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let result = state.remove_layers(&layer_ids);
+    if result {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn duplicate_layer(
     layer_id: String,
     state: State<'_, SceneState>,
@@ -297,6 +515,19 @@ pub async fn duplicate_layer(
 ) -> Result<Option<Layer>, String> {
     let result = state.duplicate_layer(&layer_id);
     if result.is_some() {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn duplicate_layers(
+    layer_ids: Vec<String>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<Vec<Layer>, String> {
+    let result = state.duplicate_layers(&layer_ids);
+    if !result.is_empty() {
         sync_render_state(&state, &render);
     }
     Ok(result)
@@ -519,10 +750,13 @@ pub async fn load_project(
     path: String,
     state: State<'_, SceneState>,
     render: State<'_, Arc<RenderState>>,
+    app: tauri::AppHandle,
 ) -> Result<ProjectFile, String> {
     let project = persistence::load_project(&PathBuf::from(&path))?;
     state.load_project(project.clone(), Some(path));
     sync_render_state(&state, &render);
+    let _ = ensure_main_window_resizable(&app);
+    let _ = apply_projector_aspect_lock(&app, &state);
     Ok(project)
 }
 
@@ -530,9 +764,12 @@ pub async fn load_project(
 pub async fn new_project(
     state: State<'_, SceneState>,
     render: State<'_, Arc<RenderState>>,
+    app: tauri::AppHandle,
 ) -> Result<ProjectFile, String> {
     state.new_project("Untitled Project");
     sync_render_state(&state, &render);
+    let _ = ensure_main_window_resizable(&app);
+    let _ = apply_projector_aspect_lock(&app, &state);
     Ok(state.get_project_snapshot())
 }
 
@@ -800,11 +1037,61 @@ pub async fn set_output_config(
     config: OutputConfig,
     state: State<'_, SceneState>,
     render: State<'_, Arc<RenderState>>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     *render.output_width.write() = config.width;
     *render.output_height.write() = config.height;
     state.set_output_config(config);
     render.request_redraw();
+    let _ = ensure_main_window_resizable(&app);
+    let _ = apply_projector_aspect_lock(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_project_ui_state(
+    ui_state: serde_json::Value,
+    state: State<'_, SceneState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    state.set_ui_state(ui_state);
+    let _ = ensure_main_window_resizable(&app);
+    let _ = apply_projector_aspect_lock(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_main_window_fullscreen(
+    app: tauri::AppHandle,
+    state: State<'_, SceneState>,
+    fullscreen: bool,
+) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+    win.set_fullscreen(fullscreen).map_err(|e| e.to_string())?;
+    if !fullscreen {
+        let _ = ensure_main_window_resizable(&app);
+        let _ = apply_projector_aspect_lock(&app, &state);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_main_window_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "Main window not found".to_string())?;
+    win.is_fullscreen().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sync_main_window_aspect(
+    app: tauri::AppHandle,
+    state: State<'_, SceneState>,
+) -> Result<(), String> {
+    ensure_main_window_resizable(&app)?;
+    apply_projector_aspect_lock(&app, &state)?;
     Ok(())
 }
 

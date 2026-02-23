@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { useAppStore } from "../../store/useAppStore";
 import { tauriInvoke } from "../../lib/tauri-bridge";
 import type {
@@ -13,6 +13,7 @@ import type {
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import type { PerfStats } from "../../store/useAppStore";
 import { hashPoints, drawTriangleTextured } from "../../lib/math";
+import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
 
 /** Fast base64→Uint8ClampedArray decode using fetch + data URI (avoids byte-by-byte loop) */
 async function decodeBase64Fast(b64: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
@@ -96,14 +97,6 @@ function applyInputTransformToUv(
   };
 }
 
-function ellipseHalfExtents(rx: number, ry: number, rotation: number): { hw: number; hh: number } {
-  const c = Math.cos(rotation);
-  const s = Math.sin(rotation);
-  return {
-    hw: Math.sqrt((rx * c) * (rx * c) + (ry * s) * (ry * s)),
-    hh: Math.sqrt((rx * s) * (rx * s) + (ry * c) * (ry * c)),
-  };
-}
 
 function normalizeAngleDelta(rad: number): number {
   let a = rad;
@@ -156,7 +149,7 @@ interface InputRotateState {
 }
 
 interface ShapeTransformState {
-  layerId: string;
+  layerIds: string[];
   mode: "drag" | "rotate";
   lastMouse: { x: number; y: number };
   center: { x: number; y: number };
@@ -168,6 +161,29 @@ interface WarpCache {
   canvas: HTMLCanvasElement;
   geoHash: number;
   frameGen: number;
+}
+
+/** Derive circle display params from a 1x1 mesh that was converted from a circle.
+ *  The mesh points are [TL, TR, BL, BR] in row-major order.
+ *  Returns center (normalized), rx, ry, and rotation in radians. */
+function meshToCircleParams(points: { x: number; y: number }[]): {
+  center: { x: number; y: number };
+  radius_x: number;
+  radius_y: number;
+  rotation: number;
+} {
+  if (points.length < 4) {
+    return { center: { x: 0.5, y: 0.5 }, radius_x: 0.3, radius_y: 0.3, rotation: 0 };
+  }
+  // TL=0, TR=1, BL=2, BR=3
+  const tl = points[0], tr = points[1], bl = points[2];
+  const cx = (points[0].x + points[1].x + points[2].x + points[3].x) / 4;
+  const cy = (points[0].y + points[1].y + points[2].y + points[3].y) / 4;
+  // Width from top edge, height from left edge
+  const rx = Math.sqrt((tr.x - tl.x) ** 2 + (tr.y - tl.y) ** 2) / 2;
+  const ry = Math.sqrt((bl.x - tl.x) ** 2 + (bl.y - tl.y) ** 2) / 2;
+  const rotation = Math.atan2(tr.y - tl.y, tr.x - tl.x);
+  return { center: { x: cx, y: cy }, radius_x: Math.max(0.0001, rx), radius_y: Math.max(0.0001, ry), rotation };
 }
 
 function EditorCanvas() {
@@ -187,18 +203,54 @@ function EditorCanvas() {
   const [hoveredFaceIndex, setHoveredFaceIndex] = useState<number | null>(null);
 
   const {
-    layers, selectedLayerId, selectedFaceIndices,
-    selectLayer, setSelectedFaces, toggleFaceSelection, clearFaceSelection,
+    project,
+    layers, selectedLayerId, selectedLayerIds, selectedFaceIndices,
+    setLayerSelection, toggleLayerSelection, clearLayerSelection,
+    setSelectedFaces, toggleFaceSelection, clearFaceSelection,
     updateLayerPoint, applyGeometryTransformDelta,
     beginInteraction, setEditorPerf, snapEnabled, editorSelectionMode,
     setLayerInputTransform, toggleEditorSelectionMode,
   } = useAppStore();
+  const effectiveSelectedIds = selectedLayerIds.length > 0
+    ? selectedLayerIds
+    : selectedLayerId
+      ? [selectedLayerId]
+      : [];
+  const selectedIdSet = useMemo(
+    () => new Set(effectiveSelectedIds),
+    [effectiveSelectedIds]
+  );
+
+  const outputWidth = project?.output.width ?? canvasSize.w;
+  const outputHeight = project?.output.height ?? canvasSize.h;
+  const aspectState = useMemo(
+    () =>
+      project
+        ? resolveAspectRatioUiState(project.uiState, project.output)
+        : { lockEnabled: false, ratioId: "16:9" as const },
+    [project]
+  );
+  const viewRect = useMemo(
+    () =>
+      fitAspectViewport(
+        canvasSize.w,
+        canvasSize.h,
+        outputWidth,
+        outputHeight,
+        aspectState.lockEnabled
+      ),
+    [canvasSize.w, canvasSize.h, outputWidth, outputHeight, aspectState.lockEnabled]
+  );
 
   const selectedLayer = selectedLayerId
     ? layers.find((l) => l.id === selectedLayerId) ?? null
     : null;
+  const singleLayerSelected = !!selectedLayer && effectiveSelectedIds.length === 1;
   const meshSelected = selectedLayer?.geometry.type === "Mesh";
-  const selectionMode: EditorSelectionMode = selectedLayer ? editorSelectionMode : "shape";
+  const selectionMode: EditorSelectionMode =
+    singleLayerSelected
+      ? editorSelectionMode
+      : "shape";
   const isUvMode = selectionMode === "uv";
   const effectiveInputTool: "faces" | "drag" | "rotate" = meshSelected
     ? inputEditTool
@@ -215,9 +267,9 @@ function EditorCanvas() {
   const isShapeRotateMode = isShapeMode && shapeEditTool === "rotate";
 
   const handleModeChipToggle = useCallback(() => {
-    if (!selectedLayer) return;
+    if (!singleLayerSelected) return;
     toggleEditorSelectionMode();
-  }, [selectedLayer, toggleEditorSelectionMode]);
+  }, [singleLayerSelected, toggleEditorSelectionMode]);
 
   // Track whether we've already pushed undo for the current arrow-nudge burst
   const nudgeUndoPushed = useRef(false);
@@ -240,7 +292,7 @@ function EditorCanvas() {
   const shapeTransformRef = useRef<ShapeTransformState | null>(null);
   // Geometry delta queue for shape drag/rotate
   const geometryPendingRef = useRef<{
-    layerId: string;
+    layerIds: string[];
     dx: number;
     dy: number;
     dRotation: number;
@@ -359,10 +411,10 @@ function EditorCanvas() {
   // Coordinate conversion: normalized [0,1] → canvas pixels
   const toCanvas = useCallback(
     (p: Point2D): { x: number; y: number } => ({
-      x: p.x * canvasSize.w,
-      y: p.y * canvasSize.h,
+      x: viewRect.x + p.x * viewRect.w,
+      y: viewRect.y + p.y * viewRect.h,
     }),
-    [canvasSize]
+    [viewRect]
   );
 
   const flushInputTransform = useCallback(() => {
@@ -406,13 +458,17 @@ function EditorCanvas() {
     if (!pending) return;
     geometryPendingRef.current = null;
     geometryInFlightRef.current = true;
-    void applyGeometryTransformDelta(pending.layerId, {
-      dx: pending.dx,
-      dy: pending.dy,
-      dRotation: pending.dRotation,
-      sx: 1,
-      sy: 1,
-    }).finally(() => {
+    void Promise.all(
+      pending.layerIds.map((layerId) =>
+        applyGeometryTransformDelta(layerId, {
+          dx: pending.dx,
+          dy: pending.dy,
+          dRotation: pending.dRotation,
+          sx: 1,
+          sy: 1,
+        })
+      )
+    ).finally(() => {
       geometryInFlightRef.current = false;
       if (geometryPendingRef.current) {
         flushGeometryDelta();
@@ -422,10 +478,11 @@ function EditorCanvas() {
 
   const enqueueGeometryDelta = useCallback(
     (
-      layerId: string,
+      layerIds: string[],
       delta: { dx?: number; dy?: number; dRotation?: number },
       immediate = false
     ) => {
+      if (layerIds.length === 0) return;
       const dx = delta.dx ?? 0;
       const dy = delta.dy ?? 0;
       const dRotation = delta.dRotation ?? 0;
@@ -436,8 +493,11 @@ function EditorCanvas() {
       }
 
       const pending = geometryPendingRef.current;
-      if (!pending || pending.layerId !== layerId) {
-        geometryPendingRef.current = { layerId, dx, dy, dRotation };
+      const sameSelection = pending
+        && pending.layerIds.length === layerIds.length
+        && pending.layerIds.every((id, idx) => id === layerIds[idx]);
+      if (!pending || !sameSelection) {
+        geometryPendingRef.current = { layerIds: [...layerIds], dx, dy, dRotation };
       } else {
         pending.dx += dx;
         pending.dy += dy;
@@ -613,11 +673,13 @@ function EditorCanvas() {
       const pts = layer.geometry.data.vertices.map(toCanvas);
       return pointInTriangle(mx, my, pts[0], pts[1], pts[2]);
     }
-    if (layer.geometry.type === "Circle") {
-      const center = toCanvas(layer.geometry.data.center);
-      const rx = Math.max(layer.geometry.data.radius_x * canvasSize.w, 0.0001);
-      const ry = Math.max(layer.geometry.data.radius_y * canvasSize.h, 0.0001);
-      const rot = layer.geometry.data.rotation;
+    if (layer.type === "circle") {
+      const normalizedPts = getPoints(layer.geometry);
+      const cp = meshToCircleParams(normalizedPts);
+      const center = toCanvas(cp.center);
+      const rx = Math.max(cp.radius_x * viewRect.w, 0.0001);
+      const ry = Math.max(cp.radius_y * viewRect.h, 0.0001);
+      const rot = cp.rotation;
       const dx = mx - center.x;
       const dy = my - center.y;
       const c = Math.cos(rot);
@@ -650,7 +712,9 @@ function EditorCanvas() {
 
   const getLayerCenterCanvas = (layer: (typeof layers)[number]): { x: number; y: number } => {
     const pts = getPoints(layer.geometry).map(toCanvas);
-    if (pts.length === 0) return { x: canvasSize.w * 0.5, y: canvasSize.h * 0.5 };
+    if (pts.length === 0) {
+      return { x: viewRect.x + viewRect.w * 0.5, y: viewRect.y + viewRect.h * 0.5 };
+    }
     let sx = 0;
     let sy = 0;
     for (const p of pts) {
@@ -660,17 +724,35 @@ function EditorCanvas() {
     return { x: sx / pts.length, y: sy / pts.length };
   };
 
+  const getSelectionCenterCanvas = (layerIds: string[]): { x: number; y: number } => {
+    const centers = layerIds
+      .map((id) => layers.find((l) => l.id === id))
+      .filter(Boolean)
+      .map((layer) => getLayerCenterCanvas(layer!));
+    if (centers.length === 0) {
+      return { x: viewRect.x + viewRect.w * 0.5, y: viewRect.y + viewRect.h * 0.5 };
+    }
+    let sx = 0;
+    let sy = 0;
+    for (const c of centers) {
+      sx += c.x;
+      sy += c.y;
+    }
+    return { x: sx / centers.length, y: sy / centers.length };
+  };
+
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
+    const cmdOrCtrl = e.metaKey || e.ctrlKey;
 
     if (isShapePointMode) {
       const hit = hitTest(mx, my);
       if (hit) {
-        selectLayer(hit.layerId);
+        setLayerSelection([hit.layerId], hit.layerId);
         const layer = layers.find((l) => l.id === hit.layerId);
         if (layer) {
           beginInteraction();
@@ -689,14 +771,25 @@ function EditorCanvas() {
     if (isShapeDragMode || isShapeRotateMode) {
       const hitLayerId = layerBodyHitTest(mx, my);
       if (hitLayerId) {
+        if (cmdOrCtrl) {
+          toggleLayerSelection(hitLayerId);
+          return;
+        }
         const layer = layers.find((l) => l.id === hitLayerId);
         if (layer) {
-          selectLayer(layer.id);
+          const activeIds = selectedIdSet.has(layer.id) && effectiveSelectedIds.length > 1
+            ? [...effectiveSelectedIds]
+            : [layer.id];
+          if (activeIds.length === 1 && activeIds[0] !== selectedLayerId) {
+            setLayerSelection(activeIds, layer.id);
+          }
           beginInteraction();
-          const center = getLayerCenterCanvas(layer);
+          const center = isShapeRotateMode
+            ? getSelectionCenterCanvas(activeIds)
+            : getLayerCenterCanvas(layer);
           const startAngle = Math.atan2(my - center.y, mx - center.x);
           shapeTransformRef.current = {
-            layerId: layer.id,
+            layerIds: activeIds,
             mode: isShapeDragMode ? "drag" : "rotate",
             lastMouse: { x: mx, y: my },
             center,
@@ -727,7 +820,7 @@ function EditorCanvas() {
       if (hitLayerId) {
         const layer = layers.find((l) => l.id === hitLayerId);
         if (layer) {
-          selectLayer(layer.id);
+          setLayerSelection([layer.id], layer.id);
           beginInteraction();
           const input = layer.input_transform ?? DEFAULT_INPUT_TRANSFORM;
           if (isInputDragMode) {
@@ -752,7 +845,7 @@ function EditorCanvas() {
     }
 
     // Click on empty area — deselect layer + clear faces
-    selectLayer(null);
+    clearLayerSelection();
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -763,20 +856,20 @@ function EditorCanvas() {
 
     const shapeTransform = shapeTransformRef.current;
     if (shapeTransform) {
-      if (!layers.some((l) => l.id === shapeTransform.layerId)) {
+      if (!shapeTransform.layerIds.every((id) => layers.some((l) => l.id === id))) {
         finishShapeTransform();
         return;
       }
       if (shapeTransform.mode === "drag") {
-        const dx = (mx - shapeTransform.lastMouse.x) / canvasSize.w;
-        const dy = (my - shapeTransform.lastMouse.y) / canvasSize.h;
+        const dx = (mx - shapeTransform.lastMouse.x) / viewRect.w;
+        const dy = (my - shapeTransform.lastMouse.y) / viewRect.h;
         shapeTransform.lastMouse = { x: mx, y: my };
-        enqueueGeometryDelta(shapeTransform.layerId, { dx, dy }, false);
+        enqueueGeometryDelta(shapeTransform.layerIds, { dx, dy }, false);
       } else {
         const nextAngle = Math.atan2(my - shapeTransform.center.y, mx - shapeTransform.center.x);
         const dRotation = normalizeAngleDelta(nextAngle - shapeTransform.lastAngle);
         shapeTransform.lastAngle = nextAngle;
-        enqueueGeometryDelta(shapeTransform.layerId, { dRotation }, false);
+        enqueueGeometryDelta(shapeTransform.layerIds, { dRotation }, false);
       }
       return;
     }
@@ -796,8 +889,8 @@ function EditorCanvas() {
       const layer = layers.find((l) => l.id === inputDragState.layerId);
       if (!layer) return;
 
-      const dx = (mx - inputDragState.startMouse.x) / canvasSize.w;
-      const dy = (my - inputDragState.startMouse.y) / canvasSize.h;
+      const dx = (mx - inputDragState.startMouse.x) / viewRect.w;
+      const dy = (my - inputDragState.startMouse.y) / viewRect.h;
       const nextOffsetX = Math.max(-1, Math.min(1, inputDragState.startOffset[0] - dx));
       const nextOffsetY = Math.max(-1, Math.min(1, inputDragState.startOffset[1] - dy));
       const base = layer.input_transform ?? DEFAULT_INPUT_TRANSFORM;
@@ -810,8 +903,8 @@ function EditorCanvas() {
       const layer = layers.find((l) => l.id === dragState.layerId);
       if (!layer) return;
 
-      const dx = (mx - dragState.startMouse.x) / canvasSize.w;
-      const dy = (my - dragState.startMouse.y) / canvasSize.h;
+      const dx = (mx - dragState.startMouse.x) / viewRect.w;
+      const dy = (my - dragState.startMouse.y) / viewRect.h;
 
       let nx = Math.max(0, Math.min(1, dragState.startPoint.x + dx));
       let ny = Math.max(0, Math.min(1, dragState.startPoint.y + dy));
@@ -870,9 +963,12 @@ function EditorCanvas() {
         return;
       }
 
-      if (!selectedLayerId) return;
-      const layer = layers.find((l) => l.id === selectedLayerId);
-      if (!layer || layer.locked) return;
+      if (effectiveSelectedIds.length === 0) return;
+      const targetIds = effectiveSelectedIds.filter((id) => {
+        const layer = layers.find((l) => l.id === id);
+        return !!layer && !layer.locked;
+      });
+      if (targetIds.length === 0) return;
 
       const amount = e.shiftKey ? FINE_NUDGE : NUDGE_AMOUNT;
       let dx = 0, dy = 0;
@@ -892,16 +988,18 @@ function EditorCanvas() {
         beginInteraction();
       }
 
-      void applyGeometryTransformDelta(layer.id, {
-        dx,
-        dy,
-        dRotation: 0,
-        sx: 1,
-        sy: 1,
-      });
+      for (const id of targetIds) {
+        void applyGeometryTransformDelta(id, {
+          dx,
+          dy,
+          dRotation: 0,
+          sx: 1,
+          sy: 1,
+        });
+      }
     },
     [
-      selectedLayerId,
+      effectiveSelectedIds,
       selectedFaceIndices,
       layers,
       applyGeometryTransformDelta,
@@ -941,22 +1039,31 @@ function EditorCanvas() {
     canvas.height = canvasSize.h * dpr;
     ctx.scale(dpr, dpr);
 
-    // Clear
-    ctx.fillStyle = "#0a0a0a";
+    // Clear + letterbox bars
+    ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvasSize.w, canvasSize.h);
+    ctx.fillStyle = "#0a0a0a";
+    ctx.fillRect(viewRect.x, viewRect.y, viewRect.w, viewRect.h);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(viewRect.x, viewRect.y, viewRect.w, viewRect.h);
+    ctx.clip();
 
     // Draw grid — batched into 2 stroke() calls instead of ~116
     ctx.strokeStyle = GRID_COLOR;
     ctx.lineWidth = 0.5;
     const gridStep = 50;
     ctx.beginPath();
-    for (let x = 0; x <= canvasSize.w; x += gridStep) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, canvasSize.h);
+    const viewRight = viewRect.x + viewRect.w;
+    const viewBottom = viewRect.y + viewRect.h;
+    for (let x = viewRect.x; x <= viewRight; x += gridStep) {
+      ctx.moveTo(x, viewRect.y);
+      ctx.lineTo(x, viewBottom);
     }
-    for (let y = 0; y <= canvasSize.h; y += gridStep) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(canvasSize.w, y);
+    for (let y = viewRect.y; y <= viewBottom; y += gridStep) {
+      ctx.moveTo(viewRect.x, y);
+      ctx.lineTo(viewRight, y);
     }
     ctx.stroke();
 
@@ -968,13 +1075,16 @@ function EditorCanvas() {
     const currentFrameTick = frameTick.current;
 
     for (const layer of sorted) {
-      const isSelected = layer.id === selectedLayerId;
+      const isSelected = selectedIdSet.has(layer.id);
+      const isPrimary = layer.id === selectedLayerId;
       const points = getPoints(layer.geometry).map(toCanvas);
       const inputTransform = layer.input_transform ?? DEFAULT_INPUT_TRANSFORM;
       const frame = frameCache.current.get(layer.id);
 
-      ctx.strokeStyle = isSelected ? SELECTED_STROKE : LAYER_STROKE;
-      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.strokeStyle = isSelected
+        ? (isPrimary ? SELECTED_STROKE : "#a5b4fc")
+        : LAYER_STROKE;
+      ctx.lineWidth = isSelected ? (isPrimary ? 2 : 1.5) : 1;
 
       // --- Paint source frame (or fallback fill) inside the shape ---
       if (frame) {
@@ -1029,11 +1139,17 @@ function EditorCanvas() {
             ^ (((inputTransform.rotation * 1e6) | 0) >>> 0)
             ^ (((inputTransform.scale[0] * 1e6) | 0) >>> 0)
             ^ (((inputTransform.scale[1] * 1e6) | 0) >>> 0);
+          const viewportHash =
+            (((viewRect.x * 1e3) | 0) >>> 0)
+            ^ (((viewRect.y * 1e3) | 0) >>> 0)
+            ^ (((viewRect.w * 1e3) | 0) >>> 0)
+            ^ (((viewRect.h * 1e3) | 0) >>> 0);
           const geoHash =
             hashPoints(rawPts)
             ^ uvHash
             ^ maskHash
             ^ inputHash
+            ^ viewportHash
             ^ (currentFrameTick * 0x9e3779b9);
           let warp = warpCacheMap.current.get(layer.id);
 
@@ -1061,19 +1177,21 @@ function EditorCanvas() {
             warp.canvas.height = bh;
             const wCtx = warp.canvas.getContext("2d")!;
             wCtx.clearRect(0, 0, bw, bh);
-            wCtx.translate(-minX, -minY);
 
             const maskedSet = new Set(layer.geometry.data.masked_faces ?? []);
+
+            // Offset all canvas-space points to warp-canvas-space once
+            const offsetPts = points.map(p => ({ x: p.x - minX, y: p.y - minY }));
 
             for (let r = 0; r < rows; r++) {
               for (let c = 0; c < cols; c++) {
                 const faceIdx = r * cols + c;
                 if (maskedSet.has(faceIdx)) continue;
 
-                const tl = points[r * (cols + 1) + c];
-                const tr = points[r * (cols + 1) + c + 1];
-                const br = points[(r + 1) * (cols + 1) + c + 1];
-                const bl = points[(r + 1) * (cols + 1) + c];
+                const tl = offsetPts[r * (cols + 1) + c];
+                const tr = offsetPts[r * (cols + 1) + c + 1];
+                const br = offsetPts[(r + 1) * (cols + 1) + c + 1];
+                const bl = offsetPts[(r + 1) * (cols + 1) + c];
 
                 const fw = frame.width;
                 const fh = frame.height;
@@ -1093,42 +1211,138 @@ function EditorCanvas() {
                   return { x: withLayer.u * fw, y: withLayer.v * fh };
                 });
 
-                // Triangle 1: TL, TR, BR
-                wCtx.save();
-                drawTriangleTextured(
-                  wCtx, tmpC,
-                  [finalUvs[0], finalUvs[1], finalUvs[2]],
-                  [tl, tr, br]
-                );
-                wCtx.restore();
+                // Check if cell is significantly distorted (needs subdivision for perspective accuracy)
+                const edgeLengths = [
+                  Math.hypot(tr.x - tl.x, tr.y - tl.y),  // top
+                  Math.hypot(br.x - tr.x, br.y - tr.y),  // right
+                  Math.hypot(bl.x - br.x, bl.y - br.y),  // bottom
+                  Math.hypot(tl.x - bl.x, tl.y - bl.y),  // left
+                ];
+                const maxEdge = Math.max(...edgeLengths);
+                const minEdge = Math.min(...edgeLengths);
+                const distortionRatio = minEdge > 0 ? maxEdge / minEdge : 1;
 
-                // Triangle 2: TL, BR, BL
-                wCtx.save();
-                drawTriangleTextured(
-                  wCtx, tmpC,
-                  [finalUvs[0], finalUvs[2], finalUvs[3]],
-                  [tl, br, bl]
-                );
-                wCtx.restore();
+                if (distortionRatio >= 1.3) {
+                  // Helpers (defined inline; stable references via closure)
+                  function bilinearPt(
+                    p00: {x:number;y:number}, p10: {x:number;y:number},
+                    p01: {x:number;y:number}, p11: {x:number;y:number},
+                    s: number, t: number
+                  ): {x:number;y:number} {
+                    return {
+                      x: (1-s)*(1-t)*p00.x + s*(1-t)*p10.x + (1-s)*t*p01.x + s*t*p11.x,
+                      y: (1-s)*(1-t)*p00.y + s*(1-t)*p10.y + (1-s)*t*p01.y + s*t*p11.y,
+                    };
+                  }
+
+                  // Port of Rust compute_quad_q_weights: Heckbert diagonal-intersection.
+                  // corners: TL, TR, BR, BL (screen space)
+                  function computeQuadQWeights(
+                    c0: {x:number;y:number}, c1: {x:number;y:number},
+                    c2: {x:number;y:number}, c3: {x:number;y:number}
+                  ): [number,number,number,number] {
+                    const d02x = c2.x-c0.x, d02y = c2.y-c0.y;
+                    const d13x = c3.x-c1.x, d13y = c3.y-c1.y;
+                    const denom = d02x*d13y - d02y*d13x;
+                    if (Math.abs(denom) < 1e-9) return [1,1,1,1];
+                    const bx = c1.x-c0.x, by = c1.y-c0.y;
+                    let tc = (bx*d13y - by*d13x) / denom;
+                    let sc = (bx*d02y - by*d02x) / denom;
+                    if (Math.abs(tc-0.5) < 0.02 && Math.abs(sc-0.5) < 0.02) return [1,1,1,1];
+                    tc = Math.max(0.001, Math.min(0.999, tc));
+                    sc = Math.max(0.001, Math.min(0.999, sc));
+                    return [1/(1-tc), 1/(1-sc), 1/tc, 1/sc];
+                  }
+
+                  // Perspective-correct UV at bilinear parameter (s,t) using homogeneous interp.
+                  // uvs: [TL,TR,BR,BL] pixel coords, q: [TL,TR,BR,BL] weights
+                  function perspUvAt(
+                    uvs: {x:number;y:number}[], q: [number,number,number,number],
+                    s: number, t: number
+                  ): {x:number;y:number} {
+                    const w00=(1-s)*(1-t), w10=s*(1-t), w11=s*t, w01=(1-s)*t;
+                    const hx = w00*uvs[0].x*q[0] + w10*uvs[1].x*q[1] + w11*uvs[2].x*q[2] + w01*uvs[3].x*q[3];
+                    const hy = w00*uvs[0].y*q[0] + w10*uvs[1].y*q[1] + w11*uvs[2].y*q[2] + w01*uvs[3].y*q[3];
+                    const hw = w00*q[0] + w10*q[1] + w11*q[2] + w01*q[3];
+                    return hw > 1e-9 ? { x: hx/hw, y: hy/hw } : uvs[0];
+                  }
+
+                  // finalUvs order: [TL=0, TR=1, BR=2, BL=3]
+                  const cellQ = computeQuadQWeights(tl, tr, br, bl);
+
+                  // More subdivisions for highly distorted quads
+                  const subdivN = distortionRatio > 4 ? 4 : 2;
+
+                  // Build (subdivN+1)×(subdivN+1) grid
+                  // Screen positions: bilinear (screen space is affine-safe)
+                  // UV positions: perspective-correct homogeneous interpolation
+                  const subPts: {x:number;y:number}[][] = [];
+                  const subUvs: {x:number;y:number}[][] = [];
+                  for (let ti = 0; ti <= subdivN; ti++) {
+                    const t = ti / subdivN;
+                    subPts.push([]);
+                    subUvs.push([]);
+                    for (let si = 0; si <= subdivN; si++) {
+                      const s = si / subdivN;
+                      subPts[ti].push(bilinearPt(tl, tr, bl, br, s, t));
+                      subUvs[ti].push(perspUvAt(finalUvs, cellQ, s, t));
+                    }
+                  }
+
+                  // Draw subdivN² sub-quads as 2*subdivN² triangles
+                  for (let sti = 0; sti < subdivN; sti++) {
+                    for (let ssi = 0; ssi < subdivN; ssi++) {
+                      const stl = subPts[sti][ssi];
+                      const str_ = subPts[sti][ssi+1];
+                      const sbr = subPts[sti+1][ssi+1];
+                      const sbl = subPts[sti+1][ssi];
+                      const utl = subUvs[sti][ssi];
+                      const utr = subUvs[sti][ssi+1];
+                      const ubr = subUvs[sti+1][ssi+1];
+                      const ubl = subUvs[sti+1][ssi];
+                      wCtx.save();
+                      drawTriangleTextured(wCtx, tmpC, [utl, utr, ubr], [stl, str_, sbr]);
+                      wCtx.restore();
+                      wCtx.save();
+                      drawTriangleTextured(wCtx, tmpC, [utl, ubr, ubl], [stl, sbr, sbl]);
+                      wCtx.restore();
+                    }
+                  }
+                } else {
+                  // Normal 2-triangle draw
+                  wCtx.save();
+                  drawTriangleTextured(
+                    wCtx, tmpC,
+                    [finalUvs[0], finalUvs[1], finalUvs[2]],
+                    [tl, tr, br]
+                  );
+                  wCtx.restore();
+
+                  wCtx.save();
+                  drawTriangleTextured(
+                    wCtx, tmpC,
+                    [finalUvs[0], finalUvs[2], finalUvs[3]],
+                    [tl, br, bl]
+                  );
+                  wCtx.restore();
+                }
               }
             }
 
-            wCtx.translate(minX, minY); // undo the translate
             warp.geoHash = geoHash;
             warp.frameGen = currentFrameTick;
 
             // Draw masked faces (dark overlay) — on top of warped content
             if (maskedSet.size > 0) {
               wCtx.save();
-              wCtx.translate(-minX, -minY);
               wCtx.fillStyle = "rgba(0,0,0,0.75)";
               for (const faceIdx of maskedSet) {
                 const r = Math.floor(faceIdx / cols);
                 const c = faceIdx % cols;
-                const tl = points[r * (cols + 1) + c];
-                const tr = points[r * (cols + 1) + c + 1];
-                const br = points[(r + 1) * (cols + 1) + c + 1];
-                const bl = points[(r + 1) * (cols + 1) + c];
+                const tl = offsetPts[r * (cols + 1) + c];
+                const tr = offsetPts[r * (cols + 1) + c + 1];
+                const br = offsetPts[(r + 1) * (cols + 1) + c + 1];
+                const bl = offsetPts[(r + 1) * (cols + 1) + c];
                 wCtx.beginPath();
                 wCtx.moveTo(tl.x, tl.y);
                 wCtx.lineTo(tr.x, tr.y);
@@ -1150,27 +1364,14 @@ function EditorCanvas() {
           }
           ctx.drawImage(warp.canvas, Math.round(minX2), Math.round(minY2));
         } else {
-          // Non-mesh: original bounding-box drawImage approach
+          // Non-mesh (Triangle only after mesh unification):
+          // bounding-box clip + drawImage approach
           ctx.beginPath();
           let bboxX = 0;
           let bboxY = 0;
           let bboxW = 1;
           let bboxH = 1;
-          if (layer.geometry.type === "Quad") {
-            ctx.moveTo(points[0].x, points[0].y);
-            for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            for (const p of points) {
-              if (p.x < minX) minX = p.x;
-              if (p.y < minY) minY = p.y;
-              if (p.x > maxX) maxX = p.x;
-              if (p.y > maxY) maxY = p.y;
-            }
-            bboxX = minX;
-            bboxY = minY;
-            bboxW = Math.max(1, maxX - minX);
-            bboxH = Math.max(1, maxY - minY);
-          } else if (layer.geometry.type === "Triangle") {
+          if (layer.geometry.type === "Triangle") {
             ctx.moveTo(points[0].x, points[0].y);
             ctx.lineTo(points[1].x, points[1].y);
             ctx.lineTo(points[2].x, points[2].y);
@@ -1185,17 +1386,6 @@ function EditorCanvas() {
             bboxY = minY;
             bboxW = Math.max(1, maxX - minX);
             bboxH = Math.max(1, maxY - minY);
-          } else if (layer.geometry.type === "Circle") {
-            const center = points[0];
-            const rx = layer.geometry.data.radius_x * canvasSize.w;
-            const ry = layer.geometry.data.radius_y * canvasSize.h;
-            const rotation = layer.geometry.data.rotation;
-            ctx.ellipse(center.x, center.y, rx, ry, rotation, 0, TWO_PI);
-            const ext = ellipseHalfExtents(rx, ry, rotation);
-            bboxX = center.x - ext.hw;
-            bboxY = center.y - ext.hh;
-            bboxW = Math.max(1, ext.hw * 2);
-            bboxH = Math.max(1, ext.hh * 2);
           }
           ctx.closePath();
           ctx.clip();
@@ -1219,7 +1409,7 @@ function EditorCanvas() {
       }
 
       // --- Draw face selection highlights (selected mesh layer in UV mode) ---
-      if (isInputFaceMode && isSelected && layer.geometry.type === "Mesh") {
+      if (isInputFaceMode && isPrimary && layer.geometry.type === "Mesh") {
         const { cols, rows } = layer.geometry.data;
 
         // Hovered face
@@ -1278,11 +1468,14 @@ function EditorCanvas() {
         ctx.closePath();
         if (!frame) ctx.fill();
         ctx.stroke();
-      } else if (layer.geometry.type === "Circle") {
-        const center = points[0];
-        const rx = layer.geometry.data.radius_x * canvasSize.w;
-        const ry = layer.geometry.data.radius_y * canvasSize.h;
-        const rotation = layer.geometry.data.rotation;
+      } else if (layer.type === "circle") {
+        // Circle layers are stored as 1x1 Mesh — derive display params from corners
+        const normalizedPts = getPoints(layer.geometry);
+        const cp = meshToCircleParams(normalizedPts);
+        const center = toCanvas(cp.center);
+        const rx = cp.radius_x * viewRect.w;
+        const ry = cp.radius_y * viewRect.h;
+        const rotation = cp.rotation;
         ctx.beginPath();
         ctx.ellipse(center.x, center.y, rx, ry, rotation, 0, TWO_PI);
         if (!frame) ctx.fill();
@@ -1313,7 +1506,7 @@ function EditorCanvas() {
       }
 
       // Draw control points
-      if (isShapePointMode && (isSelected || hoveredPoint?.layerId === layer.id)) {
+      if (isShapePointMode && (isPrimary || hoveredPoint?.layerId === layer.id)) {
         for (let i = 0; i < points.length; i++) {
           const p = points[i];
           const isHovered = hoveredPoint?.layerId === layer.id && hoveredPoint.index === i;
@@ -1333,9 +1526,11 @@ function EditorCanvas() {
         }
       }
     }
+    ctx.restore();
   }, [
     layers,
     selectedLayerId,
+    effectiveSelectedIds,
     selectedFaceIndices,
     isInputFaceMode,
     isShapePointMode,
@@ -1352,7 +1547,7 @@ function EditorCanvas() {
       <div className="absolute top-3 left-3 z-10 pointer-events-auto flex flex-col gap-2">
         <button
           type="button"
-          disabled={!selectedLayer}
+          disabled={!singleLayerSelected}
           onClick={handleModeChipToggle}
           className={`px-2 py-1 rounded-md text-[11px] font-semibold tracking-wide border transition ${
             isInputFaceMode
@@ -1360,10 +1555,10 @@ function EditorCanvas() {
             : isInputMode
                 ? "bg-cyan-500/20 border-cyan-400/40 text-cyan-200"
               : "bg-indigo-500/20 border-indigo-400/40 text-indigo-200"
-          } ${selectedLayer ? "hover:brightness-125" : "opacity-70 cursor-not-allowed"}`}
+          } ${singleLayerSelected ? "hover:brightness-125" : "opacity-70 cursor-not-allowed"}`}
           title={
-            !selectedLayer
-              ? "Select a layer to edit mode"
+            !singleLayerSelected
+              ? "Select exactly one layer to edit mode"
               : meshSelected
                 ? "Toggle Shape/UV mode (Tab)"
                 : "Toggle Shape/Input mode (Tab)"
