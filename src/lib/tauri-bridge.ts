@@ -47,21 +47,31 @@ function newProject(name: string): ProjectFile {
 
 // In-memory mock state for browser mode
 let mockProject: ProjectFile = newProject("Untitled Project");
+let mockMainFullscreen = false;
+let mockProjectorOpen = false;
+let mockProjectorFullscreen = false;
 
 function defaultGeometry(type: string, cols?: number, rows?: number): LayerGeometry {
   switch (type) {
-    case "quad":
+    case "quad": {
+      // Quad corners as 1x1 mesh: TL, TR, BL, BR (row-major: row0=[TL,TR], row1=[BL,BR])
       return {
-        type: "Quad",
+        type: "Mesh",
         data: {
-          corners: [
-            { x: 0.1, y: 0.1 },
-            { x: 0.9, y: 0.1 },
-            { x: 0.9, y: 0.9 },
-            { x: 0.1, y: 0.9 },
+          cols: 1,
+          rows: 1,
+          points: [
+            { x: 0.1, y: 0.1 }, // TL
+            { x: 0.9, y: 0.1 }, // TR
+            { x: 0.1, y: 0.9 }, // BL
+            { x: 0.9, y: 0.9 }, // BR
           ],
+          face_groups: [],
+          masked_faces: [],
+          uv_overrides: {},
         },
       };
+    }
     case "triangle":
       return {
         type: "Triangle",
@@ -87,16 +97,25 @@ function defaultGeometry(type: string, cols?: number, rows?: number): LayerGeome
       }
       return { type: "Mesh", data: { cols: c, rows: r, points, face_groups: [], masked_faces: [], uv_overrides: {} } };
     }
-    case "circle":
+    case "circle": {
+      // Circle as 1x1 mesh: 4 corners of the bounding box (center 0.5,0.5, radius 0.3)
       return {
-        type: "Circle",
+        type: "Mesh",
         data: {
-          center: { x: 0.5, y: 0.5 },
-          radius_x: 0.3,
-          radius_y: 0.3,
-          rotation: 0,
+          cols: 1,
+          rows: 1,
+          points: [
+            { x: 0.2, y: 0.2 }, // TL
+            { x: 0.8, y: 0.2 }, // TR
+            { x: 0.2, y: 0.8 }, // BL
+            { x: 0.8, y: 0.8 }, // BR
+          ],
+          face_groups: [],
+          masked_faces: [],
+          uv_overrides: {},
         },
       };
+    }
     default:
       return defaultGeometry("quad");
   }
@@ -281,6 +300,13 @@ const mockCommands: Record<string, (args: any) => any> = {
     return true;
   },
 
+  remove_layers: (args: { layerIds: string[] }) => {
+    const idSet = new Set(args.layerIds);
+    const before = mockProject.layers.length;
+    mockProject.layers = mockProject.layers.filter((l) => !idSet.has(l.id));
+    return mockProject.layers.length !== before;
+  },
+
   duplicate_layer: (args: { layerId: string }) => {
     const orig = mockProject.layers.find((l) => l.id === args.layerId);
     if (!orig) return null;
@@ -292,6 +318,27 @@ const mockCommands: Record<string, (args: any) => any> = {
     };
     mockProject.layers.push(dup);
     return dup;
+  },
+
+  duplicate_layers: (args: { layerIds: string[] }) => {
+    const seen = new Set<string>();
+    let z = Math.max(...mockProject.layers.map((l) => l.zIndex), -1) + 1;
+    const duplicates: Layer[] = [];
+    for (const id of args.layerIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const orig = mockProject.layers.find((l) => l.id === id);
+      if (!orig) continue;
+      const dup: Layer = {
+        ...structuredClone(orig),
+        id: makeId(),
+        name: `${orig.name} (copy)`,
+        zIndex: z++,
+      };
+      mockProject.layers.push(dup);
+      duplicates.push(dup);
+    }
+    return duplicates;
   },
 
   rename_layer: (args: { layerId: string; name: string }) => {
@@ -394,6 +441,16 @@ const mockCommands: Record<string, (args: any) => any> = {
     mockProject.output = args.config;
   },
 
+  set_project_ui_state: (args: { uiState: unknown }) => {
+    mockProject.uiState = args.uiState;
+  },
+
+  set_main_window_fullscreen: (args: { fullscreen: boolean }) => {
+    mockMainFullscreen = args.fullscreen;
+  },
+  get_main_window_fullscreen: () => mockMainFullscreen,
+  sync_main_window_aspect: () => {},
+
   list_monitors: (): MonitorInfo[] => [
     { name: "Built-in Display", width: 2560, height: 1600, x: 0, y: 0, scale_factor: 2.0 },
     { name: "Projector (HDMI)", width: 1920, height: 1080, x: 2560, y: 0, scale_factor: 1.0 },
@@ -446,11 +503,20 @@ const mockCommands: Record<string, (args: any) => any> = {
   poll_all_frames: () => ({}),
 
   open_projector_window: () => {
+    mockProjectorOpen = true;
     console.log("[mock] Projector window opened");
   },
   close_projector_window: () => {
+    mockProjectorOpen = false;
+    mockProjectorFullscreen = false;
     console.log("[mock] Projector window closed");
   },
+  set_projector_fullscreen: (args: { fullscreen: boolean }) => {
+    if (mockProjectorOpen) {
+      mockProjectorFullscreen = args.fullscreen;
+    }
+  },
+  get_projector_fullscreen: () => (mockProjectorOpen ? mockProjectorFullscreen : false),
   retarget_projector: () => {},
 
   save_project: (args: { path?: string }) => {

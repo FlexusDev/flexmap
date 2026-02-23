@@ -14,10 +14,11 @@ function SourcePanel() {
     sources,
     layers,
     selectedLayerId,
+    selectedLayerIds,
     refreshSources,
     addMediaFile,
-    connectSource,
-    disconnectSource,
+    connectSourceForSelection,
+    disconnectSourceForSelection,
   } = useAppStore();
 
   const [syphonStatus, setSyphonStatus] = useState<SyphonStatus | null>(null);
@@ -44,18 +45,40 @@ function SourcePanel() {
     }
   };
 
-  const selectedLayer = layers.find((l) => l.id === selectedLayerId);
-  const connectedSourceId = selectedLayer?.source?.source_id ?? null;
+  const effectiveSelectedIds = selectedLayerIds.length > 0
+    ? selectedLayerIds
+    : selectedLayerId
+      ? [selectedLayerId]
+      : [];
+  const selectedSet = new Set(effectiveSelectedIds);
+  const selectedLayers = layers.filter((l) => selectedSet.has(l.id));
+  const selectedLayer = selectedLayerId
+    ? layers.find((l) => l.id === selectedLayerId) ?? null
+    : null;
+  const hasSelection = selectedLayers.length > 0;
 
   const handleConnect = (sourceId: string) => {
-    if (!selectedLayerId) return;
-    if (connectedSourceId === sourceId) {
+    if (!hasSelection) return;
+    const allConnected = selectedLayers.every((l) => l.source?.source_id === sourceId);
+    if (allConnected) {
       // Toggle off — disconnect
-      disconnectSource(selectedLayerId);
+      void disconnectSourceForSelection();
     } else {
-      connectSource(selectedLayerId, sourceId);
+      void connectSourceForSelection(sourceId);
     }
   };
+
+  const selectedSourceIds = new Set(
+    selectedLayers.map((l) => l.source?.source_id ?? "__none__")
+  );
+  const hasMixedSource = hasSelection && selectedSourceIds.size > 1;
+  const allNoSource = hasSelection
+    && selectedLayers.every((l) => !l.source?.source_id);
+  const singleSharedSource = hasSelection
+    && selectedSourceIds.size === 1
+    && !selectedSourceIds.has("__none__")
+    ? selectedLayers[0]?.source?.display_name ?? null
+    : null;
 
   return (
     <div className="h-full border-t border-aura-border flex flex-col">
@@ -82,17 +105,33 @@ function SourcePanel() {
       </div>
 
       {/* Current assignment info */}
-      {selectedLayer && (
+      {hasSelection && (
         <div className="px-3 py-1.5 border-b border-aura-border/50 bg-aura-surface/50">
           <div className="text-xs text-aura-text-dim">
-            <span className="text-aura-text">{selectedLayer.name}</span>
-            {" → "}
-            {selectedLayer.source ? (
-              <span className="text-aura-success">
-                {selectedLayer.source.display_name}
-              </span>
+            {selectedLayers.length === 1 && selectedLayer ? (
+              <>
+                <span className="text-aura-text">{selectedLayer.name}</span>
+                {" → "}
+                {selectedLayer.source ? (
+                  <span className="text-aura-success">
+                    {selectedLayer.source.display_name}
+                  </span>
+                ) : (
+                  <span className="text-aura-text-dim italic">no source</span>
+                )}
+              </>
             ) : (
-              <span className="text-aura-text-dim italic">no source</span>
+              <>
+                <span className="text-aura-text">{selectedLayers.length} layers</span>
+                {" → "}
+                {hasMixedSource ? (
+                  <span className="text-aura-warning italic">mixed sources</span>
+                ) : allNoSource ? (
+                  <span className="text-aura-text-dim italic">no source</span>
+                ) : (
+                  <span className="text-aura-success">{singleSharedSource}</span>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -119,46 +158,54 @@ function SourcePanel() {
           </div>
         ) : (
           sources.map((source) => {
-            const isConnected = connectedSourceId === source.id;
+            const isConnectedAll = hasSelection
+              && selectedLayers.every((l) => l.source?.source_id === source.id);
+            const isConnectedSome = hasSelection
+              && selectedLayers.some((l) => l.source?.source_id === source.id);
             // Check if ANY layer is using this source
             const usedByLayer = layers.find(
-              (l) => l.source?.source_id === source.id && l.id !== selectedLayerId
+              (l) => l.source?.source_id === source.id && !selectedSet.has(l.id)
             );
 
             return (
               <button
                 key={source.id}
                 onClick={() => handleConnect(source.id)}
-                disabled={!selectedLayerId}
+                disabled={!hasSelection}
                 className={`w-full flex items-center gap-2 px-3 py-2 border-b border-aura-border/50 transition-colors text-left ${
-                  isConnected
+                  isConnectedAll
                     ? "bg-indigo-500/15 hover:bg-indigo-500/25"
-                    : selectedLayerId
+                    : hasSelection
                     ? "hover:bg-aura-hover cursor-pointer"
                     : "opacity-50 cursor-not-allowed"
                 }`}
                 title={
-                  !selectedLayerId
+                  !hasSelection
                     ? "Select a layer first"
-                    : isConnected
-                    ? "Click to disconnect"
-                    : `Connect "${source.name}" to "${selectedLayer?.name}"`
+                    : isConnectedAll
+                    ? `Disconnect "${source.name}" from selected layers`
+                    : `Connect "${source.name}" to selected layers`
                 }
               >
                 <span
                   className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                    isConnected ? "bg-indigo-400" : "bg-aura-success"
+                    isConnectedAll ? "bg-indigo-400" : isConnectedSome ? "bg-amber-400" : "bg-aura-success"
                   }`}
                 />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs truncate">
                     {source.name}
-                    {isConnected && (
+                    {isConnectedAll && (
                       <span className="ml-1.5 text-indigo-400 text-[10px]">
                         ● connected
                       </span>
                     )}
-                    {usedByLayer && !isConnected && (
+                    {isConnectedSome && !isConnectedAll && (
+                      <span className="ml-1.5 text-amber-300 text-[10px]">
+                        ● mixed
+                      </span>
+                    )}
+                    {usedByLayer && !isConnectedAll && (
                       <span className="ml-1.5 text-aura-text-dim text-[10px]">
                         (→ {usedByLayer.name})
                       </span>
@@ -172,7 +219,7 @@ function SourcePanel() {
                     {source.fps ? ` · ${source.fps}fps` : ""}
                   </div>
                 </div>
-                {isConnected && (
+                {isConnectedAll && (
                   <span className="text-[10px] text-indigo-400 flex-shrink-0">✕</span>
                 )}
               </button>
@@ -181,9 +228,9 @@ function SourcePanel() {
         )}
       </div>
 
-      {!selectedLayerId && sources.length > 0 && (
+      {!hasSelection && sources.length > 0 && (
         <div className="px-3 py-1.5 text-[10px] text-aura-text-dim text-center border-t border-aura-border/50">
-          Select a layer to assign a source
+          Select one or more layers to assign a source
         </div>
       )}
     </div>

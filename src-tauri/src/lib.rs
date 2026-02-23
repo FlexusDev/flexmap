@@ -44,12 +44,16 @@ pub fn run() {
             // Projector window
             commands::open_projector_window,
             commands::close_projector_window,
+            commands::set_projector_fullscreen,
+            commands::get_projector_fullscreen,
             commands::retarget_projector,
             commands::list_monitors,
             // Layers
             commands::add_layer,
             commands::remove_layer,
+            commands::remove_layers,
             commands::duplicate_layer,
+            commands::duplicate_layers,
             commands::rename_layer,
             commands::set_layer_visibility,
             commands::set_layer_locked,
@@ -88,6 +92,10 @@ pub fn run() {
             commands::poll_all_frames,
             // Output
             commands::set_output_config,
+            commands::set_project_ui_state,
+            commands::set_main_window_fullscreen,
+            commands::get_main_window_fullscreen,
+            commands::sync_main_window_aspect,
             // Undo / Redo
             commands::undo,
             commands::redo,
@@ -112,6 +120,11 @@ pub fn run() {
         ])
         .setup(|app| {
             log::info!("AuraMap setup complete");
+
+            // Main editor window is always resizable; aspect lock applies only to projector + preview.
+            if let Some(main_window) = app.get_webview_window("main") {
+                let _ = main_window.set_resizable(true);
+            }
 
             // Initialize GPU context on a background thread
             let app_handle = app.handle().clone();

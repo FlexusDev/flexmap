@@ -273,6 +273,7 @@ function StatusBar() {
   const {
     layers,
     selectedLayerId,
+    selectedLayerIds,
     sources,
     monitors,
     projectorWindowOpen,
@@ -312,8 +313,15 @@ function StatusBar() {
   const selectedLayer = selectedLayerId
     ? layers.find((l) => l.id === selectedLayerId) ?? null
     : null;
+  const selectedCount = selectedLayerIds.length > 0
+    ? selectedLayerIds.length
+    : selectedLayer
+      ? 1
+      : 0;
   const isUvLike = editorSelectionMode === "uv" && !!selectedLayer;
-  const modeLabel = !isUvLike
+  const modeLabel = selectedCount !== 1
+    ? "SHAPE"
+    : !isUvLike
     ? "SHAPE"
     : selectedLayer?.geometry.type === "Mesh"
       ? "UV"
@@ -324,6 +332,10 @@ function StatusBar() {
       <span>{layers.length} layer{layers.length !== 1 ? "s" : ""}</span>
       <span>{sources.length} source{sources.length !== 1 ? "s" : ""}</span>
       <span>{monitors.length} monitor{monitors.length !== 1 ? "s" : ""}</span>
+      <span>
+        {selectedCount} selected
+        {selectedLayer && selectedCount > 0 ? ` · primary: ${selectedLayer.name}` : ""}
+      </span>
 
       {output && (
         <span>

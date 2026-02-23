@@ -6,8 +6,10 @@ import type {
   FrameSnapshot,
   BlendMode,
   InputTransform,
+  OutputConfig,
 } from "../../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
+import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
 
 /** Fast base64→Uint8ClampedArray decode using fetch + data URI (avoids byte-by-byte loop) */
 async function decodeBase64Fast(b64: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
@@ -39,6 +41,13 @@ function ProjectorView() {
     enabled: false,
     pattern: "grid",
   });
+  const [output, setOutput] = useState<OutputConfig>({
+    width: 1920,
+    height: 1080,
+    framerate: 60,
+    monitor_preference: null,
+  });
+  const [uiState, setUiState] = useState<unknown>(null);
   // Cache of decoded ImageData per layer
   const frameCache = useRef<Map<string, ImageData>>(new Map());
   // Per-layer offscreen canvases (prevents cross-contamination between layers)
@@ -92,7 +101,12 @@ function ProjectorView() {
         try {
           // Fetch project state and frames in parallel
           const [project, frames] = await Promise.all([
-            tauriInvoke<{ layers: Layer[]; calibration: CalibrationConfig }>("get_project"),
+            tauriInvoke<{
+              layers: Layer[];
+              calibration: CalibrationConfig;
+              output: OutputConfig;
+              uiState: unknown;
+            }>("get_project"),
             tauriInvoke<Record<string, FrameSnapshot>>("poll_all_frames"),
           ]);
           const tPoll = performance.now();
@@ -102,6 +116,8 @@ function ProjectorView() {
           if (project) {
             setLayers(project.layers);
             setCalibration(project.calibration);
+            setOutput(project.output);
+            setUiState(project.uiState ?? null);
             if (!sceneReady) setSceneReady(true);
           }
 
@@ -174,6 +190,15 @@ function ProjectorView() {
     canvas.style.height = `${h}px`;
     ctx.scale(dpr, dpr);
 
+    const aspectState = resolveAspectRatioUiState(uiState, output);
+    const viewRect = fitAspectViewport(
+      w,
+      h,
+      output.width,
+      output.height,
+      aspectState.lockEnabled
+    );
+
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, w, h);
 
@@ -188,12 +213,20 @@ function ProjectorView() {
       ctx.globalAlpha = 1;
       // Request another paint for the animation
       requestAnimationFrame(() => setLayers((l) => [...l]));
-    } else if (calibration.enabled) {
-      drawCalibration(ctx, w, h, calibration.pattern);
     } else {
-      drawLayers(ctx, w, h, layers, frameCache.current, tmpCanvasMap.current);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(viewRect.x, viewRect.y, viewRect.w, viewRect.h);
+      ctx.clip();
+      ctx.translate(viewRect.x, viewRect.y);
+      if (calibration.enabled) {
+        drawCalibration(ctx, viewRect.w, viewRect.h, calibration.pattern);
+      } else {
+        drawLayers(ctx, viewRect.w, viewRect.h, layers, frameCache.current, tmpCanvasMap.current);
+      }
+      ctx.restore();
     }
-  }, [layers, calibration, sceneReady, frameTick]);
+  }, [layers, calibration, sceneReady, frameTick, output, uiState]);
 
   return (
     <canvas

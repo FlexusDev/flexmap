@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "../../store/useAppStore";
 
 function LayerPanel() {
   const {
     layers,
     selectedLayerId,
-    selectLayer,
+    selectedLayerIds,
+    setLayerSelection,
+    toggleLayerSelection,
     addLayer,
     removeLayer,
     duplicateLayer,
+    removeSelectedLayers,
+    duplicateSelectedLayers,
     setLayerVisibility,
     setLayerLocked,
     renameLayer,
@@ -17,11 +21,12 @@ function LayerPanel() {
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [rangeAnchorId, setRangeAnchorId] = useState<string | null>(null);
 
   const handleAddLayer = (type: string) => {
     const count = layers.filter((l) => l.type === type).length + 1;
     const name = `${type.charAt(0).toUpperCase() + type.slice(1)} ${count}`;
-    addLayer(name, type);
+    void addLayer(name, type);
     setShowAddMenu(false);
   };
 
@@ -32,13 +37,117 @@ function LayerPanel() {
 
   const handleRenameSubmit = (id: string) => {
     if (editName.trim()) {
-      renameLayer(id, editName.trim());
+      void renameLayer(id, editName.trim());
     }
     setEditingId(null);
   };
 
   // Sort by z-index descending (top layer first)
-  const sortedLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
+  const sortedLayers = useMemo(
+    () => [...layers].sort((a, b) => b.zIndex - a.zIndex),
+    [layers]
+  );
+
+  useEffect(() => {
+    if (!rangeAnchorId) return;
+    if (!sortedLayers.some((l) => l.id === rangeAnchorId)) {
+      setRangeAnchorId(null);
+    }
+  }, [rangeAnchorId, sortedLayers]);
+
+  const effectiveSelectedIds = selectedLayerIds.length > 0
+    ? selectedLayerIds
+    : selectedLayerId
+      ? [selectedLayerId]
+      : [];
+  const selectedSet = useMemo(() => new Set(effectiveSelectedIds), [effectiveSelectedIds]);
+
+  const handleLayerClick = (
+    e: React.MouseEvent<HTMLDivElement>,
+    layerId: string
+  ) => {
+    const cmdOrCtrl = e.metaKey || e.ctrlKey;
+    if (e.shiftKey) {
+      const anchor = rangeAnchorId ?? selectedLayerId ?? layerId;
+      const start = sortedLayers.findIndex((l) => l.id === anchor);
+      const end = sortedLayers.findIndex((l) => l.id === layerId);
+      if (start >= 0 && end >= 0) {
+        const [lo, hi] = start <= end ? [start, end] : [end, start];
+        const rangeIds = sortedLayers.slice(lo, hi + 1).map((l) => l.id);
+        setLayerSelection(rangeIds, layerId);
+      } else {
+        setLayerSelection([layerId], layerId);
+      }
+      setRangeAnchorId(layerId);
+      return;
+    }
+
+    if (cmdOrCtrl) {
+      toggleLayerSelection(layerId);
+      setRangeAnchorId(layerId);
+      return;
+    }
+
+    setLayerSelection([layerId], layerId);
+    setRangeAnchorId(layerId);
+  };
+
+  const resolveActionTargets = (rowLayerId: string): string[] => {
+    if (selectedSet.has(rowLayerId) && effectiveSelectedIds.length > 1) {
+      return effectiveSelectedIds;
+    }
+    return [rowLayerId];
+  };
+
+  const handleVisibilityToggle = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    rowLayerId: string,
+    nextVisible: boolean
+  ) => {
+    e.stopPropagation();
+    const targetIds = resolveActionTargets(rowLayerId);
+    for (const id of targetIds) {
+      void setLayerVisibility(id, nextVisible);
+    }
+  };
+
+  const handleLockToggle = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    rowLayerId: string,
+    nextLocked: boolean
+  ) => {
+    e.stopPropagation();
+    const targetIds = resolveActionTargets(rowLayerId);
+    for (const id of targetIds) {
+      void setLayerLocked(id, nextLocked);
+    }
+  };
+
+  const handleDuplicate = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    rowLayerId: string
+  ) => {
+    e.stopPropagation();
+    const targetIds = resolveActionTargets(rowLayerId);
+    if (targetIds.length > 1) {
+      void duplicateSelectedLayers();
+    } else {
+      void duplicateLayer(rowLayerId);
+    }
+  };
+
+  const handleDelete = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    rowLayerId: string
+  ) => {
+    e.stopPropagation();
+    const targetIds = resolveActionTargets(rowLayerId);
+    if (targetIds.length > 1) {
+      void removeSelectedLayers();
+    } else {
+      void removeLayer(rowLayerId);
+    }
+  };
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -80,19 +189,18 @@ function LayerPanel() {
           sortedLayers.map((layer) => (
             <div
               key={layer.id}
-              onClick={() => selectLayer(layer.id)}
+              onClick={(e) => handleLayerClick(e, layer.id)}
               className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors border-b border-aura-border/50 ${
-                selectedLayerId === layer.id
-                  ? "bg-aura-accent/20"
+                selectedSet.has(layer.id)
+                  ? selectedLayerId === layer.id
+                    ? "bg-aura-accent/30 ring-1 ring-aura-accent/40"
+                    : "bg-aura-accent/15"
                   : "hover:bg-aura-hover"
               }`}
             >
               {/* Visibility toggle */}
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setLayerVisibility(layer.id, !layer.visible);
-                }}
+                onClick={(e) => handleVisibilityToggle(e, layer.id, !layer.visible)}
                 className={`text-xs w-5 h-5 flex items-center justify-center rounded ${
                   layer.visible ? "text-aura-text" : "text-aura-text-dim"
                 }`}
@@ -140,10 +248,7 @@ function LayerPanel() {
 
               {/* Lock toggle */}
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setLayerLocked(layer.id, !layer.locked);
-                }}
+                onClick={(e) => handleLockToggle(e, layer.id, !layer.locked)}
                 className={`text-xs w-5 h-5 flex items-center justify-center rounded ${
                   layer.locked ? "text-aura-warning" : "text-aura-text-dim"
                 }`}
@@ -155,20 +260,14 @@ function LayerPanel() {
               {/* Actions */}
               <div className="flex gap-0.5">
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    duplicateLayer(layer.id);
-                  }}
+                  onClick={(e) => handleDuplicate(e, layer.id)}
                   className="text-xs text-aura-text-dim hover:text-aura-text px-1"
                   title="Duplicate"
                 >
                   ⧉
                 </button>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeLayer(layer.id);
-                  }}
+                  onClick={(e) => handleDelete(e, layer.id)}
                   className="text-xs text-aura-text-dim hover:text-aura-error px-1"
                   title="Delete"
                 >

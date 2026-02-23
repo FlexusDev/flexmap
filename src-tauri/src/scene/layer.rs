@@ -138,7 +138,7 @@ impl<'de> Deserialize<'de> for LayerGeometry {
         D: serde::Deserializer<'de>,
     {
         let de = LayerGeometryDe::deserialize(deserializer)?;
-        Ok(match de {
+        let geom = match de {
             LayerGeometryDe::Quad { corners } => LayerGeometry::Quad { corners },
             LayerGeometryDe::Triangle { vertices } => LayerGeometry::Triangle { vertices },
             LayerGeometryDe::Mesh {
@@ -195,7 +195,8 @@ impl<'de> Deserialize<'de> for LayerGeometry {
                     rotation,
                 }
             }
-        })
+        };
+        Ok(geom.normalize())
     }
 }
 
@@ -216,16 +217,14 @@ impl PartialEq for FaceGroup {
 }
 
 impl LayerGeometry {
-    /// Create a default quad covering the full canvas
+    /// Create a default quad covering the full canvas (returns a 1x1 Mesh)
     pub fn default_quad() -> Self {
-        LayerGeometry::Quad {
-            corners: [
-                Point2D::new(0.1, 0.1),
-                Point2D::new(0.9, 0.1),
-                Point2D::new(0.9, 0.9),
-                Point2D::new(0.1, 0.9),
-            ],
-        }
+        Self::quad_to_mesh([
+            Point2D::new(0.1, 0.1),
+            Point2D::new(0.9, 0.1),
+            Point2D::new(0.9, 0.9),
+            Point2D::new(0.1, 0.9),
+        ])
     }
 
     /// Create a default triangle
@@ -259,14 +258,9 @@ impl LayerGeometry {
         }
     }
 
-    /// Create a default circle
+    /// Create a default circle (returns a 1x1 Mesh of the oriented bbox)
     pub fn default_circle() -> Self {
-        LayerGeometry::Circle {
-            center: Point2D::new(0.5, 0.5),
-            radius_x: 0.3,
-            radius_y: 0.3,
-            rotation: 0.0,
-        }
+        Self::circle_to_mesh(Point2D::new(0.5, 0.5), 0.3, 0.3, 0.0)
     }
 
     /// Get all mutable control points for this geometry
@@ -276,6 +270,59 @@ impl LayerGeometry {
             LayerGeometry::Triangle { vertices } => vertices.to_vec(),
             LayerGeometry::Mesh { points, .. } => points.clone(),
             LayerGeometry::Circle { center, .. } => vec![*center],
+        }
+    }
+
+    /// Convert a Quad geometry to a 1x1 Mesh.
+    /// Grid layout: row0=[TL,TR], row1=[BL,BR] (row-major, [TL,TR,BL,BR])
+    fn quad_to_mesh(corners: [Point2D; 4]) -> Self {
+        // corners order: TL=0, TR=1, BR=2, BL=3
+        // Mesh points row-major: [TL, TR, BL, BR]
+        LayerGeometry::Mesh {
+            cols: 1,
+            rows: 1,
+            points: vec![corners[0], corners[1], corners[3], corners[2]],
+            face_groups: Vec::new(),
+            masked_faces: Vec::new(),
+            uv_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Convert a Circle geometry to a 1x1 Mesh (4 oriented bbox corners).
+    fn circle_to_mesh(center: Point2D, radius_x: f64, radius_y: f64, rotation: f64) -> Self {
+        let cx = center.x;
+        let cy = center.y;
+        let rx = radius_x;
+        let ry = radius_y;
+        let c = rotation.cos();
+        let s = rotation.sin();
+        // TL, TR, BR, BL corners of the oriented bounding box
+        let corners = [
+            Point2D::new(cx + (-rx) * c - (-ry) * s, cy + (-rx) * s + (-ry) * c),
+            Point2D::new(cx + rx * c - (-ry) * s,     cy + rx * s + (-ry) * c),
+            Point2D::new(cx + rx * c - ry * s,         cy + rx * s + ry * c),
+            Point2D::new(cx + (-rx) * c - ry * s,     cy + (-rx) * s + ry * c),
+        ];
+        // Mesh points row-major: [TL, TR, BL, BR]
+        LayerGeometry::Mesh {
+            cols: 1,
+            rows: 1,
+            points: vec![corners[0], corners[1], corners[3], corners[2]],
+            face_groups: Vec::new(),
+            masked_faces: Vec::new(),
+            uv_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Normalize geometry: convert Quad/Circle to 1x1 Mesh.
+    /// Triangle and Mesh pass through unchanged.
+    pub fn normalize(self) -> Self {
+        match self {
+            LayerGeometry::Quad { corners } => Self::quad_to_mesh(corners),
+            LayerGeometry::Circle { center, radius_x, radius_y, rotation } => {
+                Self::circle_to_mesh(center, radius_x, radius_y, rotation)
+            }
+            other => other,
         }
     }
 }

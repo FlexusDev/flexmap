@@ -4,13 +4,13 @@ pub const LAYER_SHADER: &str = r#"
 // Vertex input
 struct VertexInput {
     @location(0) position: vec2<f32>,
-    @location(1) tex_coord: vec2<f32>,
+    @location(1) tex_coord: vec3<f32>,
 };
 
 // Vertex output / Fragment input
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) tex_coord: vec2<f32>,
+    @location(0) tex_coord: vec3<f32>,
 };
 
 // Per-layer uniforms
@@ -57,7 +57,7 @@ fn transform_uv(base_uv: vec2<f32>) -> vec2<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let base_uv = in.tex_coord;
+    let base_uv = in.tex_coord.xy / in.tex_coord.z;
     let sample_uv = transform_uv(base_uv);
     var color = textureSample(t_source, s_source, sample_uv);
 
@@ -297,12 +297,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 pub const FACE_CALIBRATION_SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
-    @location(1) tex_coord: vec2<f32>,
+    @location(1) tex_coord: vec3<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
+    @location(0) uv: vec3<f32>,
 };
 
 struct CalibrationUniforms {
@@ -328,7 +328,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let uv = in.uv;
+    let uv = in.uv.xy / in.uv.z;
     let brightness = uniforms.brightness;
 
     switch uniforms.pattern {

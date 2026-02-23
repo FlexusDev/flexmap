@@ -133,12 +133,14 @@ function KeyboardOverlay() {
   const {
     layers,
     selectedLayerId,
+    selectedLayerIds,
     editorSelectionMode,
     setEditorSelectionMode,
     toggleEditorSelectionMode,
   } = useAppStore((s) => ({
     layers: s.layers,
     selectedLayerId: s.selectedLayerId,
+    selectedLayerIds: s.selectedLayerIds,
     editorSelectionMode: s.editorSelectionMode,
     setEditorSelectionMode: s.setEditorSelectionMode,
     toggleEditorSelectionMode: s.toggleEditorSelectionMode,
@@ -147,11 +149,16 @@ function KeyboardOverlay() {
   const selectedLayer = selectedLayerId
     ? layers.find((l) => l.id === selectedLayerId) ?? null
     : null;
-  const modeIsUv = editorSelectionMode === "uv" && !!selectedLayer;
+  const selectedCount = selectedLayerIds.length > 0
+    ? selectedLayerIds.length
+    : selectedLayer
+      ? 1
+      : 0;
+  const modeIsUv = selectedCount === 1 && editorSelectionMode === "uv" && !!selectedLayer;
   const uvLabel = selectedLayer?.geometry.type === "Mesh" ? "UV" : "Input";
 
   const setModeFromPopup = (mode: "shape" | "uv") => {
-    if (!selectedLayer) {
+    if (!selectedLayer || selectedCount !== 1) {
       setEditorSelectionMode("shape");
       return;
     }
@@ -159,7 +166,7 @@ function KeyboardOverlay() {
   };
 
   const toggleModeFromPopup = () => {
-    if (!selectedLayer) {
+    if (!selectedLayer || selectedCount !== 1) {
       setEditorSelectionMode("shape");
       return;
     }
