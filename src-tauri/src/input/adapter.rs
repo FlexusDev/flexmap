@@ -164,7 +164,9 @@ impl InputManager {
 
         #[cfg(feature = "input-syphon")]
         {
-            log::info!("Syphon input backend available");
+            let syphon = super::syphon::SyphonBackend::new();
+            backends.push(Box::new(syphon));
+            log::info!("Syphon input backend registered (macOS Metal)");
         }
 
         #[cfg(feature = "input-spout")]

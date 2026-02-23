@@ -67,5 +67,5 @@ Every mutation command in `commands.rs` must:
 - **A: Core Shell** — Done (Tauri scaffolding, dual windows, persistence, autosave)
 - **B: 2D Editor** — Done (layer CRUD, geometry editing, drag/nudge, undo/redo, keyboard shortcuts)
 - **C: GPU Renderer** — Done (RenderEngine, pipelines, shaders, texture manager, GPU projector render loop with direct wgpu surface rendering)
-- **D: Input Routing** — In Progress (InputBackend trait, adapter, test pattern generator working; media file backend added; Spout backend implemented with D3D11 shared texture capture; Syphon/NDI remain stubs)
+- **D: Input Routing** — Done (InputBackend trait, adapter, test pattern generator, media file backend, Spout backend with D3D11 shared texture capture, Syphon backend with Metal client via ObjC bridge; NDI stub only)
 - **E: Persistence** — Done (save/load .auramap JSON, autosave, crash recovery)
