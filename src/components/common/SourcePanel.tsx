@@ -35,15 +35,19 @@ function SourcePanel() {
     try {
       const result = await tauriInvoke<string>("install_syphon_framework");
       setInstallResult(result);
-      // Re-check status after install
+      // Re-check status after install (framework loads at runtime via dlopen)
       const status = await tauriInvoke<SyphonStatus>("check_syphon_status");
       setSyphonStatus(status);
+      // If framework is now available, auto-refresh sources
+      if (status.bridge_available) {
+        refreshSources();
+      }
     } catch (e) {
       setInstallResult(`Error: ${e}`);
     } finally {
       setInstalling(false);
     }
-  }, []);
+  }, [refreshSources]);
 
   const handleAddMedia = async () => {
     let path: string | null = null;

@@ -89,6 +89,13 @@ void syphon_destroy_client(SyphonClientHandle client);
  */
 int32_t syphon_is_available(void);
 
+/**
+ * Try to (re-)load Syphon.framework at runtime.
+ * Call this after installing the framework to pick it up without app restart.
+ * @return 1 if loaded successfully, 0 if still not available.
+ */
+int32_t syphon_try_load(void);
+
 #ifdef __cplusplus
 }
 #endif

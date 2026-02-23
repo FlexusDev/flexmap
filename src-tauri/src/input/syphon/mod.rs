@@ -1,20 +1,17 @@
 //! Syphon input backend for macOS.
 //!
-//! Uses an Objective-C bridge (bridge.m) compiled by build.rs to call the
-//! Syphon framework's SyphonServerDirectory and SyphonMetalClient APIs.
+//! Uses an Objective-C bridge (bridge.m) that dynamically loads Syphon.framework
+//! at runtime via dlopen(). No framework is needed at build time.
 //!
-//! If Syphon.framework is not installed, the backend compiles but reports
-//! no available sources at runtime. Users can trigger installation from
-//! the UI via the `install_syphon_framework` IPC command.
-//!
-//! Multi-source: multiple Syphon servers can be active simultaneously.
+//! If Syphon.framework is not installed, the backend reports no sources.
+//! Users can install the framework from the UI, then call `try_reload()`
+//! to pick it up without restarting the app.
 
 use super::adapter::*;
 use std::collections::{HashMap, HashSet};
 
 // ─── FFI declarations (match bridge.h) ──────────────────────────────────────
 
-#[cfg(has_syphon_bridge)]
 mod ffi {
     use std::os::raw::c_char;
 
@@ -31,6 +28,7 @@ mod ffi {
 
     extern "C" {
         pub fn syphon_is_available() -> i32;
+        pub fn syphon_try_load() -> i32;
         pub fn syphon_list_servers(out: *mut SyphonServerInfo, max: i32) -> i32;
         pub fn syphon_create_client(uuid: *const c_char) -> SyphonClientHandle;
         pub fn syphon_has_new_frame(client: SyphonClientHandle) -> i32;
@@ -51,7 +49,6 @@ mod ffi {
 
 // ─── Helper: C string → Rust String ─────────────────────────────────────────
 
-#[cfg(has_syphon_bridge)]
 fn c_chars_to_string(buf: &[std::os::raw::c_char]) -> String {
     let bytes: Vec<u8> = buf
         .iter()
@@ -70,8 +67,12 @@ struct ServerSnapshot {
     uuid: String,
 }
 
-#[cfg(has_syphon_bridge)]
 fn discover_servers() -> Vec<ServerSnapshot> {
+    if unsafe { ffi::syphon_is_available() } == 0 {
+        log::debug!("Syphon: framework not loaded — cannot discover servers");
+        return Vec::new();
+    }
+
     log::info!("Syphon: scanning for servers via SyphonServerDirectory...");
     const MAX: i32 = 32;
     let mut buf = Vec::with_capacity(MAX as usize);
@@ -109,16 +110,9 @@ fn discover_servers() -> Vec<ServerSnapshot> {
     servers
 }
 
-#[cfg(not(has_syphon_bridge))]
-fn discover_servers() -> Vec<ServerSnapshot> {
-    log::debug!("Syphon: bridge not compiled — cannot discover servers");
-    Vec::new()
-}
-
 // ─── Per-source client state ────────────────────────────────────────────────
 
 struct ActiveClient {
-    #[cfg(has_syphon_bridge)]
     handle: ffi::SyphonClientHandle,
     #[allow(dead_code)]
     uuid: String,
@@ -135,7 +129,6 @@ struct ActiveClient {
 impl Drop for ActiveClient {
     fn drop(&mut self) {
         log::info!("Syphon: destroying client for uuid={}", self.uuid);
-        #[cfg(has_syphon_bridge)]
         unsafe {
             if !self.handle.is_null() {
                 ffi::syphon_destroy_client(self.handle);
@@ -167,24 +160,30 @@ struct CachedFrame {
 unsafe impl Send for SyphonBackend {}
 unsafe impl Sync for SyphonBackend {}
 
-/// Check whether the Syphon bridge was compiled (framework found at build time).
+/// Check whether the Syphon framework is loaded at runtime.
 pub fn is_bridge_available() -> bool {
-    #[cfg(has_syphon_bridge)]
-    {
-        unsafe { ffi::syphon_is_available() != 0 }
-    }
-    #[cfg(not(has_syphon_bridge))]
-    {
-        false
-    }
+    unsafe { ffi::syphon_is_available() != 0 }
 }
 
-/// Return a list of framework search paths that build.rs checks.
+/// Try to (re-)load Syphon.framework at runtime.
+/// Call this after the user installs the framework.
+/// Returns true if Syphon is now available.
+pub fn try_reload() -> bool {
+    let result = unsafe { ffi::syphon_try_load() } != 0;
+    if result {
+        log::info!("Syphon: framework loaded successfully via try_reload()");
+    } else {
+        log::warn!("Syphon: try_reload() — framework still not available");
+    }
+    result
+}
+
+/// Return a list of framework search paths (for diagnostics).
 pub fn framework_search_paths() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
     vec![
-        "/Library/Frameworks/Syphon.framework".to_string(),
         format!("{}/Library/Frameworks/Syphon.framework", home),
+        "/Library/Frameworks/Syphon.framework".to_string(),
         "/Applications/Synesthesia.app/Contents/Frameworks/Syphon.framework".to_string(),
         "/Applications/Resolume Arena.app/Contents/Frameworks/Syphon.framework".to_string(),
         "/Applications/VDMX5.app/Contents/Frameworks/Syphon.framework".to_string(),
@@ -194,26 +193,14 @@ pub fn framework_search_paths() -> Vec<String> {
 
 impl SyphonBackend {
     pub fn new() -> Self {
-        let bridge_available;
-        #[cfg(has_syphon_bridge)]
-        {
-            bridge_available = unsafe { ffi::syphon_is_available() } != 0;
-        }
-        #[cfg(not(has_syphon_bridge))]
-        {
-            bridge_available = false;
-        }
+        let bridge_available = is_bridge_available();
 
         if bridge_available {
-            log::info!("Syphon: ObjC bridge loaded — Metal client ready");
+            log::info!("Syphon: framework loaded — Metal client ready");
         } else {
             log::warn!(
-                "Syphon: bridge NOT available. Syphon.framework was not found at build time."
+                "Syphon: framework NOT loaded. Install Syphon.framework and click 'Install Syphon' in the app."
             );
-            log::warn!(
-                "Syphon: install from https://github.com/Syphon/Syphon-Framework/releases"
-            );
-            log::warn!("Syphon: then rebuild with `cargo tauri dev`");
 
             // Log which paths we checked
             for path in framework_search_paths() {
@@ -240,9 +227,14 @@ impl SyphonBackend {
     fn refresh_sources(&mut self) {
         self.last_discovery = std::time::Instant::now();
 
+        // If bridge wasn't available before, try again (maybe user just installed it)
         if !self.bridge_available {
-            log::debug!("Syphon: skipping refresh — bridge not available");
-            return;
+            self.bridge_available = is_bridge_available();
+            if !self.bridge_available {
+                log::debug!("Syphon: skipping refresh — framework not loaded");
+                return;
+            }
+            log::info!("Syphon: framework became available!");
         }
 
         let servers = discover_servers();
@@ -282,7 +274,6 @@ impl SyphonBackend {
         }
     }
 
-    #[cfg(has_syphon_bridge)]
     fn ensure_client(&mut self, source_id: &str) -> bool {
         if self.clients.contains_key(source_id) {
             return true;
@@ -323,11 +314,6 @@ impl SyphonBackend {
         true
     }
 
-    #[cfg(not(has_syphon_bridge))]
-    fn ensure_client(&mut self, _source_id: &str) -> bool {
-        false
-    }
-
     fn return_cached_frame(&self, source_id: &str) -> Option<FramePacket> {
         let cached = self.frame_cache.get(source_id)?;
         let seq = self.sequence_counters.get(source_id).copied().unwrap_or(0);
@@ -355,10 +341,14 @@ impl InputBackend for SyphonBackend {
         log::info!("Syphon: connect requested for {}", source_id);
 
         if !self.bridge_available {
-            log::error!("Syphon: cannot connect — bridge not available");
+            // One more try — maybe it was just installed
+            self.bridge_available = try_reload();
+        }
+
+        if !self.bridge_available {
+            log::error!("Syphon: cannot connect — framework not loaded");
             return Err(InputError::ConnectionFailed(
-                "Syphon.framework not installed. Use the Install Syphon button in Sources panel, \
-                 then restart the app."
+                "Syphon.framework not installed. Use the Install Syphon button in Sources panel."
                     .into(),
             ));
         }
@@ -423,115 +413,107 @@ impl InputBackend for SyphonBackend {
             self.refresh_sources();
         }
 
-        #[cfg(has_syphon_bridge)]
-        {
-            if !self.ensure_client(source_id) {
-                return self.return_cached_frame(source_id);
+        if !self.ensure_client(source_id) {
+            return self.return_cached_frame(source_id);
+        }
+
+        let client = match self.clients.get_mut(source_id) {
+            Some(c) => c,
+            None => return self.return_cached_frame(source_id),
+        };
+
+        let has_new = unsafe { ffi::syphon_has_new_frame(client.handle) } != 0;
+        if !has_new {
+            return self.return_cached_frame(source_id);
+        }
+
+        let mut width: u32 = 0;
+        let mut height: u32 = 0;
+        let mut is_bgra: i32 = 1;
+        unsafe {
+            ffi::syphon_get_frame_info(
+                client.handle,
+                &mut width,
+                &mut height,
+                &mut is_bgra,
+            );
+        }
+
+        if width == 0 || height == 0 {
+            log::debug!("Syphon: frame has zero dimensions for {}", source_id);
+            return self.return_cached_frame(source_id);
+        }
+
+        client.width = width;
+        client.height = height;
+        client.is_bgra = is_bgra != 0;
+
+        let total_bytes = (width * height * 4) as usize;
+        client.pixel_buf.resize(total_bytes, 0);
+
+        let result = unsafe {
+            ffi::syphon_copy_frame_pixels(
+                client.handle,
+                client.pixel_buf.as_mut_ptr(),
+                total_bytes as u32,
+            )
+        };
+
+        if result != 1 {
+            log::debug!(
+                "Syphon: syphon_copy_frame_pixels returned {} for {}",
+                result,
+                source_id
+            );
+            return self.return_cached_frame(source_id);
+        }
+
+        // BGRA → RGBA swizzle if needed
+        let mut rgba_data = client.pixel_buf.clone();
+        if client.is_bgra {
+            for chunk in rgba_data.chunks_exact_mut(4) {
+                chunk.swap(0, 2);
             }
+        }
 
-            let client = match self.clients.get_mut(source_id) {
-                Some(c) => c,
-                None => return self.return_cached_frame(source_id),
-            };
+        let counter = self
+            .sequence_counters
+            .entry(source_id.to_string())
+            .or_insert(0);
+        *counter += 1;
+        let seq = *counter;
 
-            let has_new = unsafe { ffi::syphon_has_new_frame(client.handle) } != 0;
-            if !has_new {
-                return self.return_cached_frame(source_id);
-            }
-
-            let mut width: u32 = 0;
-            let mut height: u32 = 0;
-            let mut is_bgra: i32 = 1;
-            unsafe {
-                ffi::syphon_get_frame_info(
-                    client.handle,
-                    &mut width,
-                    &mut height,
-                    &mut is_bgra,
-                );
-            }
-
-            if width == 0 || height == 0 {
-                log::debug!("Syphon: frame has zero dimensions for {}", source_id);
-                return self.return_cached_frame(source_id);
-            }
-
-            client.width = width;
-            client.height = height;
-            client.is_bgra = is_bgra != 0;
-
-            let total_bytes = (width * height * 4) as usize;
-            client.pixel_buf.resize(total_bytes, 0);
-
-            let result = unsafe {
-                ffi::syphon_copy_frame_pixels(
-                    client.handle,
-                    client.pixel_buf.as_mut_ptr(),
-                    total_bytes as u32,
-                )
-            };
-
-            if result != 1 {
-                log::debug!(
-                    "Syphon: syphon_copy_frame_pixels returned {} for {}",
-                    result,
-                    source_id
-                );
-                return self.return_cached_frame(source_id);
-            }
-
-            // BGRA → RGBA swizzle if needed
-            let mut rgba_data = client.pixel_buf.clone();
-            if client.is_bgra {
-                for chunk in rgba_data.chunks_exact_mut(4) {
-                    chunk.swap(0, 2);
-                }
-            }
-
-            let counter = self
-                .sequence_counters
-                .entry(source_id.to_string())
-                .or_insert(0);
-            *counter += 1;
-            let seq = *counter;
-
-            // Log first frame details
-            if seq == 1 {
-                log::info!(
-                    "Syphon: first frame from {} — {}x{} bgra={} ({} bytes)",
-                    source_id,
-                    width,
-                    height,
-                    client.is_bgra,
-                    total_bytes
-                );
-            }
-
-            let packet = FramePacket {
+        // Log first frame details
+        if seq == 1 {
+            log::info!(
+                "Syphon: first frame from {} — {}x{} bgra={} ({} bytes)",
+                source_id,
                 width,
                 height,
-                pixel_format: PixelFormat::Rgba8,
-                data: rgba_data.clone(),
-                timestamp: None,
-                sequence: Some(seq),
-            };
-
-            self.frame_cache.insert(
-                source_id.to_string(),
-                CachedFrame {
-                    width,
-                    height,
-                    rgba_data,
-                },
+                client.is_bgra,
+                total_bytes
             );
-
-            return Some(packet);
         }
 
-        #[cfg(not(has_syphon_bridge))]
-        {
-            None
-        }
+        let packet = FramePacket {
+            width,
+            height,
+            pixel_format: PixelFormat::Rgba8,
+            data: rgba_data.clone(),
+            timestamp: None,
+            sequence: Some(seq),
+        };
+
+        self.frame_cache.insert(
+            source_id.to_string(),
+            CachedFrame {
+                width,
+                height,
+                rgba_data,
+            },
+        );
+
+        Some(packet)
     }
 
     fn state(&self) -> SourceState {
