@@ -125,6 +125,10 @@ pub trait InputBackend: Send + Sync {
             .unwrap_or(false)
     }
 
+    /// Re-discover available sources. Default: no-op (for static backends).
+    /// Backends with dynamic discovery (Syphon, Spout, NDI) should override.
+    fn refresh(&mut self) {}
+
     /// Register a source from an external path (e.g. media file).
     /// Default: not supported. Override in backends that accept external files.
     fn register_source(&mut self, _path: &std::path::Path) -> Result<SourceInfo, InputError> {
@@ -191,6 +195,17 @@ impl InputManager {
         self.backends
             .iter()
             .map(|b| b.protocol_name().to_string())
+            .collect()
+    }
+
+    /// Trigger re-discovery on all backends, then return updated source list.
+    pub fn refresh_all_sources(&mut self) -> Vec<SourceInfo> {
+        for backend in &mut self.backends {
+            backend.refresh();
+        }
+        self.backends
+            .iter()
+            .flat_map(|b| b.list_sources())
             .collect()
     }
 

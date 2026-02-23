@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useAppStore } from "../../store/useAppStore";
 import { isTauri, tauriInvoke } from "../../lib/tauri-bridge";
 
@@ -21,33 +21,11 @@ function SourcePanel() {
   } = useAppStore();
 
   const [syphonStatus, setSyphonStatus] = useState<SyphonStatus | null>(null);
-  const [installing, setInstalling] = useState(false);
-  const [installResult, setInstallResult] = useState<string | null>(null);
 
   // Check Syphon status on mount
   useEffect(() => {
     tauriInvoke<SyphonStatus>("check_syphon_status").then(setSyphonStatus);
   }, []);
-
-  const handleInstallSyphon = useCallback(async () => {
-    setInstalling(true);
-    setInstallResult(null);
-    try {
-      const result = await tauriInvoke<string>("install_syphon_framework");
-      setInstallResult(result);
-      // Re-check status after install (framework loads at runtime via dlopen)
-      const status = await tauriInvoke<SyphonStatus>("check_syphon_status");
-      setSyphonStatus(status);
-      // If framework is now available, auto-refresh sources
-      if (status.bridge_available) {
-        refreshSources();
-      }
-    } catch (e) {
-      setInstallResult(`Error: ${e}`);
-    } finally {
-      setInstalling(false);
-    }
-  }, [refreshSources]);
 
   const handleAddMedia = async () => {
     let path: string | null = null;
@@ -126,21 +104,9 @@ function SourcePanel() {
           <div className="text-[10px] text-yellow-300 mb-1">
             Syphon not available
           </div>
-          <div className="text-[10px] text-aura-text-dim mb-1.5">
+          <div className="text-[10px] text-aura-text-dim">
             {syphonStatus.message}
           </div>
-          {installResult && (
-            <div className="text-[10px] text-aura-text-dim mb-1.5 whitespace-pre-wrap">
-              {installResult}
-            </div>
-          )}
-          <button
-            onClick={handleInstallSyphon}
-            disabled={installing}
-            className="btn-ghost text-[10px] px-2 py-0.5 bg-yellow-600/30 hover:bg-yellow-600/50 text-yellow-200"
-          >
-            {installing ? "Building Syphon (this may take a minute)..." : "Build & Install Syphon Framework"}
-          </button>
         </div>
       )}
 
