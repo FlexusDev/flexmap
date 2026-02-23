@@ -852,28 +852,46 @@ pub async fn install_syphon_framework() -> Result<String, String> {
         // This uses the same compiler that cc crate uses for our bridge.m.
         let dylib_path = fw_versions.join("Syphon");
 
+        // Create symlink: <tmp_dir>/Syphon -> <repo_dir>
+        // so that `#import <Syphon/SyphonFoo.h>` resolves via -I <tmp_dir>
+        let syphon_link = tmp_dir.join("Syphon");
+        let _ = std::os::unix::fs::symlink(&repo_dir, &syphon_link);
+
         let mut clang_args: Vec<String> = vec![
             "-dynamiclib".to_string(),
             "-fobjc-arc".to_string(),
             "-O2".to_string(),
             "-arch".to_string(),
             native_arch.clone(),
-            "-framework".to_string(),
-            "Foundation".to_string(),
-            "-framework".to_string(),
-            "Metal".to_string(),
-            "-framework".to_string(),
-            "IOSurface".to_string(),
-            "-framework".to_string(),
-            "Cocoa".to_string(),
-            "-framework".to_string(),
-            "OpenGL".to_string(),
+            // Frameworks — include CoreVideo for kCVPixelFormatType_32BGRA
+            "-framework".to_string(), "Foundation".to_string(),
+            "-framework".to_string(), "Metal".to_string(),
+            "-framework".to_string(), "IOSurface".to_string(),
+            "-framework".to_string(), "Cocoa".to_string(),
+            "-framework".to_string(), "OpenGL".to_string(),
+            "-framework".to_string(), "CoreVideo".to_string(),
             // Set install name so dlopen works
             "-install_name".to_string(),
             "@rpath/Syphon.framework/Versions/A/Syphon".to_string(),
-            // Include paths for Syphon's own headers
-            "-I".to_string(),
-            repo_dir.to_str().unwrap().to_string(),
+            // Include paths:
+            // - repo_dir: for direct #import "SyphonFoo.h"
+            // - tmp_dir: for #import <Syphon/SyphonFoo.h> (via symlink)
+            "-I".to_string(), repo_dir.to_str().unwrap().to_string(),
+            "-I".to_string(), tmp_dir.to_str().unwrap().to_string(),
+            // Force-include headers that some .m files forget to import
+            "-include".to_string(), "Foundation/Foundation.h".to_string(),
+            "-include".to_string(), "AppKit/AppKit.h".to_string(),
+            "-include".to_string(), "libkern/OSAtomic.h".to_string(),
+            // Define SYPHONLOG as no-op (debug logging macro from Syphon build)
+            "-DSYPHONLOG(...)=".to_string(),
+            // Silence all deprecation warnings (OpenGL, OSAtomic, etc.)
+            "-DGL_SILENCE_DEPRECATION".to_string(),
+            "-Wno-deprecated-declarations".to_string(),
+            // Some deprecated API functions are used implicitly
+            "-Wno-implicit-function-declaration".to_string(),
+            // Don't stop on first 20 errors — show everything
+            "-ferror-limit=0".to_string(),
+            // Output
             "-o".to_string(),
             dylib_path.to_str().unwrap().to_string(),
         ];
