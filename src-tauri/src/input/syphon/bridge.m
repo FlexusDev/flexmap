@@ -84,10 +84,12 @@ static BOOL try_load_from_path(const char *path) {
         return NO;
     }
 
-    // Resolve string constants via dlsym
-    NSString **nameKeyPtr = (NSString **)dlsym(handle, "SyphonServerDescriptionNameKey");
-    NSString **appNameKeyPtr = (NSString **)dlsym(handle, "SyphonServerDescriptionAppNameKey");
-    NSString **uuidKeyPtr = (NSString **)dlsym(handle, "SyphonServerDescriptionUUIDKey");
+    // Resolve string constants via dlsym.
+    // dlsym returns a pointer to the symbol storage (i.e. NSString **).
+    // Under ARC we cannot use NSString** directly, so we read through CFTypeRef*.
+    CFTypeRef *nameKeyPtr = (CFTypeRef *)dlsym(handle, "SyphonServerDescriptionNameKey");
+    CFTypeRef *appNameKeyPtr = (CFTypeRef *)dlsym(handle, "SyphonServerDescriptionAppNameKey");
+    CFTypeRef *uuidKeyPtr = (CFTypeRef *)dlsym(handle, "SyphonServerDescriptionUUIDKey");
 
     if (!nameKeyPtr || !appNameKeyPtr || !uuidKeyPtr) {
         NSLog(@"[Syphon bridge]   -> loaded but dictionary keys not found");
@@ -99,9 +101,9 @@ static BOOL try_load_from_path(const char *path) {
     g_syphon_handle = handle;
     g_SyphonServerDirectory = serverDir;
     g_SyphonMetalClient = metalClient;
-    g_SyphonServerDescriptionNameKey = *nameKeyPtr;
-    g_SyphonServerDescriptionAppNameKey = *appNameKeyPtr;
-    g_SyphonServerDescriptionUUIDKey = *uuidKeyPtr;
+    g_SyphonServerDescriptionNameKey = (__bridge NSString *)*nameKeyPtr;
+    g_SyphonServerDescriptionAppNameKey = (__bridge NSString *)*appNameKeyPtr;
+    g_SyphonServerDescriptionUUIDKey = (__bridge NSString *)*uuidKeyPtr;
     g_syphon_loaded = YES;
 
     NSLog(@"[Syphon bridge] Successfully loaded Syphon from: %s", path);
@@ -254,7 +256,7 @@ SyphonClientHandle syphon_create_client(const char* server_uuid) {
         NSDictionary *options = nil;
 
         // The new frame handler block
-        void (^handler)(id) = ^(id _client) {
+        void (^handler)(id) = ^(id __unused _client) {
             SyphonBridgeClient *strong = weakWrapper;
             if (strong) {
                 strong.hasNewFrame = YES;
