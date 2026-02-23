@@ -188,13 +188,42 @@ pub async fn open_projector_window(
     render: State<'_, Arc<RenderState>>,
     state: State<'_, SceneState>,
 ) -> Result<(), String> {
-    // Check if already running
-    {
+    let projector_running = {
         let projector = app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
-        if projector.lock().is_running() {
+        let running = projector.lock().is_running();
+        running
+    };
+
+    // Native projector window already exists.
+    // - If renderer is running, just focus/show it (idempotent open).
+    // - If renderer is stopped, this is a stale window; destroy and recreate.
+    if let Some(win) = app.get_window("projector") {
+        if projector_running {
+            let _ = win.show();
+            let _ = win.set_focus();
             log::info!("GPU projector already running");
             return Ok(());
         }
+
+        log::warn!("Found stale native projector window; recreating");
+        win.destroy().map_err(|e| e.to_string())?;
+
+        // Wait briefly for label release before recreating the window.
+        for _ in 0..20 {
+            if app.get_window("projector").is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        if app.get_window("projector").is_some() {
+            return Err("Projector window is still closing; please try again.".to_string());
+        }
+    } else if projector_running {
+        // Rare state drift: renderer reports running but no window exists.
+        log::warn!("GPU projector marked running without a window; resetting state");
+        let projector = app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
+        projector.lock().stop();
     }
 
     // Also check for existing webview projector (fallback path)
