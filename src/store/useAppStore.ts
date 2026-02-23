@@ -783,6 +783,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       await tauriInvoke<void>("open_projector_window");
       set({ projectorWindowOpen: true });
     } catch (e) {
+      const msg = String(e);
+      if (msg.includes("already exists")) {
+        // Treat duplicate-label errors as non-fatal; projector is effectively open.
+        set({ projectorWindowOpen: true });
+        return;
+      }
       console.error("Failed to open projector:", e);
       get().addToast("Failed to open projector", "error");
     }
