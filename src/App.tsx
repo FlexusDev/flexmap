@@ -10,6 +10,7 @@ import CalibrationBar from "./components/calibration/CalibrationBar";
 import SourcePanel from "./components/common/SourcePanel";
 import StatusBar from "./components/common/StatusBar";
 import KeyboardOverlay from "./components/common/KeyboardOverlay";
+import ToastContainer from "./components/common/ToastContainer";
 
 function RecoveryDialog({ onRecover, onDismiss }: { onRecover: () => void; onDismiss: () => void }) {
   return (
@@ -110,6 +111,9 @@ function App() {
 
       {/* Keyboard shortcut overlay (main window only) */}
       <KeyboardOverlay />
+
+      {/* Toast notifications */}
+      <ToastContainer />
     </div>
   );
 }

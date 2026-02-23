@@ -1,5 +1,5 @@
 use super::shaders;
-use crate::scene::layer::LayerGeometry;
+use crate::scene::layer::{BlendMode, LayerGeometry};
 use bytemuck::{Pod, Zeroable};
 
 /// Vertex format for layer rendering
@@ -70,12 +70,49 @@ pub struct CalibrationUniforms {
     pub brightness: f32,
 }
 
+/// Uniform data for the blend composite shader
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct BlendUniforms {
+    pub blend_mode: u32,
+    pub opacity: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+}
+
+/// Convert a BlendMode enum to its shader u32 index
+pub fn blend_mode_to_u32(mode: &BlendMode) -> u32 {
+    match mode {
+        BlendMode::Normal => 0,
+        BlendMode::Multiply => 1,
+        BlendMode::Screen => 2,
+        BlendMode::Overlay => 3,
+        BlendMode::Darken => 4,
+        BlendMode::Lighten => 5,
+        BlendMode::ColorDodge => 6,
+        BlendMode::ColorBurn => 7,
+        BlendMode::SoftLight => 8,
+        BlendMode::HardLight => 9,
+        BlendMode::Difference => 10,
+        BlendMode::Exclusion => 11,
+        BlendMode::Additive => 12,
+    }
+}
+
 /// The render pipeline for projector output
 pub struct RenderPipeline {
     pub layer_pipeline: wgpu::RenderPipeline,
+    /// Pipeline for Additive blend mode (hardware SrcAlpha + One)
+    pub additive_pipeline: wgpu::RenderPipeline,
     pub calibration_pipeline: wgpu::RenderPipeline,
+    /// Pipeline for shader-based blend compositing (ping-pong)
+    pub blend_composite_pipeline: wgpu::RenderPipeline,
     pub layer_bind_group_layout: wgpu::BindGroupLayout,
     pub calibration_bind_group_layout: wgpu::BindGroupLayout,
+    /// Bind group layouts for blend composite shader
+    pub blend_source_bind_group_layout: wgpu::BindGroupLayout,
+    pub blend_dest_bind_group_layout: wgpu::BindGroupLayout,
+    pub blend_uniform_bind_group_layout: wgpu::BindGroupLayout,
     pub sampler: wgpu::Sampler,
 }
 
@@ -222,6 +259,163 @@ impl RenderPipeline {
                 cache: None,
             });
 
+        // --- Additive blend pipeline (hardware SrcAlpha + One) ---
+        let additive_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Additive Render Pipeline"),
+            layout: Some(&layer_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &layer_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[LayerVertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &layer_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        // --- Blend composite pipeline (shader-based blend modes) ---
+        let blend_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Blend Composite Shader"),
+            source: wgpu::ShaderSource::Wgsl(shaders::BLEND_COMPOSITE_SHADER.into()),
+        });
+
+        // Group 0: source texture + sampler
+        let blend_source_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Blend Source Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        // Group 1: destination texture + sampler
+        let blend_dest_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Blend Dest Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        // Group 2: blend uniforms
+        let blend_uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Blend Uniform Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let blend_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Blend Composite Pipeline Layout"),
+                bind_group_layouts: &[
+                    &blend_source_bind_group_layout,
+                    &blend_dest_bind_group_layout,
+                    &blend_uniform_bind_group_layout,
+                ],
+                push_constant_ranges: &[],
+            });
+
+        let blend_composite_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Blend Composite Pipeline"),
+                layout: Some(&blend_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &blend_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &blend_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: None, // Shader does all blending
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Layer Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -233,9 +427,14 @@ impl RenderPipeline {
 
         Self {
             layer_pipeline,
+            additive_pipeline,
             calibration_pipeline,
+            blend_composite_pipeline,
             layer_bind_group_layout,
             calibration_bind_group_layout,
+            blend_source_bind_group_layout,
+            blend_dest_bind_group_layout,
+            blend_uniform_bind_group_layout,
             sampler,
         }
     }
