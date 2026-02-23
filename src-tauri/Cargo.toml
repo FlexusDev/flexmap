@@ -45,6 +45,7 @@ windows = { version = "0.58", optional = true, features = [
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1"
 
 [lib]
 name = "auramap_lib"
