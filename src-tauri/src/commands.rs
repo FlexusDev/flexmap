@@ -674,7 +674,8 @@ pub struct SyphonStatus {
 pub async fn check_syphon_status() -> Result<SyphonStatus, String> {
     #[cfg(all(target_os = "macos", feature = "input-syphon"))]
     {
-        let bridge_compiled = cfg!(has_syphon_bridge);
+        // Bridge is always compiled now (uses dlopen at runtime)
+        let bridge_compiled = true;
         let bridge_available = crate::input::syphon::is_bridge_available();
 
         let search_paths: Vec<(String, bool)> = crate::input::syphon::framework_search_paths()
@@ -687,12 +688,8 @@ pub async fn check_syphon_status() -> Result<SyphonStatus, String> {
 
         let message = if bridge_available {
             "Syphon is ready. Syphon servers should appear automatically.".to_string()
-        } else if bridge_compiled {
-            "Syphon bridge was compiled but the framework is not available at runtime. \
-             Try reinstalling Syphon.framework."
-                .to_string()
         } else {
-            "Syphon.framework was not found at build time. Install it, then rebuild the app."
+            "Syphon.framework not found. Click 'Install Syphon Framework' below to download it."
                 .to_string()
         };
 
@@ -862,11 +859,21 @@ pub async fn install_syphon_framework() -> Result<String, String> {
 
         log::info!("Syphon: framework installed successfully at {}", target_path);
 
-        Ok(format!(
-            "Syphon.framework installed to {}.\n\
-             Please restart the app (cargo tauri dev) to enable Syphon input.",
-            target_path
-        ))
+        // Try to load the framework immediately (no restart needed!)
+        let loaded = crate::input::syphon::try_reload();
+        if loaded {
+            log::info!("Syphon: framework loaded at runtime — ready to use!");
+            Ok(format!(
+                "Syphon.framework installed and loaded! Syphon sources should appear when you refresh."
+            ))
+        } else {
+            log::warn!("Syphon: framework installed but runtime load failed — restart may be needed");
+            Ok(format!(
+                "Syphon.framework installed to {}.\n\
+                 Runtime loading failed — please restart the app to enable Syphon input.",
+                target_path
+            ))
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
