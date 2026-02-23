@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source:*)",
+      "Bash(npm install:*)",
+      "Bash(source \"$HOME/.cargo/env\" && npm run tauri dev 2>&1)",
+      "Bash(echo '' >> ~/.zshrc && echo '# Rust toolchain' >> ~/.zshrc && echo '. \"$HOME/.cargo/env\"' >> ~/.zshrc)"
+    ]
+  }
+}
