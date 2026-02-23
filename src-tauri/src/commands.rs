@@ -750,12 +750,12 @@ pub async fn install_syphon_framework() -> Result<String, String> {
 
         log::info!("Syphon: downloading framework from GitHub...");
 
-        // Download the latest Syphon release
-        // The Syphon project distributes a .zip containing Syphon.framework
+        // Download Syphon SDK 5 from GitHub releases
+        // Asset: Syphon.SDK.5.zip (~1010 KB)
         let download_url =
-            "https://github.com/Syphon/Syphon-Framework/releases/latest/download/Syphon.SDK.zip";
+            "https://github.com/Syphon/Syphon-Framework/releases/download/5/Syphon.SDK.5.zip";
         let tmp_dir = std::env::temp_dir().join("auramap_syphon_install");
-        let zip_path = tmp_dir.join("Syphon.SDK.zip");
+        let zip_path = tmp_dir.join("Syphon.SDK.5.zip");
 
         // Clean up any previous attempt
         let _ = std::fs::remove_dir_all(&tmp_dir);
