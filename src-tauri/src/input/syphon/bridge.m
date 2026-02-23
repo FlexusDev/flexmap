@@ -56,20 +56,9 @@ static BOOL ensure_metal(void) {
 
 // ─── Dynamic framework loading ──────────────────────────────────────────────
 
-static BOOL try_load_from_path(const char *path) {
-    NSLog(@"[Syphon bridge] Trying to load: %s", path);
-
-    // Check if directory exists first
-    NSString *nsPath = [NSString stringWithUTF8String:path];
-    BOOL isDir = NO;
-    if (![[NSFileManager defaultManager] fileExistsAtPath:nsPath isDirectory:&isDir] || !isDir) {
-        NSLog(@"[Syphon bridge]   -> not found");
-        return NO;
-    }
-
+static BOOL try_dlopen(const char *path) {
     void *handle = dlopen(path, RTLD_LAZY | RTLD_GLOBAL);
     if (!handle) {
-        NSLog(@"[Syphon bridge]   -> dlopen failed: %s", dlerror());
         return NO;
     }
 
@@ -110,24 +99,57 @@ static BOOL try_load_from_path(const char *path) {
     return YES;
 }
 
+/// Try to load Syphon from a framework directory path (e.g. ".../Syphon.framework").
+/// Tries multiple possible dylib locations within the framework bundle.
+static BOOL try_load_framework(NSString *frameworkDir) {
+    // Check if the .framework directory exists at all
+    BOOL isDir = NO;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:frameworkDir isDirectory:&isDir] || !isDir) {
+        return NO;
+    }
+
+    NSLog(@"[Syphon bridge] Found framework dir: %@, trying to dlopen...", frameworkDir);
+
+    // Try multiple possible dylib locations within the framework bundle:
+    // 1. Modern flat layout: Syphon.framework/Syphon
+    // 2. Versioned layout: Syphon.framework/Versions/A/Syphon
+    // 3. Versioned Current symlink: Syphon.framework/Versions/Current/Syphon
+    NSArray<NSString *> *candidates = @[
+        [frameworkDir stringByAppendingPathComponent:@"Syphon"],
+        [frameworkDir stringByAppendingPathComponent:@"Versions/A/Syphon"],
+        [frameworkDir stringByAppendingPathComponent:@"Versions/Current/Syphon"],
+    ];
+
+    for (NSString *candidate in candidates) {
+        NSLog(@"[Syphon bridge]   trying: %@", candidate);
+        if (try_dlopen(candidate.UTF8String)) {
+            NSLog(@"[Syphon bridge]   -> SUCCESS");
+            return YES;
+        }
+        NSLog(@"[Syphon bridge]   -> dlopen failed: %s", dlerror());
+    }
+
+    return NO;
+}
+
 static void try_load_syphon(void) {
     if (g_syphon_loaded) return;
 
-    // Search paths in priority order
+    // Search for Syphon.framework in priority order
     NSString *home = NSHomeDirectory();
     NSArray<NSString *> *searchPaths = @[
-        [home stringByAppendingPathComponent:@"Library/Frameworks/Syphon.framework/Syphon"],
-        @"/Library/Frameworks/Syphon.framework/Syphon",
-        @"/Applications/Synesthesia.app/Contents/Frameworks/Syphon.framework/Syphon",
-        @"/Applications/Resolume Arena.app/Contents/Frameworks/Syphon.framework/Syphon",
-        @"/Applications/Resolume Avenue.app/Contents/Frameworks/Syphon.framework/Syphon",
-        @"/Applications/VDMX5.app/Contents/Frameworks/Syphon.framework/Syphon",
-        @"/Applications/MadMapper.app/Contents/Frameworks/Syphon.framework/Syphon",
-        @"/Applications/Millumin3.app/Contents/Frameworks/Syphon.framework/Syphon",
+        [home stringByAppendingPathComponent:@"Library/Frameworks/Syphon.framework"],
+        @"/Library/Frameworks/Syphon.framework",
+        @"/Applications/Synesthesia.app/Contents/Frameworks/Syphon.framework",
+        @"/Applications/Resolume Arena.app/Contents/Frameworks/Syphon.framework",
+        @"/Applications/Resolume Avenue.app/Contents/Frameworks/Syphon.framework",
+        @"/Applications/VDMX5.app/Contents/Frameworks/Syphon.framework",
+        @"/Applications/MadMapper.app/Contents/Frameworks/Syphon.framework",
+        @"/Applications/Millumin3.app/Contents/Frameworks/Syphon.framework",
     ];
 
     for (NSString *path in searchPaths) {
-        if (try_load_from_path(path.UTF8String)) {
+        if (try_load_framework(path)) {
             return;
         }
     }
