@@ -16,7 +16,27 @@ function CalibrationBar() {
     calibrationPattern,
     toggleCalibration,
     setCalibrationPattern,
+    selectedLayerId,
+    setCalibrationTarget,
+    project,
+    layers,
   } = useAppStore();
+
+  const hasTarget = !!project?.calibration?.target_layer;
+  const canTargetLayer = calibrationEnabled && !!selectedLayerId;
+
+  const handleLayerTargetToggle = () => {
+    if (hasTarget) {
+      setCalibrationTarget(null);
+    } else if (selectedLayerId) {
+      setCalibrationTarget({ layer_id: selectedLayerId });
+    }
+  };
+
+  const targetLayerName = hasTarget
+    ? layers.find((l) => l.id === project?.calibration?.target_layer?.layer_id)?.name
+      ?? project?.calibration?.target_layer?.layer_id
+    : null;
 
   return (
     <div
@@ -56,6 +76,24 @@ function CalibrationBar() {
               </button>
             ))}
           </div>
+
+          {/* Target Layer toggle */}
+          {(canTargetLayer || hasTarget) && (
+            <>
+              <div className="w-px h-4 bg-aura-border" />
+              <button
+                onClick={handleLayerTargetToggle}
+                className={`btn text-xs px-2 py-0.5 ${
+                  hasTarget
+                    ? "bg-amber-500 text-white"
+                    : "bg-aura-hover text-aura-text-dim hover:text-aura-text"
+                }`}
+                title={hasTarget ? "Calibrating target layer — click to go global" : "Calibrate selected layer only"}
+              >
+                {hasTarget ? targetLayerName ?? "Target Layer" : "Target Layer"}
+              </button>
+            </>
+          )}
         </>
       )}
     </div>

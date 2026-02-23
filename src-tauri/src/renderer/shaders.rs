@@ -15,17 +15,16 @@ struct VertexOutput {
 
 // Per-layer uniforms
 struct LayerUniforms {
-    // Post-processing
-    brightness: f32,
-    contrast: f32,
-    gamma: f32,
-    opacity: f32,
-    // Feather
-    feather: f32,
-    // Padding for alignment
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    // brightness, contrast, gamma, opacity
+    color_adjust: vec4<f32>,
+    // feather, shape_kind (0=regular, 1=ellipse mask), pad, pad
+    feather_and_shape: vec4<f32>,
+    // x, y, pad, pad
+    input_offset: vec4<f32>,
+    // x, y, pad, pad
+    input_scale: vec4<f32>,
+    // cos, sin, pad, pad
+    input_rot: vec4<f32>,
 };
 
 @group(0) @binding(0) var t_source: texture_2d<f32>;
@@ -46,37 +45,64 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+fn transform_uv(base_uv: vec2<f32>) -> vec2<f32> {
+    let center = vec2<f32>(0.5, 0.5);
+    let p = (base_uv - center) * uniforms.input_scale.xy;
+    let r = vec2<f32>(
+        p.x * uniforms.input_rot.x - p.y * uniforms.input_rot.y,
+        p.x * uniforms.input_rot.y + p.y * uniforms.input_rot.x
+    );
+    return r + center + uniforms.input_offset.xy;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var color = textureSample(t_source, s_source, in.tex_coord);
+    let base_uv = in.tex_coord;
+    let sample_uv = transform_uv(base_uv);
+    var color = textureSample(t_source, s_source, sample_uv);
+
+    let feather = uniforms.feather_and_shape.x;
+    let shape_kind = uniforms.feather_and_shape.y;
 
     // Apply brightness
-    color = vec4<f32>(color.rgb * uniforms.brightness, color.a);
+    color = vec4<f32>(color.rgb * uniforms.color_adjust.x, color.a);
 
     // Apply contrast (centered around 0.5)
     color = vec4<f32>(
-        (color.rgb - vec3<f32>(0.5)) * uniforms.contrast + vec3<f32>(0.5),
+        (color.rgb - vec3<f32>(0.5)) * uniforms.color_adjust.y + vec3<f32>(0.5),
         color.a
     );
 
     // Apply gamma correction
-    let inv_gamma = 1.0 / max(uniforms.gamma, 0.01);
+    let inv_gamma = 1.0 / max(uniforms.color_adjust.z, 0.01);
     color = vec4<f32>(
         pow(max(color.rgb, vec3<f32>(0.0)), vec3<f32>(inv_gamma)),
         color.a
     );
 
-    // Apply feather (soft edge based on distance from center of UV)
-    if uniforms.feather > 0.0 {
-        let center = vec2<f32>(0.5, 0.5);
-        let dist = length(in.tex_coord - center) * 2.0;
-        let feather_start = 1.0 - uniforms.feather;
+    // Ellipse analytic mask for Circle layers.
+    // Geometry is rendered as an oriented quad; this mask cuts it to ellipse.
+    if shape_kind > 0.5 {
+        let d = (base_uv - vec2<f32>(0.5, 0.5)) / vec2<f32>(0.5, 0.5);
+        let radius = length(d);
+        if radius > 1.0 {
+            discard;
+        }
+        if feather > 0.0 {
+            let feather_start = 1.0 - feather;
+            let feather_alpha = 1.0 - smoothstep(feather_start, 1.0, radius);
+            color = vec4<f32>(color.rgb, color.a * feather_alpha);
+        }
+    } else if feather > 0.0 {
+        // Existing radial feather for non-circle layers
+        let dist = length(base_uv - vec2<f32>(0.5, 0.5)) * 2.0;
+        let feather_start = 1.0 - feather;
         let feather_alpha = 1.0 - smoothstep(feather_start, 1.0, dist);
         color = vec4<f32>(color.rgb, color.a * feather_alpha);
     }
 
     // Apply opacity
-    color = vec4<f32>(color.rgb, color.a * uniforms.opacity);
+    color = vec4<f32>(color.rgb, color.a * uniforms.color_adjust.w);
 
     // Clamp output
     return clamp(color, vec4<f32>(0.0), vec4<f32>(1.0));
@@ -262,6 +288,100 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let out_a = dst.a + src_a * (1.0 - dst.a);
 
     return clamp(vec4<f32>(out_rgb, out_a), vec4<f32>(0.0), vec4<f32>(1.0));
+}
+"#;
+
+/// WGSL shader for face-level calibration overlay.
+/// Uses LayerVertex (position + tex_coord) where tex_coord is local [0,1] per face.
+/// Same pattern logic as CALIBRATION_SHADER but drawn via vertex buffer over targeted faces.
+pub const FACE_CALIBRATION_SHADER: &str = r#"
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) tex_coord: vec2<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+struct CalibrationUniforms {
+    pattern: u32,
+    line_width: f32,
+    grid_divisions: f32,
+    brightness: f32,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: CalibrationUniforms;
+
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = vec4<f32>(
+        in.position.x * 2.0 - 1.0,
+        1.0 - in.position.y * 2.0,
+        0.0, 1.0
+    );
+    out.uv = in.tex_coord;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let uv = in.uv;
+    let brightness = uniforms.brightness;
+
+    switch uniforms.pattern {
+        case 0u: {
+            let grid = uniforms.grid_divisions;
+            let lw = uniforms.line_width;
+            let gx = fract(uv.x * grid);
+            let gy = fract(uv.y * grid);
+            let line = step(gx, lw) + step(1.0 - lw, gx) + step(gy, lw) + step(1.0 - lw, gy);
+            let c = min(line, 1.0) * brightness;
+            return vec4<f32>(c, c, c, 1.0);
+        }
+        case 1u: {
+            let lw = uniforms.line_width * 2.0;
+            let cx = abs(uv.x - 0.5);
+            let cy = abs(uv.y - 0.5);
+            let line = step(cx, lw) + step(cy, lw);
+            let c = min(line, 1.0) * brightness;
+            return vec4<f32>(c, c, c, 1.0);
+        }
+        case 2u: {
+            let grid = uniforms.grid_divisions;
+            let cx = floor(uv.x * grid);
+            let cy = floor(uv.y * grid);
+            let checker = (cx + cy) % 2.0;
+            let c = checker * brightness;
+            return vec4<f32>(c, c, c, 1.0);
+        }
+        case 3u: {
+            return vec4<f32>(brightness, brightness, brightness, 1.0);
+        }
+        case 4u: {
+            let bar = floor(uv.x * 7.0);
+            var r = 0.0; var g = 0.0; var b = 0.0;
+            switch u32(bar) {
+                case 0u: { r = 1.0; g = 1.0; b = 1.0; }
+                case 1u: { r = 1.0; g = 1.0; b = 0.0; }
+                case 2u: { r = 0.0; g = 1.0; b = 1.0; }
+                case 3u: { r = 0.0; g = 1.0; b = 0.0; }
+                case 4u: { r = 1.0; g = 0.0; b = 1.0; }
+                case 5u: { r = 1.0; g = 0.0; b = 0.0; }
+                case 6u: { r = 0.0; g = 0.0; b = 1.0; }
+                default: { }
+            }
+            return vec4<f32>(r * brightness, g * brightness, b * brightness, 1.0);
+        }
+        case 5u: {
+            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+        default: {
+            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+    }
 }
 "#;
 

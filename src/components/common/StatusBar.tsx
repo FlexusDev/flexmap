@@ -272,12 +272,14 @@ function GpuBadge({ gpuInfo }: { gpuInfo: RenderStats }) {
 function StatusBar() {
   const {
     layers,
+    selectedLayerId,
     sources,
     monitors,
     projectorWindowOpen,
     isDirty,
     calibrationEnabled,
     snapEnabled,
+    editorSelectionMode,
     project,
     editorPerf,
     performancePanelOpen,
@@ -307,6 +309,15 @@ function StatusBar() {
   }, []);
 
   const output = project?.output;
+  const selectedLayer = selectedLayerId
+    ? layers.find((l) => l.id === selectedLayerId) ?? null
+    : null;
+  const isUvLike = editorSelectionMode === "uv" && !!selectedLayer;
+  const modeLabel = !isUvLike
+    ? "SHAPE"
+    : selectedLayer?.geometry.type === "Mesh"
+      ? "UV"
+      : "INPUT";
 
   return (
     <div className="flex items-center h-6 px-3 bg-aura-surface border-t border-aura-border text-xs text-aura-text-dim gap-4">
@@ -342,6 +353,17 @@ function StatusBar() {
       {/* Performance panel flyout */}
       {performancePanelOpen && <PerformancePanel />}
 
+      <span
+        className={
+          modeLabel === "UV"
+            ? "text-amber-400 font-medium"
+            : modeLabel === "INPUT"
+              ? "text-cyan-300 font-medium"
+              : "text-indigo-300 font-medium"
+        }
+      >
+        MODE: {modeLabel}
+      </span>
       {snapEnabled && (
         <span className="text-cyan-400 font-medium">SNAP</span>
       )}

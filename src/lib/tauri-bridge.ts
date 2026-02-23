@@ -12,11 +12,15 @@ import type {
   MonitorInfo,
   SourceInfo,
   CalibrationPattern,
+  CalibrationTarget,
   OutputConfig,
   LayerGeometry,
   LayerProperties,
   SourceAssignment,
+  UvAdjustment,
+  InputTransform,
 } from "../types";
+import { DEFAULT_INPUT_TRANSFORM } from "../types";
 
 // Detect if we're running inside Tauri
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,7 +34,7 @@ function makeId(): string {
 
 function newProject(name: string): ProjectFile {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectName: name,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -81,25 +85,170 @@ function defaultGeometry(type: string, cols?: number, rows?: number): LayerGeome
           });
         }
       }
-      return { type: "Mesh", data: { cols: c, rows: r, points } };
+      return { type: "Mesh", data: { cols: c, rows: r, points, face_groups: [], masked_faces: [], uv_overrides: {} } };
     }
     case "circle":
       return {
         type: "Circle",
         data: {
           center: { x: 0.5, y: 0.5 },
-          radius: 0.3,
-          bounds: [
-            { x: 0.2, y: 0.2 },
-            { x: 0.8, y: 0.2 },
-            { x: 0.8, y: 0.8 },
-            { x: 0.2, y: 0.8 },
-          ],
+          radius_x: 0.3,
+          radius_y: 0.3,
+          rotation: 0,
         },
       };
     default:
       return defaultGeometry("quad");
   }
+}
+
+function geometryCenter(geom: LayerGeometry): { x: number; y: number } {
+  if (geom.type === "Circle") return geom.data.center;
+  const points =
+    geom.type === "Quad"
+      ? geom.data.corners
+      : geom.type === "Triangle"
+        ? geom.data.vertices
+        : geom.data.points;
+  const minX = Math.min(...points.map((p) => p.x));
+  const maxX = Math.max(...points.map((p) => p.x));
+  const minY = Math.min(...points.map((p) => p.y));
+  const maxY = Math.max(...points.map((p) => p.y));
+  return { x: (minX + maxX) * 0.5, y: (minY + maxY) * 0.5 };
+}
+
+function transformPoint(
+  p: { x: number; y: number },
+  pivot: { x: number; y: number },
+  dx: number,
+  dy: number,
+  rotation: number,
+  sx: number,
+  sy: number
+): { x: number; y: number } {
+  const px = p.x - pivot.x;
+  const py = p.y - pivot.y;
+  const sxp = px * sx;
+  const syp = py * sy;
+  const c = Math.cos(rotation);
+  const s = Math.sin(rotation);
+  return {
+    x: pivot.x + (sxp * c - syp * s) + dx,
+    y: pivot.y + (sxp * s + syp * c) + dy,
+  };
+}
+
+function applyGeometryDelta(
+  geom: LayerGeometry,
+  dx: number,
+  dy: number,
+  dRotation: number,
+  sx: number,
+  sy: number
+): LayerGeometry {
+  const pivot = geometryCenter(geom);
+  if (geom.type === "Quad") {
+    const c = geom.data.corners;
+    const corners: [
+      { x: number; y: number },
+      { x: number; y: number },
+      { x: number; y: number },
+      { x: number; y: number }
+    ] = [
+      transformPoint(c[0], pivot, dx, dy, dRotation, sx, sy),
+      transformPoint(c[1], pivot, dx, dy, dRotation, sx, sy),
+      transformPoint(c[2], pivot, dx, dy, dRotation, sx, sy),
+      transformPoint(c[3], pivot, dx, dy, dRotation, sx, sy),
+    ];
+    return {
+      type: "Quad",
+      data: { corners },
+    };
+  }
+  if (geom.type === "Triangle") {
+    const v = geom.data.vertices;
+    const vertices: [
+      { x: number; y: number },
+      { x: number; y: number },
+      { x: number; y: number }
+    ] = [
+      transformPoint(v[0], pivot, dx, dy, dRotation, sx, sy),
+      transformPoint(v[1], pivot, dx, dy, dRotation, sx, sy),
+      transformPoint(v[2], pivot, dx, dy, dRotation, sx, sy),
+    ];
+    return {
+      type: "Triangle",
+      data: { vertices },
+    };
+  }
+  if (geom.type === "Mesh") {
+    return {
+      type: "Mesh",
+      data: {
+        ...geom.data,
+        points: geom.data.points.map((p) =>
+          transformPoint(p, pivot, dx, dy, dRotation, sx, sy)
+        ),
+      },
+    };
+  }
+  const center = transformPoint(
+    geom.data.center,
+    pivot,
+    dx,
+    dy,
+    dRotation,
+    sx,
+    sy
+  );
+  return {
+    type: "Circle",
+    data: {
+      center,
+      radius_x: Math.max(0.0001, Math.abs(geom.data.radius_x * sx)),
+      radius_y: Math.max(0.0001, Math.abs(geom.data.radius_y * sy)),
+      rotation: geom.data.rotation + dRotation,
+    },
+  };
+}
+
+function updateGeometryPoint(
+  geom: LayerGeometry,
+  pointIndex: number,
+  point: { x: number; y: number }
+): LayerGeometry | null {
+  if (geom.type === "Quad") {
+    if (pointIndex < 0 || pointIndex > 3) return null;
+    const corners = [...geom.data.corners] as [
+      { x: number; y: number },
+      { x: number; y: number },
+      { x: number; y: number },
+      { x: number; y: number }
+    ];
+    corners[pointIndex] = point;
+    return { type: "Quad", data: { corners } };
+  }
+  if (geom.type === "Triangle") {
+    if (pointIndex < 0 || pointIndex > 2) return null;
+    const vertices = [...geom.data.vertices] as [
+      { x: number; y: number },
+      { x: number; y: number },
+      { x: number; y: number }
+    ];
+    vertices[pointIndex] = point;
+    return { type: "Triangle", data: { vertices } };
+  }
+  if (geom.type === "Mesh") {
+    if (pointIndex < 0 || pointIndex >= geom.data.points.length) return null;
+    const points = [...geom.data.points];
+    points[pointIndex] = point;
+    return { type: "Mesh", data: { ...geom.data, points } };
+  }
+  if (geom.type === "Circle") {
+    if (pointIndex !== 0) return null;
+    return { type: "Circle", data: { ...geom.data, center: point } };
+  }
+  return null;
 }
 
 // Mock command handler for browser mode
@@ -119,6 +268,7 @@ const mockCommands: Record<string, (args: any) => any> = {
       zIndex: nextZIndex++,
       source: null,
       geometry: defaultGeometry(type, cols, rows),
+      input_transform: { ...DEFAULT_INPUT_TRANSFORM },
       properties: { brightness: 1, contrast: 1, gamma: 1, opacity: 1, feather: 0 },
       blend_mode: "normal",
     };
@@ -190,6 +340,46 @@ const mockCommands: Record<string, (args: any) => any> = {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
     if (layer) layer.source = args.source;
     return !!layer;
+  },
+
+  set_layer_input_transform: (args: { layerId: string; inputTransform: InputTransform }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (layer) layer.input_transform = args.inputTransform;
+    return !!layer;
+  },
+
+  apply_layer_geometry_transform_delta: (args: {
+    layerId: string;
+    dx: number;
+    dy: number;
+    dRotation: number;
+    sx: number;
+    sy: number;
+  }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer) return null;
+    layer.geometry = applyGeometryDelta(
+      layer.geometry,
+      args.dx,
+      args.dy,
+      args.dRotation,
+      args.sx,
+      args.sy
+    );
+    return layer.geometry;
+  },
+
+  update_layer_point: (args: {
+    layerId: string;
+    pointIndex: number;
+    point: { x: number; y: number };
+  }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer) return null;
+    const next = updateGeometryPoint(layer.geometry, args.pointIndex, args.point);
+    if (!next) return null;
+    layer.geometry = next;
+    return next;
   },
 
   set_calibration_enabled: (args: { enabled: boolean }) => {
@@ -300,6 +490,103 @@ const mockCommands: Record<string, (args: any) => any> = {
     total_mem: 16 * 1024 * 1024 * 1024, used_mem: 8 * 1024 * 1024 * 1024,
     system_cpu: 25.0, cpu_count: 8, cpu_name: "Mock CPU",
   }),
+
+  toggle_face_mask: (args: { layerId: string; faceIndices: number[]; masked: boolean }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer || layer.geometry.type !== "Mesh") return false;
+    const data = layer.geometry.data as { masked_faces?: number[] };
+    data.masked_faces = data.masked_faces ?? [];
+    if (args.masked) {
+      for (const idx of args.faceIndices) {
+        if (!data.masked_faces.includes(idx)) data.masked_faces.push(idx);
+      }
+    } else {
+      data.masked_faces = data.masked_faces.filter((f) => !args.faceIndices.includes(f));
+    }
+    return true;
+  },
+
+  create_face_group: (args: { layerId: string; name: string; faceIndices: number[]; color: string }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer || layer.geometry.type !== "Mesh") return false;
+    const data = layer.geometry.data as { face_groups?: { name: string; face_indices: number[]; color: string }[] };
+    data.face_groups = data.face_groups ?? [];
+    data.face_groups.push({ name: args.name, face_indices: args.faceIndices, color: args.color });
+    return true;
+  },
+
+  remove_face_group: (args: { layerId: string; groupIndex: number }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer || layer.geometry.type !== "Mesh") return false;
+    const data = layer.geometry.data as { face_groups?: unknown[] };
+    data.face_groups = data.face_groups ?? [];
+    if (args.groupIndex < data.face_groups.length) {
+      data.face_groups.splice(args.groupIndex, 1);
+      return true;
+    }
+    return false;
+  },
+
+  rename_face_group: (args: { layerId: string; groupIndex: number; name: string }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer || layer.geometry.type !== "Mesh") return false;
+    const data = layer.geometry.data as { face_groups?: { name: string }[] };
+    data.face_groups = data.face_groups ?? [];
+    if (args.groupIndex < data.face_groups.length) {
+      data.face_groups[args.groupIndex].name = args.name;
+      return true;
+    }
+    return false;
+  },
+
+  set_calibration_target: (args: { target: CalibrationTarget | null }) => {
+    mockProject.calibration.target_layer = args.target;
+  },
+
+  set_face_uv_override: (args: { layerId: string; faceIndex: number; adjustment: UvAdjustment }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer || layer.geometry.type !== "Mesh") return false;
+    const data = layer.geometry.data as { uv_overrides?: Record<number, UvAdjustment> };
+    data.uv_overrides = data.uv_overrides ?? {};
+    data.uv_overrides[args.faceIndex] = args.adjustment;
+    return true;
+  },
+
+  clear_face_uv_override: (args: { layerId: string; faceIndex: number }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer || layer.geometry.type !== "Mesh") return false;
+    const data = layer.geometry.data as { uv_overrides?: Record<number, UvAdjustment> };
+    if (data.uv_overrides && args.faceIndex in data.uv_overrides) {
+      delete data.uv_overrides[args.faceIndex];
+      return true;
+    }
+    return false;
+  },
+
+  subdivide_mesh: (args: { layerId: string }) => {
+    const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    if (!layer || layer.geometry.type !== "Mesh") return null;
+    const d = layer.geometry.data;
+    const newCols = d.cols * 2;
+    const newRows = d.rows * 2;
+    const newPoints = [];
+    for (let ri = 0; ri <= newRows; ri++) {
+      for (let ci = 0; ci <= newCols; ci++) {
+        const origR = ri / 2;
+        const origC = ci / 2;
+        const r0 = Math.floor(origR), c0 = Math.floor(origC);
+        const r1 = Math.min(r0 + (ri % 2), d.rows), c1 = Math.min(c0 + (ci % 2), d.cols);
+        const p00 = d.points[r0 * (d.cols + 1) + c0];
+        const p01 = d.points[r0 * (d.cols + 1) + c1];
+        const p10 = d.points[r1 * (d.cols + 1) + c0];
+        const p11 = d.points[r1 * (d.cols + 1) + c1];
+        newPoints.push({ x: (p00.x + p01.x + p10.x + p11.x) / 4, y: (p00.y + p01.y + p10.y + p11.y) / 4 });
+      }
+    }
+    const newGeometry: LayerGeometry = { type: "Mesh", data: { cols: newCols, rows: newRows, points: newPoints, face_groups: [], masked_faces: [], uv_overrides: {} } };
+    layer.geometry = newGeometry;
+    return newGeometry;
+  },
 
   check_syphon_status: () => ({
     bridge_compiled: true,

@@ -134,3 +134,87 @@ export function distance(a: { x: number; y: number }, b: { x: number; y: number 
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
+
+/**
+ * FNV-1a hash of a list of 2D points for fast geometry change detection.
+ * ~10ns per point. Avoids JSON.stringify allocation.
+ */
+export function hashPoints(points: { x: number; y: number }[]): number {
+  let h = 0x811c9dc5; // FNV-1a offset basis
+  for (const p of points) {
+    h ^= (p.x * 1e6) | 0;
+    h = Math.imul(h, 0x01000193);
+    h ^= (p.y * 1e6) | 0;
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Draw a textured triangle using a 2D affine transform.
+ * Computes the affine matrix that maps srcTri → dstTri via Cramer's rule,
+ * then clips to dstTri, applies setTransform, and draws the source image.
+ *
+ * @param ctx    - destination canvas context
+ * @param img    - source image (HTMLCanvasElement or ImageBitmap)
+ * @param srcTri - 3 points in source image pixel space
+ * @param dstTri - 3 points in destination canvas pixel space
+ */
+export function drawTriangleTextured(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLCanvasElement | ImageBitmap,
+  srcTri: [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }],
+  dstTri: [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }],
+): void {
+  const [s0, s1, s2] = srcTri;
+  const [d0, d1, d2] = dstTri;
+
+  // Compute affine transform: src → dst
+  // [a c e] [x]   [X]
+  // [b d f] [y] = [Y]
+  // [0 0 1] [1]   [1]
+  // Using Cramer's rule on two 3×3 systems (one for X, one for Y)
+  const det = s0.x * (s1.y - s2.y) + s1.x * (s2.y - s0.y) + s2.x * (s0.y - s1.y);
+  if (Math.abs(det) < 1e-10) return; // Degenerate triangle
+
+  const a = (d0.x * (s1.y - s2.y) + d1.x * (s2.y - s0.y) + d2.x * (s0.y - s1.y)) / det;
+  const c = (s0.x * (d1.x - d2.x) + s1.x * (d2.x - d0.x) + s2.x * (d0.x - d1.x)) / det;
+  const e = d0.x - a * s0.x - c * s0.y;
+
+  const b = (d0.y * (s1.y - s2.y) + d1.y * (s2.y - s0.y) + d2.y * (s0.y - s1.y)) / det;
+  const dd = (s0.x * (d1.y - d2.y) + s1.x * (d2.y - d0.y) + s2.x * (d0.y - d1.y)) / det;
+  const f = d0.y - b * s0.x - dd * s0.y;
+
+  // Bounding box of srcTri for source-rect crop (limits pixel sampling area)
+  const sMinX = Math.floor(Math.min(s0.x, s1.x, s2.x));
+  const sMinY = Math.floor(Math.min(s0.y, s1.y, s2.y));
+  const sMaxX = Math.ceil(Math.max(s0.x, s1.x, s2.x));
+  const sMaxY = Math.ceil(Math.max(s0.y, s1.y, s2.y));
+
+  // Expand clip triangle ~0.5px outward from centroid to avoid sub-pixel seams
+  const centX = (d0.x + d1.x + d2.x) / 3;
+  const centY = (d0.y + d1.y + d2.y) / 3;
+  const EXPAND = 0.5;
+  function expandPt(p: { x: number; y: number }) {
+    const dx = p.x - centX;
+    const dy = p.y - centY;
+    const d = Math.hypot(dx, dy);
+    if (d < 0.001) return p;
+    return { x: p.x + (dx / d) * EXPAND, y: p.y + (dy / d) * EXPAND };
+  }
+  const cd0 = expandPt(d0);
+  const cd1 = expandPt(d1);
+  const cd2 = expandPt(d2);
+
+  ctx.beginPath();
+  ctx.moveTo(cd0.x, cd0.y);
+  ctx.lineTo(cd1.x, cd1.y);
+  ctx.lineTo(cd2.x, cd2.y);
+  ctx.closePath();
+  ctx.clip();
+
+  // Apply affine transform and draw only the relevant source rect
+  ctx.setTransform(a, b, c, dd, e, f);
+  ctx.drawImage(img, sMinX, sMinY, sMaxX - sMinX, sMaxY - sMinY, sMinX, sMinY, sMaxX - sMinX, sMaxY - sMinY);
+  ctx.resetTransform();
+}

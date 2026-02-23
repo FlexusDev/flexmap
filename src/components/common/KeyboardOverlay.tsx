@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useAppStore } from "../../store/useAppStore";
 
 // ── Shortcut definitions ────────────────────────────────────────────────
 interface Shortcut {
@@ -15,11 +16,13 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["meta", "s"],       label: "Save",       description: "Save the current project (Save As if new)",    category: "project" },
   { keys: ["meta", "shift", "s"], label: "Save As",  description: "Save the project to a new file location",     category: "project" },
   // Edit
+  { keys: ["esc"],             label: "Deselect",   description: "Clear face selection",                         category: "edit" },
   { keys: ["meta", "z"],       label: "Undo",       description: "Undo the last layer operation",                category: "edit" },
   { keys: ["meta", "shift", "z"], label: "Redo",     description: "Redo the last undone operation",               category: "edit" },
   { keys: ["meta", "d"],       label: "Duplicate",  description: "Duplicate the selected layer",                 category: "edit" },
   { keys: ["delete"],          label: "Delete",     description: "Remove the selected layer",                    category: "edit" },
   { keys: ["backspace"],       label: "Delete",     description: "Remove the selected layer (alternate)",        category: "edit" },
+  { keys: ["tab"],             label: "Shape/Edit", description: "Toggle shape vs UV/input edit mode",            category: "edit" },
   // View
   { keys: ["meta", "p"],       label: "Projector",  description: "Toggle the projector output window",           category: "view" },
   // Snap
@@ -127,6 +130,41 @@ function KeyboardOverlay() {
   const [open, setOpen] = useState(false);
   const [activeShortcut, setActiveShortcut] = useState<Shortcut | null>(null);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+  const {
+    layers,
+    selectedLayerId,
+    editorSelectionMode,
+    setEditorSelectionMode,
+    toggleEditorSelectionMode,
+  } = useAppStore((s) => ({
+    layers: s.layers,
+    selectedLayerId: s.selectedLayerId,
+    editorSelectionMode: s.editorSelectionMode,
+    setEditorSelectionMode: s.setEditorSelectionMode,
+    toggleEditorSelectionMode: s.toggleEditorSelectionMode,
+  }));
+
+  const selectedLayer = selectedLayerId
+    ? layers.find((l) => l.id === selectedLayerId) ?? null
+    : null;
+  const modeIsUv = editorSelectionMode === "uv" && !!selectedLayer;
+  const uvLabel = selectedLayer?.geometry.type === "Mesh" ? "UV" : "Input";
+
+  const setModeFromPopup = (mode: "shape" | "uv") => {
+    if (!selectedLayer) {
+      setEditorSelectionMode("shape");
+      return;
+    }
+    setEditorSelectionMode(mode);
+  };
+
+  const toggleModeFromPopup = () => {
+    if (!selectedLayer) {
+      setEditorSelectionMode("shape");
+      return;
+    }
+    toggleEditorSelectionMode();
+  };
 
   // Find all shortcuts a key belongs to
   const shortcutsForKey = useCallback(
@@ -143,6 +181,9 @@ function KeyboardOverlay() {
   const isBound = (keyId: string) => BOUND_KEYS.has(normalize(keyId));
 
   const handleKeyClick = (keyId: string) => {
+    if (normalize(keyId) === "tab") {
+      toggleModeFromPopup();
+    }
     const matches = shortcutsForKey(keyId);
     if (matches.length === 0) {
       setActiveShortcut(null);
@@ -230,6 +271,36 @@ function KeyboardOverlay() {
                     {cat}
                   </span>
                 ))}
+                <div className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] p-0.5">
+                  <button
+                    type="button"
+                    disabled={!selectedLayer}
+                    onClick={() => setModeFromPopup("shape")}
+                    className={`px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider transition ${
+                      !modeIsUv
+                        ? "text-indigo-200 bg-indigo-500/25 border border-indigo-400/40"
+                        : "text-white/55 hover:text-white/80"
+                    }`}
+                    title="Switch to Shape edit mode"
+                  >
+                    Shape
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!selectedLayer}
+                    onClick={() => setModeFromPopup("uv")}
+                    className={`px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider transition ${
+                      modeIsUv
+                        ? (selectedLayer?.geometry.type === "Mesh"
+                          ? "text-amber-200 bg-amber-500/25 border border-amber-400/40"
+                          : "text-cyan-200 bg-cyan-500/25 border border-cyan-400/40")
+                        : "text-white/55 hover:text-white/80"
+                    }`}
+                    title={`Switch to ${uvLabel} edit mode`}
+                  >
+                    {uvLabel}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -245,6 +316,13 @@ function KeyboardOverlay() {
                     const topMatch = matches[0];
                     const cat = topMatch ? CAT_COLORS[topMatch.category] : null;
                     const widthPx = (key.w ?? 1) * 42;
+                    const tabModeAccent = key.id === "tab"
+                      ? (modeIsUv
+                        ? (selectedLayer?.geometry.type === "Mesh"
+                          ? "ring-1 ring-amber-400/60 bg-amber-500/20 text-amber-200"
+                          : "ring-1 ring-cyan-400/60 bg-cyan-500/20 text-cyan-200")
+                        : "ring-1 ring-indigo-400/60 bg-indigo-500/20 text-indigo-200")
+                      : "";
 
                     return (
                       <button
@@ -261,6 +339,7 @@ function KeyboardOverlay() {
                               : "bg-white/[0.04] text-white/20 cursor-default"
                           }
                           ${hovered && bound && !active ? "brightness-125 scale-[1.04]" : ""}
+                          ${!active && tabModeAccent}
                         `}
                         onClick={() => handleKeyClick(key.id)}
                         onMouseEnter={() => setHoveredKey(key.id)}

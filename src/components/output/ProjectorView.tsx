@@ -1,6 +1,13 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { tauriInvoke, isTauri } from "../../lib/tauri-bridge";
-import type { CalibrationConfig, Layer, FrameSnapshot, BlendMode } from "../../types";
+import type {
+  CalibrationConfig,
+  Layer,
+  FrameSnapshot,
+  BlendMode,
+  InputTransform,
+} from "../../types";
+import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 
 /** Fast base64→Uint8ClampedArray decode using fetch + data URI (avoids byte-by-byte loop) */
 async function decodeBase64Fast(b64: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
@@ -303,9 +310,20 @@ function drawLayers(
 
     const frame = frameCache.get(layer.id);
     const geom = layer.geometry;
+    const inputTransform = layer.input_transform ?? DEFAULT_INPUT_TRANSFORM;
 
     if (frame) {
-      drawFrameInShape(ctx, w, h, geom, frame, layer.id, layer.properties.brightness, tmpCanvasMap);
+      drawFrameInShape(
+        ctx,
+        w,
+        h,
+        geom,
+        frame,
+        layer.id,
+        layer.properties.brightness,
+        inputTransform,
+        tmpCanvasMap
+      );
     } else {
       // No frame — white fill
       ctx.fillStyle = `rgba(255, 255, 255, ${alpha * layer.properties.brightness})`;
@@ -356,6 +374,7 @@ function drawFrameInShape(
   frame: ImageData,
   layerId: string,
   brightness: number,
+  inputTransform: InputTransform,
   canvasMap: Map<string, HTMLCanvasElement>
 ) {
   ctx.save();
@@ -368,8 +387,31 @@ function drawFrameInShape(
 
   // Get bounding box of the shape
   const bbox = getShapeBBox(w, h, geom);
-  ctx.drawImage(tmpCanvas, bbox.x, bbox.y, bbox.w, bbox.h);
+  drawImageWithInputTransform(ctx, tmpCanvas, bbox, inputTransform);
 
+  ctx.restore();
+}
+
+function drawImageWithInputTransform(
+  ctx: CanvasRenderingContext2D,
+  img: CanvasImageSource,
+  bbox: { x: number; y: number; w: number; h: number },
+  input: InputTransform
+) {
+  const { x, y, w, h } = bbox;
+  const cx = x + w * 0.5;
+  const cy = y + h * 0.5;
+  const sx = Math.max(Math.abs(input.scale[0]), 0.0001);
+  const sy = Math.max(Math.abs(input.scale[1]), 0.0001);
+
+  ctx.save();
+  // Inverse of shader UV transform
+  ctx.translate(-input.offset[0] * w, -input.offset[1] * h);
+  ctx.translate(cx, cy);
+  ctx.rotate(-input.rotation);
+  ctx.scale(1 / sx, 1 / sy);
+  ctx.translate(-cx, -cy);
+  ctx.drawImage(img, x, y, w, h);
   ctx.restore();
 }
 
@@ -395,8 +437,9 @@ function drawShapePath(
   } else if (geom.type === "Circle") {
     const cx = geom.data.center.x * w;
     const cy = geom.data.center.y * h;
-    const r = geom.data.radius * Math.min(w, h);
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    const rx = geom.data.radius_x * w;
+    const ry = geom.data.radius_y * h;
+    ctx.ellipse(cx, cy, rx, ry, geom.data.rotation, 0, Math.PI * 2);
   } else if (geom.type === "Mesh") {
     const pts = geom.data.points.map((p) => ({ x: p.x * w, y: p.y * h }));
     const { cols, rows } = geom.data;
@@ -427,8 +470,13 @@ function getShapeBBox(
   } else if (geom.type === "Circle") {
     const cx = geom.data.center.x * w;
     const cy = geom.data.center.y * h;
-    const r = geom.data.radius * Math.min(w, h);
-    return { x: cx - r, y: cy - r, w: r * 2, h: r * 2 };
+    const rx = geom.data.radius_x * w;
+    const ry = geom.data.radius_y * h;
+    const c = Math.cos(geom.data.rotation);
+    const s = Math.sin(geom.data.rotation);
+    const hw = Math.sqrt((rx * c) * (rx * c) + (ry * s) * (ry * s));
+    const hh = Math.sqrt((rx * s) * (rx * s) + (ry * c) * (ry * c));
+    return { x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 };
   } else {
     pts = geom.data.points.map((p) => ({ x: p.x * w, y: p.y * h }));
   }

@@ -1,5 +1,6 @@
-//! Buffer cache — avoids recreating vertex/index/uniform buffers every frame
-//! when geometry and properties haven't changed.
+//! Buffer cache — avoids recreating vertex/index/uniform buffers every frame.
+//! Geometry and uniforms are tracked separately so transform/property changes
+//! can update uniform buffers without rebuilding mesh buffers.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -55,7 +56,7 @@ fn compute_geometry_hash(geometry: &LayerGeometry) -> u64 {
                 hash_f64(&mut hasher, p.y);
             }
         }
-        LayerGeometry::Mesh { cols, rows, points } => {
+        LayerGeometry::Mesh { cols, rows, points, .. } => {
             cols.hash(&mut hasher);
             rows.hash(&mut hasher);
             for p in points {
@@ -63,14 +64,17 @@ fn compute_geometry_hash(geometry: &LayerGeometry) -> u64 {
                 hash_f64(&mut hasher, p.y);
             }
         }
-        LayerGeometry::Circle { center, radius, bounds } => {
+        LayerGeometry::Circle {
+            center,
+            radius_x,
+            radius_y,
+            rotation,
+        } => {
             hash_f64(&mut hasher, center.x);
             hash_f64(&mut hasher, center.y);
-            hash_f64(&mut hasher, *radius);
-            for p in bounds {
-                hash_f64(&mut hasher, p.x);
-                hash_f64(&mut hasher, p.y);
-            }
+            hash_f64(&mut hasher, *radius_x);
+            hash_f64(&mut hasher, *radius_y);
+            hash_f64(&mut hasher, *rotation);
         }
     }
     hasher.finish()
@@ -81,6 +85,33 @@ fn compute_properties_hash(uniforms: &LayerUniforms) -> u64 {
     let bytes: &[u8] = bytemuck::bytes_of(uniforms);
     bytes.hash(&mut hasher);
     hasher.finish()
+}
+
+fn create_bind_group(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    texture_view: &wgpu::TextureView,
+    uniform_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Cached Layer Bind Group"),
+        layout: bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(texture_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 impl BufferCache {
@@ -97,6 +128,7 @@ impl BufferCache {
     pub fn prepare_layer(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         bind_group_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
         texture_view: &wgpu::TextureView,
@@ -106,7 +138,7 @@ impl BufferCache {
         // Hash geometry struct directly — avoids allocating Vec<LayerVertex> + Vec<u16>
         // on every cache hit (60fps × N layers).
         let geom_hash = compute_geometry_hash(&layer.geometry);
-        let uniforms = LayerUniforms::from(&layer.properties);
+        let uniforms = LayerUniforms::from_layer(layer);
         let prop_hash = compute_properties_hash(&uniforms);
 
         // Get source generation to detect texture changes
@@ -115,18 +147,31 @@ impl BufferCache {
             .map(|sid| texture_manager.source_generation(sid))
             .unwrap_or(0);
 
-        // Check if we have a valid cached entry
-        if let Some(existing) = self.entries.get(&layer.id) {
-            if existing.geometry_hash == geom_hash
-                && existing.properties_hash == prop_hash
-                && existing.source_gen == source_gen
-            {
+        // Fast path: geometry unchanged. Update uniforms and/or texture binding in place.
+        if let Some(existing) = self.entries.get_mut(&layer.id) {
+            if existing.geometry_hash == geom_hash {
+                if existing.properties_hash != prop_hash {
+                    queue.write_buffer(&existing.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+                    existing.properties_hash = prop_hash;
+                }
+
+                if existing.source_gen != source_gen {
+                    existing.bind_group = create_bind_group(
+                        device,
+                        bind_group_layout,
+                        sampler,
+                        texture_view,
+                        &existing.uniform_buffer,
+                    );
+                    existing.source_gen = source_gen;
+                }
+
                 self.stats.hits += 1;
                 return self.entries.get(&layer.id);
             }
         }
 
-        // Cache miss — generate mesh and rebuild GPU buffers
+        // Cache miss — geometry changed or no entry, rebuild mesh buffers.
         self.stats.misses += 1;
 
         let (vertices, indices) = generate_layer_mesh(&layer.geometry);
@@ -149,27 +194,16 @@ impl BufferCache {
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Cached Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Cached Layer Bind Group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let bind_group = create_bind_group(
+            device,
+            bind_group_layout,
+            sampler,
+            texture_view,
+            &uniform_buffer,
+        );
 
         let cached = CachedLayerBuffers {
             vertex_buffer,

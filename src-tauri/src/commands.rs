@@ -398,6 +398,53 @@ pub async fn set_layer_source(
 }
 
 #[tauri::command]
+pub async fn set_layer_input_transform(
+    layer_id: String,
+    input_transform: InputTransform,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let result = state.set_layer_input_transform(&layer_id, input_transform);
+    if result {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn apply_layer_geometry_transform_delta(
+    layer_id: String,
+    dx: f64,
+    dy: f64,
+    d_rotation: f64,
+    sx: f64,
+    sy: f64,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<Option<LayerGeometry>, String> {
+    let result = state.apply_layer_geometry_transform_delta(&layer_id, dx, dy, d_rotation, sx, sy);
+    if result.is_some() {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn update_layer_point(
+    layer_id: String,
+    point_index: usize,
+    point: Point2D,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<Option<LayerGeometry>, String> {
+    let result = state.update_layer_point(&layer_id, point_index, point);
+    if result.is_some() {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn set_layer_blend_mode(
     layer_id: String,
     blend_mode: crate::scene::layer::BlendMode,
@@ -1031,6 +1078,109 @@ pub async fn get_projector_stats(
         fps: p.fps(),
         frametime_ms: p.frametime_ms(),
     })
+}
+
+// =============================================================================
+// Mesh face operations (Phases 4, 5, 7, 8)
+// =============================================================================
+
+#[tauri::command]
+pub async fn toggle_face_mask(
+    layer_id: String,
+    face_indices: Vec<usize>,
+    masked: bool,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let ok = state.toggle_face_mask(&layer_id, face_indices, masked);
+    if ok { sync_render_state(&state, &render); }
+    Ok(ok)
+}
+
+#[tauri::command]
+pub async fn create_face_group(
+    layer_id: String,
+    name: String,
+    face_indices: Vec<usize>,
+    color: String,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let ok = state.create_face_group(&layer_id, name, face_indices, color);
+    if ok { sync_render_state(&state, &render); }
+    Ok(ok)
+}
+
+#[tauri::command]
+pub async fn remove_face_group(
+    layer_id: String,
+    group_index: usize,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let ok = state.remove_face_group(&layer_id, group_index);
+    if ok { sync_render_state(&state, &render); }
+    Ok(ok)
+}
+
+#[tauri::command]
+pub async fn rename_face_group(
+    layer_id: String,
+    group_index: usize,
+    name: String,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let ok = state.rename_face_group(&layer_id, group_index, name);
+    if ok { sync_render_state(&state, &render); }
+    Ok(ok)
+}
+
+#[tauri::command]
+pub async fn set_calibration_target(
+    target: Option<CalibrationTarget>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<(), String> {
+    state.set_calibration_target(target);
+    sync_render_state(&state, &render);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_face_uv_override(
+    layer_id: String,
+    face_index: usize,
+    adjustment: UvAdjustment,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let ok = state.set_face_uv_override(&layer_id, face_index, adjustment);
+    if ok { sync_render_state(&state, &render); }
+    Ok(ok)
+}
+
+#[tauri::command]
+pub async fn clear_face_uv_override(
+    layer_id: String,
+    face_index: usize,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let ok = state.clear_face_uv_override(&layer_id, face_index);
+    if ok { sync_render_state(&state, &render); }
+    Ok(ok)
+}
+
+#[tauri::command]
+pub async fn subdivide_mesh(
+    layer_id: String,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<Option<LayerGeometry>, String> {
+    let new_geometry = state.subdivide_mesh(&layer_id);
+    if new_geometry.is_some() { sync_render_state(&state, &render); }
+    Ok(new_geometry)
 }
 
 // =============================================================================

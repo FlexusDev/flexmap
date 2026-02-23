@@ -58,6 +58,9 @@ pub fn run() {
             commands::update_layer_geometry,
             commands::update_layer_properties,
             commands::set_layer_source,
+            commands::set_layer_input_transform,
+            commands::apply_layer_geometry_transform_delta,
+            commands::update_layer_point,
             commands::set_layer_blend_mode,
             commands::get_layers,
             // Calibration
@@ -97,6 +100,15 @@ pub fn run() {
             commands::set_frame_pacing,
             // System
             commands::get_system_stats,
+            // Mesh face operations
+            commands::toggle_face_mask,
+            commands::create_face_group,
+            commands::remove_face_group,
+            commands::rename_face_group,
+            commands::set_calibration_target,
+            commands::set_face_uv_override,
+            commands::clear_face_uv_override,
+            commands::subdivide_mesh,
         ])
         .setup(|app| {
             log::info!("AuraMap setup complete");
