@@ -21,7 +21,6 @@ pub struct TestPatternBackend {
     /// Set of currently active source IDs (supports multiple simultaneous)
     active_sources: HashSet<String>,
     start_time: Instant,
-    frame_counter: u64,
     width: u32,
     height: u32,
     /// Per-source sequence counters (avoids shared mutable state between sources)
@@ -43,7 +42,6 @@ impl TestPatternBackend {
         Self {
             active_sources: HashSet::new(),
             start_time: Instant::now(),
-            frame_counter: 0,
             width: 160,
             height: 120,
             source_counters: std::collections::HashMap::new(),

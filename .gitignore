@@ -32,3 +32,6 @@ gen/
 
 # Temporary files
 *.tmp
+
+# Built frameworks (binary artifacts from build.rs)
+src-tauri/frameworks/

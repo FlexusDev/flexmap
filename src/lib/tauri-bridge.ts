@@ -292,16 +292,15 @@ const mockCommands: Record<string, (args: any) => any> = {
   }),
 
   check_syphon_status: () => ({
-    bridge_compiled: false,
-    bridge_available: false,
+    bridge_compiled: true,
+    bridge_available: true,
     search_paths: [
-      ["/Library/Frameworks/Syphon.framework", false],
-      ["~/Library/Frameworks/Syphon.framework", false],
+      ["(app bundle)/Contents/Frameworks/Syphon.framework", true],
     ],
-    message: "Syphon is only available on macOS (mock mode).",
+    message: "Syphon is ready. Syphon servers should appear automatically.",
   }),
 
-  install_syphon_framework: () => "Mock: Syphon.framework install simulated. Restart app to enable.",
+  install_syphon_framework: () => "Syphon.framework loaded successfully. Refresh sources to see Syphon servers.",
 };
 
 /**

@@ -135,9 +135,19 @@ static BOOL try_load_framework(NSString *frameworkDir) {
 static void try_load_syphon(void) {
     if (g_syphon_loaded) return;
 
-    // Search for Syphon.framework in priority order
+    // Build search paths — app bundle first, then standard locations
+    NSMutableArray<NSString *> *searchPaths = [NSMutableArray array];
+
+    // 1. App bundle (production: Tauri bundles into .app/Contents/Frameworks/)
+    NSString *bundledPath = [[[NSBundle mainBundle] privateFrameworksPath]
+        stringByAppendingPathComponent:@"Syphon.framework"];
+    if (bundledPath) {
+        [searchPaths addObject:bundledPath];
+    }
+
+    // 2. Standard framework locations
     NSString *home = NSHomeDirectory();
-    NSArray<NSString *> *searchPaths = @[
+    [searchPaths addObjectsFromArray:@[
         [home stringByAppendingPathComponent:@"Library/Frameworks/Syphon.framework"],
         @"/Library/Frameworks/Syphon.framework",
         @"/Applications/Synesthesia.app/Contents/Frameworks/Syphon.framework",
@@ -146,7 +156,7 @@ static void try_load_syphon(void) {
         @"/Applications/VDMX5.app/Contents/Frameworks/Syphon.framework",
         @"/Applications/MadMapper.app/Contents/Frameworks/Syphon.framework",
         @"/Applications/Millumin3.app/Contents/Frameworks/Syphon.framework",
-    ];
+    ]];
 
     for (NSString *path in searchPaths) {
         if (try_load_framework(path)) {
@@ -291,7 +301,10 @@ SyphonClientHandle syphon_create_client(const char* server_uuid) {
         [inv setArgument:&handler atIndex:5];
         [inv invoke];
 
-        id result = nil;
+        // IMPORTANT: getReturnValue: does a raw memcpy that bypasses ARC.
+        // Using __strong here would cause ARC to over-release (it never retained),
+        // leaving wrapper.client as a dangling pointer → crash in syphon_destroy_client.
+        __unsafe_unretained id result = nil;
         [inv getReturnValue:&result];
 
         if (!result) {
@@ -300,6 +313,9 @@ SyphonClientHandle syphon_create_client(const char* server_uuid) {
         }
 
         wrapper.client = result;
+        // Mark as having a frame so the first poll attempt tries to capture
+        // rather than waiting for the async newFrameHandler callback.
+        wrapper.hasNewFrame = YES;
 
         NSLog(@"[Syphon bridge] Connected to server: %@ (%@)",
               targetDesc[g_SyphonServerDescriptionNameKey],

@@ -181,14 +181,25 @@ pub fn try_reload() -> bool {
 /// Return a list of framework search paths (for diagnostics).
 pub fn framework_search_paths() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    vec![
+    let mut paths = Vec::new();
+
+    // App bundle path (production builds)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents) = exe.parent() {
+            let bundle_fw = contents.join("../Frameworks/Syphon.framework");
+            paths.push(bundle_fw.to_string_lossy().into_owned());
+        }
+    }
+
+    paths.extend([
         format!("{}/Library/Frameworks/Syphon.framework", home),
         "/Library/Frameworks/Syphon.framework".to_string(),
         "/Applications/Synesthesia.app/Contents/Frameworks/Syphon.framework".to_string(),
         "/Applications/Resolume Arena.app/Contents/Frameworks/Syphon.framework".to_string(),
         "/Applications/VDMX5.app/Contents/Frameworks/Syphon.framework".to_string(),
         "/Applications/MadMapper.app/Contents/Frameworks/Syphon.framework".to_string(),
-    ]
+    ]);
+    paths
 }
 
 impl SyphonBackend {
@@ -337,6 +348,10 @@ impl InputBackend for SyphonBackend {
         self.sources.clone()
     }
 
+    fn refresh(&mut self) {
+        self.refresh_sources();
+    }
+
     fn connect(&mut self, source_id: &str) -> Result<(), InputError> {
         log::info!("Syphon: connect requested for {}", source_id);
 
@@ -424,7 +439,13 @@ impl InputBackend for SyphonBackend {
 
         let has_new = unsafe { ffi::syphon_has_new_frame(client.handle) } != 0;
         if !has_new {
-            return self.return_cached_frame(source_id);
+            // If we have a cached frame, return it.
+            // If cache is empty, fall through to try capturing anyway —
+            // the handler might not have fired yet but a frame may be available.
+            if self.frame_cache.contains_key(source_id) {
+                return self.return_cached_frame(source_id);
+            }
+            log::debug!("Syphon: no cached frame for {} — trying force-poll", source_id);
         }
 
         let mut width: u32 = 0;
