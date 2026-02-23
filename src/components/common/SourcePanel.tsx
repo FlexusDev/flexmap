@@ -58,7 +58,7 @@ function SourcePanel() {
   };
 
   return (
-    <div className="h-56 border-t border-aura-border flex flex-col">
+    <div className="h-full border-t border-aura-border flex flex-col">
       <div className="flex items-center justify-between px-3 py-2 border-b border-aura-border">
         <span className="text-xs font-semibold uppercase tracking-wider text-aura-text-dim">
           Sources

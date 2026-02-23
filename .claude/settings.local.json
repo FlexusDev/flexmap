@@ -4,7 +4,23 @@
       "Bash(source:*)",
       "Bash(npm install:*)",
       "Bash(source \"$HOME/.cargo/env\" && npm run tauri dev 2>&1)",
-      "Bash(echo '' >> ~/.zshrc && echo '# Rust toolchain' >> ~/.zshrc && echo '. \"$HOME/.cargo/env\"' >> ~/.zshrc)"
+      "Bash(echo '' >> ~/.zshrc && echo '# Rust toolchain' >> ~/.zshrc && echo '. \"$HOME/.cargo/env\"' >> ~/.zshrc)",
+      "WebSearch",
+      "WebFetch(domain:v2.tauri.app)",
+      "WebFetch(domain:unstack.in)",
+      "WebFetch(domain:github.com)",
+      "Bash(cd /Users/tom.w/projection-mapping/auramap/src-tauri && cargo build --features input-syphon 2>&1)",
+      "Bash(rm -rf /Users/tom.w/projection-mapping/auramap/src-tauri/frameworks/Syphon.framework && cd /Users/tom.w/projection-mapping/auramap/src-tauri && cargo build --features input-syphon 2>&1)",
+      "Bash(cargo build:*)",
+      "Bash(head:*)",
+      "Bash(find /Users/tom.w/projection-mapping/auramap/src-tauri -name \"bridge.m\" -o -name \"bridge.h\" | xargs ls -la 2>/dev/null)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(tail:*)",
+      "mcp__MCP_DOCKER__resolve-library-id",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(wc:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

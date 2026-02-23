@@ -12,6 +12,7 @@ import type {
   UndoRedoResult,
   OutputConfig,
   BlendMode,
+  FramePacingMode,
 } from "../types";
 
 export interface Toast {
@@ -131,6 +132,14 @@ interface AppState {
 
   // Output
   setOutputConfig: (config: OutputConfig) => Promise<void>;
+
+  // Frame pacing
+  framePacingMode: FramePacingMode;
+  setFramePacing: (mode: FramePacingMode) => Promise<void>;
+
+  // Performance panel
+  performancePanelOpen: boolean;
+  togglePerformancePanel: () => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -574,4 +583,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error("Failed to set output config:", e);
     }
   },
+
+  framePacingMode: "show" as FramePacingMode,
+  setFramePacing: async (mode: FramePacingMode) => {
+    try {
+      await tauriInvoke<void>("set_frame_pacing", { mode });
+      set({ framePacingMode: mode });
+    } catch (e) {
+      console.error("Failed to set frame pacing:", e);
+      get().addToast("Failed to set frame pacing", "error");
+    }
+  },
+
+  performancePanelOpen: false,
+  togglePerformancePanel: () => set((s) => ({ performancePanelOpen: !s.performancePanelOpen })),
 }));

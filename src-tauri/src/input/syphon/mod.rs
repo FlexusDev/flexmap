@@ -147,13 +147,14 @@ pub struct SyphonBackend {
     sequence_counters: HashMap<String, u64>,
     last_discovery: std::time::Instant,
     bridge_available: bool,
+    prev_server_count: Option<usize>,
 }
 
-#[allow(dead_code)]
 struct CachedFrame {
     width: u32,
     height: u32,
-    rgba_data: Vec<u8>,
+    data: Vec<u8>,
+    pixel_format: PixelFormat,
 }
 
 // SyphonBackend holds raw pointers that are accessed only through RwLock<InputManager>
@@ -229,6 +230,7 @@ impl SyphonBackend {
             last_discovery: std::time::Instant::now()
                 - std::time::Duration::from_secs(10),
             bridge_available,
+            prev_server_count: None,
         };
 
         backend.refresh_sources();
@@ -249,10 +251,21 @@ impl SyphonBackend {
         }
 
         let servers = discover_servers();
-        log::info!(
-            "Syphon: refresh complete — {} server(s) discovered",
-            servers.len()
-        );
+        let count = servers.len();
+        let count_changed = self.prev_server_count != Some(count);
+        self.prev_server_count = Some(count);
+
+        if count_changed {
+            log::info!(
+                "Syphon: refresh complete — {} server(s) discovered",
+                count
+            );
+        } else {
+            log::debug!(
+                "Syphon: refresh complete — {} server(s) (unchanged)",
+                count
+            );
+        }
 
         self.sources = servers
             .iter()
@@ -276,12 +289,14 @@ impl SyphonBackend {
             })
             .collect();
 
-        for src in &self.sources {
-            log::info!(
-                "Syphon: source available: id={} name={:?}",
-                src.id,
-                src.name
-            );
+        if count_changed {
+            for src in &self.sources {
+                log::info!(
+                    "Syphon: source available: id={} name={:?}",
+                    src.id,
+                    src.name
+                );
+            }
         }
     }
 
@@ -331,8 +346,8 @@ impl SyphonBackend {
         Some(FramePacket {
             width: cached.width,
             height: cached.height,
-            pixel_format: PixelFormat::Rgba8,
-            data: cached.rgba_data.clone(),
+            pixel_format: cached.pixel_format,
+            data: cached.data.clone(),
             timestamp: None,
             sequence: Some(seq),
         })
@@ -424,10 +439,6 @@ impl InputBackend for SyphonBackend {
             return None;
         }
 
-        if self.last_discovery.elapsed() > std::time::Duration::from_secs(2) {
-            self.refresh_sources();
-        }
-
         if !self.ensure_client(source_id) {
             return self.return_cached_frame(source_id);
         }
@@ -439,9 +450,6 @@ impl InputBackend for SyphonBackend {
 
         let has_new = unsafe { ffi::syphon_has_new_frame(client.handle) } != 0;
         if !has_new {
-            // If we have a cached frame, return it.
-            // If cache is empty, fall through to try capturing anyway —
-            // the handler might not have fired yet but a frame may be available.
             if self.frame_cache.contains_key(source_id) {
                 return self.return_cached_frame(source_id);
             }
@@ -472,6 +480,8 @@ impl InputBackend for SyphonBackend {
         let total_bytes = (width * height * 4) as usize;
         client.pixel_buf.resize(total_bytes, 0);
 
+        // Time the Metal GPU readback (the expensive part)
+        let t_readback = std::time::Instant::now();
         let result = unsafe {
             ffi::syphon_copy_frame_pixels(
                 client.handle,
@@ -479,6 +489,7 @@ impl InputBackend for SyphonBackend {
                 total_bytes as u32,
             )
         };
+        let readback_ms = t_readback.elapsed().as_secs_f64() * 1000.0;
 
         if result != 1 {
             log::debug!(
@@ -489,13 +500,13 @@ impl InputBackend for SyphonBackend {
             return self.return_cached_frame(source_id);
         }
 
-        // BGRA → RGBA swizzle if needed
-        let mut rgba_data = client.pixel_buf.clone();
-        if client.is_bgra {
-            for chunk in rgba_data.chunks_exact_mut(4) {
-                chunk.swap(0, 2);
-            }
-        }
+        // Determine pixel format — pass BGRA through natively (no CPU swizzle).
+        // wgpu supports Bgra8UnormSrgb, so texture_manager uploads as-is.
+        let pixel_format = if client.is_bgra {
+            PixelFormat::Bgra8
+        } else {
+            PixelFormat::Rgba8
+        };
 
         let counter = self
             .sequence_counters
@@ -507,30 +518,50 @@ impl InputBackend for SyphonBackend {
         // Log first frame details
         if seq == 1 {
             log::info!(
-                "Syphon: first frame from {} — {}x{} bgra={} ({} bytes)",
+                "Syphon: first frame from {} — {}x{} bgra={} ({} bytes, readback={:.1}ms)",
                 source_id,
                 width,
                 height,
                 client.is_bgra,
-                total_bytes
+                total_bytes,
+                readback_ms
             );
         }
+
+        // Debounced timing log every 150 frames (~5s at 30fps)
+        if seq % 150 == 0 {
+            let total_poll_ms = t_readback.elapsed().as_secs_f64() * 1000.0 + readback_ms;
+            log::info!(
+                "Syphon: poll #{} readback={:.1}ms total={:.1}ms {}x{} ({})",
+                seq,
+                readback_ms,
+                total_poll_ms,
+                width,
+                height,
+                if client.is_bgra { "BGRA-native" } else { "RGBA" }
+            );
+        }
+
+        // Clone pixel_buf once for the packet (Metal needs pixel_buf stable for next readback)
+        let frame_data = client.pixel_buf.clone();
 
         let packet = FramePacket {
             width,
             height,
-            pixel_format: PixelFormat::Rgba8,
-            data: rgba_data.clone(),
+            pixel_format,
+            data: frame_data,
             timestamp: None,
             sequence: Some(seq),
         };
 
+        // Clone again for cache (packet is consumed by caller)
         self.frame_cache.insert(
             source_id.to_string(),
             CachedFrame {
                 width,
                 height,
-                rgba_data,
+                data: client.pixel_buf.clone(),
+                pixel_format,
             },
         );
 

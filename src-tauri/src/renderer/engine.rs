@@ -8,7 +8,8 @@
 use parking_lot::RwLock;
 use wgpu::util::DeviceExt;
 
-use super::gpu::GpuContext;
+use super::buffer_cache::BufferCache;
+use super::gpu::{FramePacingMode, GpuContext};
 use super::pipeline::{
     BlendUniforms, CalibrationUniforms, LayerUniforms, RenderPipeline, blend_mode_to_u32,
     generate_layer_mesh,
@@ -24,6 +25,7 @@ pub struct RenderState {
     pub needs_redraw: RwLock<bool>,
     pub output_width: RwLock<u32>,
     pub output_height: RwLock<u32>,
+    pub frame_pacing: RwLock<FramePacingMode>,
 }
 
 impl RenderState {
@@ -34,6 +36,7 @@ impl RenderState {
             needs_redraw: RwLock::new(true),
             output_width: RwLock::new(1920),
             output_height: RwLock::new(1080),
+            frame_pacing: RwLock::new(FramePacingMode::default()),
         }
     }
 
@@ -85,6 +88,8 @@ pub struct RenderEngine {
     /// Temporary texture for rendering a single layer before blend-compositing
     pub layer_temp_texture: wgpu::Texture,
     pub layer_temp_view: wgpu::TextureView,
+    /// Buffer cache for dirty tracking (avoids rebuilding buffers every frame)
+    pub buffer_cache: BufferCache,
 }
 
 impl RenderEngine {
@@ -138,6 +143,7 @@ impl RenderEngine {
             ping_pong_view,
             layer_temp_texture,
             layer_temp_view,
+            buffer_cache: BufferCache::new(),
         }
     }
 
@@ -188,9 +194,33 @@ impl RenderEngine {
         self.offscreen_height = height;
     }
 
+    /// Pre-populate the buffer cache for all visible layers.
+    /// Must be called before render_scene (needs &mut self, which render_scene doesn't).
+    pub fn prepare_all_buffers(&mut self, layers: &[Layer]) {
+        let layer_ids: Vec<String> = layers.iter().map(|l| l.id.clone()).collect();
+        self.buffer_cache.retain_layers(&layer_ids);
+
+        for layer in layers.iter().filter(|l| l.visible) {
+            let texture_view = self
+                .texture_manager
+                .get_texture_view(&layer.id)
+                .unwrap_or(&self.white_texture_view);
+
+            self.buffer_cache.prepare_layer(
+                &self.gpu.device,
+                &self.pipeline.layer_bind_group_layout,
+                &self.pipeline.sampler,
+                texture_view,
+                &self.texture_manager,
+                layer,
+            );
+        }
+    }
+
     /// Render the full scene to the offscreen texture.
     /// Uses multi-pass ping-pong compositing for complex blend modes.
     /// Returns the command buffer ready for submission.
+    /// Call prepare_all_buffers() first if you want cache benefits.
     pub fn render_scene(
         &self,
         layers: &[Layer],
@@ -484,19 +514,30 @@ impl RenderEngine {
 
     /// Render a single layer's geometry into the current render pass.
     /// If `force_normal` is true, uses the normal pipeline regardless of layer's blend mode.
+    /// Uses cached buffers when available (populated by prepare_all_buffers).
     fn render_single_layer_to_pass<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
         layer: &Layer,
         force_normal: bool,
     ) {
-        let (vertices, indices) = generate_layer_mesh(&layer.geometry);
-        if vertices.is_empty() || indices.is_empty() {
+        if force_normal {
+            pass.set_pipeline(&self.pipeline.layer_pipeline);
+        }
+
+        // Try to use cached buffers first
+        if let Some(cached) = self.buffer_cache.entries.get(&layer.id) {
+            pass.set_bind_group(0, &cached.bind_group, &[]);
+            pass.set_vertex_buffer(0, cached.vertex_buffer.slice(..));
+            pass.set_index_buffer(cached.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..cached.index_count, 0, 0..1);
             return;
         }
 
-        if force_normal {
-            pass.set_pipeline(&self.pipeline.layer_pipeline);
+        // Fallback: create buffers inline (no cache prepared)
+        let (vertices, indices) = generate_layer_mesh(&layer.geometry);
+        if vertices.is_empty() || indices.is_empty() {
+            return;
         }
 
         // Get texture view — use source texture if available, otherwise white fallback
@@ -654,100 +695,104 @@ impl RenderEngine {
                 label: Some("Surface Blit Encoder"),
             });
 
-        // Copy offscreen → surface via a simple textured fullscreen pass
-        {
-            let blit_bg =
-                self.gpu
-                    .device
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Surface Blit BG"),
-                        layout: &self.pipeline.blend_source_bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&self.offscreen_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
-                            },
-                        ],
-                    });
-
-            // Use a dummy dest and blend uniform with Normal mode for passthrough
-            let dummy_dest_bg =
-                self.gpu
-                    .device
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Dummy Dest BG"),
-                        layout: &self.pipeline.blend_dest_bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(
-                                    &self.white_texture_view,
-                                ),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
-                            },
-                        ],
-                    });
-
-            let blit_uniforms = BlendUniforms {
-                blend_mode: 0, // Normal = passthrough
-                opacity: 1.0,
-                _pad0: 0.0,
-                _pad1: 0.0,
-            };
-            let uniform_buffer =
-                self.gpu
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Blit Uniform Buffer"),
-                        contents: bytemuck::cast_slice(&[blit_uniforms]),
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    });
-            let uniform_bg =
-                self.gpu
-                    .device
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Blit Uniform BG"),
-                        layout: &self.pipeline.blend_uniform_bind_group_layout,
-                        entries: &[wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: uniform_buffer.as_entire_binding(),
-                        }],
-                    });
-
-            let mut pass = blit_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Surface Blit Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &surface_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            pass.set_pipeline(&self.pipeline.blend_composite_pipeline);
-            pass.set_bind_group(0, &blit_bg, &[]);
-            pass.set_bind_group(1, &dummy_dest_bg, &[]);
-            pass.set_bind_group(2, &uniform_bg, &[]);
-            pass.draw(0..3, 0..1);
-        }
+        self.blit_to_view(&mut blit_encoder, &surface_view);
 
         self.gpu
             .queue
             .submit([scene_cmd, blit_encoder.finish()]);
         output.present();
         Ok(())
+    }
+
+    /// Blit the offscreen render target to an arbitrary target view.
+    /// Used by the projector to copy the composited scene to the surface.
+    pub fn blit_to_view(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+    ) {
+        let blit_bg = self
+            .gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Blit Source BG"),
+                layout: &self.pipeline.blend_source_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.offscreen_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
+                    },
+                ],
+            });
+
+        let dummy_dest_bg = self
+            .gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Blit Dummy Dest BG"),
+                layout: &self.pipeline.blend_dest_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.white_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
+                    },
+                ],
+            });
+
+        let blit_uniforms = BlendUniforms {
+            blend_mode: 0, // Normal = passthrough
+            opacity: 1.0,
+            _pad0: 0.0,
+            _pad1: 0.0,
+        };
+        let uniform_buffer = self
+            .gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Blit Uniform Buffer"),
+                contents: bytemuck::cast_slice(&[blit_uniforms]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let uniform_bg = self
+            .gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Blit Uniform BG"),
+                layout: &self.pipeline.blend_uniform_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }],
+            });
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Blit Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_pipeline(&self.pipeline.blend_composite_pipeline);
+        pass.set_bind_group(0, &blit_bg, &[]);
+        pass.set_bind_group(1, &dummy_dest_bg, &[]);
+        pass.set_bind_group(2, &uniform_bg, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Render scene to the offscreen texture and read pixels back (for preview/screenshot)

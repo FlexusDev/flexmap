@@ -180,11 +180,6 @@ impl InputManager {
             log::info!("Spout input backend registered (Windows D3D11)");
         }
 
-        #[cfg(feature = "input-ndi")]
-        {
-            log::info!("NDI input backend available (optional)");
-        }
-
         Self {
             backends,
             layer_bindings: HashMap::new(),
@@ -349,6 +344,15 @@ impl InputManager {
             }
         }
         false
+    }
+
+    /// Check if any layer bindings point to sources that are not currently active.
+    /// Used for a cheap read-lock pre-check before taking the expensive write lock
+    /// for reconnection.
+    pub fn has_stale_bindings(&self) -> bool {
+        self.layer_bindings.values().any(|source_id| {
+            !self.backends.iter().any(|b| b.is_source_active(source_id))
+        })
     }
 
     /// Attempt to reconnect bound sources that are discoverable but not actively

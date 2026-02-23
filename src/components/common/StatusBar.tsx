@@ -3,6 +3,7 @@ import { useAppStore } from "../../store/useAppStore";
 import type { PerfStats } from "../../store/useAppStore";
 import { tauriInvoke, isTauri } from "../../lib/tauri-bridge";
 import type { RenderStats, SystemStats, ProjectorStats } from "../../types";
+import PerformancePanel from "./PerformancePanel";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -279,6 +280,8 @@ function StatusBar() {
     snapEnabled,
     project,
     editorPerf,
+    performancePanelOpen,
+    togglePerformancePanel,
   } = useAppStore();
 
   const [gpuInfo, setGpuInfo] = useState<RenderStats | null>(null);
@@ -325,8 +328,19 @@ function StatusBar() {
 
       <span className="text-aura-border">|</span>
 
-      {/* GPU badge with system stats on hover */}
-      {gpuInfo && <GpuBadge gpuInfo={gpuInfo} />}
+      {/* GPU badge — click to toggle Performance panel */}
+      {gpuInfo && (
+        <span
+          className="cursor-pointer hover:text-aura-text transition-colors"
+          onClick={togglePerformancePanel}
+          title="Toggle Performance panel"
+        >
+          <GpuBadge gpuInfo={gpuInfo} />
+        </span>
+      )}
+
+      {/* Performance panel flyout */}
+      {performancePanelOpen && <PerformancePanel />}
 
       {snapEnabled && (
         <span className="text-cyan-400 font-medium">SNAP</span>

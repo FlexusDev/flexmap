@@ -8,7 +8,4 @@ pub mod spout;
 #[cfg(feature = "input-syphon")]
 pub mod syphon;
 
-#[cfg(feature = "input-ndi")]
-pub mod ndi;
-
 pub use adapter::*;

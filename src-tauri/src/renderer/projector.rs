@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use parking_lot::RwLock;
 
 use super::engine::{RenderEngine, RenderState};
-use super::gpu::OutputSurface;
+use super::gpu::{FramePacingMode, OutputSurface};
 
 /// Shared state for the GPU projector render loop
 pub struct GpuProjector {
@@ -80,6 +80,7 @@ impl GpuProjector {
                 let mut frame_count = 0u64;
                 let mut fps_timer = std::time::Instant::now();
                 let target_interval = std::time::Duration::from_micros(16_667); // ~60fps cap
+                let mut current_pacing = FramePacingMode::Show;
 
                 loop {
                     if stop_signal.load(Ordering::SeqCst) {
@@ -100,10 +101,18 @@ impl GpuProjector {
                         log::info!("GPU projector resized to {}x{}", out_w, out_h);
                     }
 
+                    // Check if frame pacing mode changed
+                    let new_pacing = *render_state.frame_pacing.read();
+                    if new_pacing != current_pacing {
+                        surface.set_present_mode(&device, new_pacing);
+                        current_pacing = new_pacing;
+                    }
+
                     // Acquire the next surface texture.
                     // With Fifo present mode this may block waiting for VSync.
                     // We do NOT hold the engine lock here — so the frame pump
                     // thread can upload textures while we wait.
+                    let t_surface = std::time::Instant::now();
                     let surface_texture = match surface.surface.get_current_texture() {
                         Ok(t) => t,
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -117,6 +126,7 @@ impl GpuProjector {
                             continue;
                         }
                     };
+                    let surface_ms = t_surface.elapsed().as_secs_f64() * 1000.0;
                     let target_view = surface_texture.texture
                         .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -124,48 +134,65 @@ impl GpuProjector {
                     // This is fast (< 1ms) — just building GPU command buffers.
                     // The frame pump thread needs a write lock to upload textures,
                     // so we release this as quickly as possible.
+                    let t_prepare = std::time::Instant::now();
+                    let prepare_ms;
+                    let render_ms;
                     {
                         let eng = engine.read();
-                        let mut encoder = eng.gpu.device.create_command_encoder(
-                            &wgpu::CommandEncoderDescriptor {
-                                label: Some("Projector Render Encoder"),
-                            },
-                        );
 
-                        {
-                            let mut pass = encoder.begin_render_pass(
-                                &wgpu::RenderPassDescriptor {
-                                    label: Some("Projector Render Pass"),
-                                    color_attachments: &[Some(
-                                        wgpu::RenderPassColorAttachment {
-                                            view: &target_view,
-                                            resolve_target: None,
-                                            ops: wgpu::Operations {
-                                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                                store: wgpu::StoreOp::Store,
-                                            },
-                                        },
-                                    )],
-                                    depth_stencil_attachment: None,
-                                    timestamp_writes: None,
-                                    occlusion_query_set: None,
-                                },
-                            );
+                        // Check if offscreen needs resize to match projector surface
+                        let needs_resize = out_w != eng.offscreen_width || out_h != eng.offscreen_height;
+                        drop(eng);
 
-                            if calibration.enabled {
-                                eng.render_calibration_pass(&mut pass, &calibration);
-                            } else {
-                                eng.render_layers_pass(&mut pass, &layers);
-                            }
+                        if needs_resize {
+                            let mut eng = engine.write();
+                            eng.resize_offscreen(out_w, out_h);
+                            drop(eng);
                         }
 
-                        let buf = encoder.finish();
-                        eng.gpu.queue.submit(std::iter::once(buf));
+                        // Pre-populate buffer cache (needs &mut, then released)
+                        {
+                            let mut eng = engine.write();
+                            eng.prepare_all_buffers(&layers);
+                        }
+
+                        let eng = engine.read();
+                        prepare_ms = t_prepare.elapsed().as_secs_f64() * 1000.0;
+
+                        // Use full multi-pass compositing (supports all 13 blend modes)
+                        let t_render = std::time::Instant::now();
+                        let scene_cmd = eng.render_scene(&layers, &calibration);
+
+                        // Blit offscreen → surface
+                        let mut blit_encoder = eng.gpu.device.create_command_encoder(
+                            &wgpu::CommandEncoderDescriptor {
+                                label: Some("Projector Blit Encoder"),
+                            },
+                        );
+                        eng.blit_to_view(&mut blit_encoder, &target_view);
+
+                        eng.gpu.queue.submit([scene_cmd, blit_encoder.finish()]);
+                        render_ms = t_render.elapsed().as_secs_f64() * 1000.0;
                         // Engine lock released here
                     };
 
                     // Present doesn't need any lock
+                    let t_present = std::time::Instant::now();
                     surface_texture.present();
+                    let present_ms = t_present.elapsed().as_secs_f64() * 1000.0;
+
+                    // Log frametime breakdown when frametime exceeds 20ms (stutter detection)
+                    let total_frame_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+                    if total_frame_ms > 20.0 {
+                        log::warn!(
+                            "GPU projector stutter: {:.1}ms total — surface={:.1}ms prepare={:.1}ms render={:.1}ms present={:.1}ms",
+                            total_frame_ms,
+                            surface_ms,
+                            prepare_ms,
+                            render_ms,
+                            present_ms
+                        );
+                    }
 
                     // Track FPS
                     frame_count += 1;
@@ -178,12 +205,14 @@ impl GpuProjector {
                         fps_counter.store(fps, Ordering::Relaxed);
                         frame_count = 0;
                         fps_timer = std::time::Instant::now();
-                        log::debug!("GPU projector: {} fps, {:.1}ms frametime",
-                            fps, frame_elapsed.as_secs_f64() * 1000.0);
+                        log::info!("GPU projector: {} fps, {:.1}ms frametime, {} layers",
+                            fps, frame_elapsed.as_secs_f64() * 1000.0, layers.len());
                     }
 
-                    // Rate limit if faster than target (VSync should handle this)
-                    if frame_elapsed < target_interval {
+                    // Rate limit if faster than target — skip in Benchmark mode
+                    if current_pacing != FramePacingMode::Benchmark
+                        && frame_elapsed < target_interval
+                    {
                         std::thread::sleep(target_interval - frame_elapsed);
                     }
                 }

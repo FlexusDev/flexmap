@@ -1,3 +1,4 @@
+pub mod buffer_cache;
 pub mod engine;
 pub mod gpu;
 pub mod pipeline;

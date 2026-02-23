@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { useAppStore } from "./store/useAppStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { tauriInvoke } from "./lib/tauri-bridge";
@@ -38,6 +39,11 @@ function App() {
   const [showRecovery, setShowRecovery] = useState(false);
 
   useKeyboardShortcuts();
+
+  const { defaultLayout: mainLayout, onLayoutChanged: onMainLayoutChanged } =
+    useDefaultLayout({ id: "auramap-main", storage: localStorage });
+  const { defaultLayout: leftLayout, onLayoutChanged: onLeftLayoutChanged } =
+    useDefaultLayout({ id: "auramap-left-split", storage: localStorage });
 
   useEffect(() => {
     loadProject();
@@ -88,23 +94,60 @@ function App() {
       <CalibrationBar />
 
       {/* Main content area */}
-      <div className="flex flex-1 min-h-0">
+      <Group
+        orientation="horizontal"
+        className="flex-1 min-h-0"
+        defaultLayout={mainLayout}
+        onLayoutChanged={onMainLayoutChanged}
+      >
         {/* Left panel: Layers + Sources */}
-        <div className="w-64 flex flex-col border-r border-aura-border">
-          <LayerPanel />
-          <SourcePanel />
-        </div>
+        <Panel
+          id="left"
+          defaultSize={256}
+          minSize={180}
+          maxSize={400}
+          collapsible
+          className="flex flex-col border-r border-aura-border"
+        >
+          <Group
+            orientation="vertical"
+            className="h-full"
+            defaultLayout={leftLayout}
+            onLayoutChanged={onLeftLayoutChanged}
+          >
+            <Panel id="layers" defaultSize="65" minSize={80}>
+              <LayerPanel />
+            </Panel>
+            <Separator />
+            <Panel id="sources" defaultSize="35" minSize={60}>
+              <SourcePanel />
+            </Panel>
+          </Group>
+        </Panel>
+
+        <Separator />
 
         {/* Center: Editor canvas */}
-        <div className="flex-1 relative">
-          <EditorCanvas />
-        </div>
+        <Panel id="center" minSize={200}>
+          <div className="relative h-full w-full">
+            <EditorCanvas />
+          </div>
+        </Panel>
+
+        <Separator />
 
         {/* Right panel: Properties */}
-        <div className="w-72 border-l border-aura-border">
+        <Panel
+          id="right"
+          defaultSize={288}
+          minSize={200}
+          maxSize={450}
+          collapsible
+          className="border-l border-aura-border"
+        >
           <PropertiesPanel />
-        </div>
-      </div>
+        </Panel>
+      </Group>
 
       {/* Status bar */}
       <StatusBar />
