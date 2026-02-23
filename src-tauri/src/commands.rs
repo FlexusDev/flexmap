@@ -732,13 +732,19 @@ pub async fn install_syphon_framework() -> Result<String, String> {
         let frameworks_dir = format!("{}/Library/Frameworks", home);
         let target_path = format!("{}/Syphon.framework", frameworks_dir);
 
-        // Check if already installed
+        // Check if already installed — just try to load it
         if std::path::Path::new(&target_path).exists() {
-            log::info!("Syphon.framework already exists at {}", target_path);
-            return Ok(format!(
-                "Syphon.framework is already installed at {}. Rebuild the app to enable it.",
-                target_path
-            ));
+            log::info!("Syphon.framework already exists at {}, attempting runtime load", target_path);
+            let loaded = crate::input::syphon::try_reload();
+            if loaded {
+                return Ok("Syphon.framework is already installed and loaded! Refresh sources to see Syphon servers.".to_string());
+            } else {
+                return Ok(format!(
+                    "Syphon.framework exists at {} but failed to load at runtime. \
+                     Try restarting the app.",
+                    target_path
+                ));
+            }
         }
 
         // Ensure ~/Library/Frameworks/ exists
