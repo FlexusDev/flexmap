@@ -1,4 +1,41 @@
 use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+
+/// Frame pacing modes for projector output
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FramePacingMode {
+    /// VSync — smooth, no tearing (default for shows)
+    Show,
+    /// Mailbox — tear-free but skips old frames (lower latency)
+    LowLatency,
+    /// Immediate — uncapped FPS, may tear (for benchmarking)
+    Benchmark,
+}
+
+impl FramePacingMode {
+    pub fn to_present_mode(self) -> wgpu::PresentMode {
+        match self {
+            FramePacingMode::Show => wgpu::PresentMode::Fifo,
+            FramePacingMode::LowLatency => wgpu::PresentMode::Mailbox,
+            FramePacingMode::Benchmark => wgpu::PresentMode::Immediate,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            FramePacingMode::Show => "Show (VSync)",
+            FramePacingMode::LowLatency => "Low Latency (Mailbox)",
+            FramePacingMode::Benchmark => "Benchmark (Immediate)",
+        }
+    }
+}
+
+impl Default for FramePacingMode {
+    fn default() -> Self {
+        FramePacingMode::Show
+    }
+}
 
 /// GPU context holding wgpu device/queue/adapter — shared across the app
 pub struct GpuContext {
@@ -102,5 +139,15 @@ impl OutputSurface {
 
     pub fn reconfigure(&self, device: &wgpu::Device) {
         self.surface.configure(device, &self.config);
+    }
+
+    /// Change the present mode (frame pacing).
+    pub fn set_present_mode(&mut self, device: &wgpu::Device, mode: FramePacingMode) {
+        let new_mode = mode.to_present_mode();
+        if self.config.present_mode != new_mode {
+            self.config.present_mode = new_mode;
+            self.surface.configure(device, &self.config);
+            log::info!("Projector present mode changed to {:?}", mode);
+        }
     }
 }

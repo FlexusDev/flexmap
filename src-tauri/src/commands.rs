@@ -767,10 +767,10 @@ pub async fn set_output_config(
 
 /// Max preview dimension — frames are downscaled to this before base64 encoding.
 /// Keeps IPC payload small (~40KB instead of ~1.2MB per frame).
-const PREVIEW_MAX_DIM: u32 = 160;
+pub(crate) const PREVIEW_MAX_DIM: u32 = 160;
 
 /// Response carrying a frame snapshot for the frontend to paint
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct FrameSnapshot {
     pub width: u32,
     pub height: u32,
@@ -778,8 +778,22 @@ pub struct FrameSnapshot {
     pub data_b64: String,
 }
 
+/// Shared preview frame cache — populated by the frame pump thread,
+/// read by poll_all_frames. Eliminates duplicate Metal GPU readbacks.
+pub struct PreviewCache {
+    pub frames: parking_lot::RwLock<std::collections::HashMap<String, FrameSnapshot>>,
+}
+
+impl PreviewCache {
+    pub fn new() -> Self {
+        Self {
+            frames: parking_lot::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
 /// Downsample RGBA frame using nearest-neighbor. Fast, no deps needed.
-fn downsample_rgba(
+pub(crate) fn downsample_rgba(
     src: &[u8],
     src_w: u32,
     src_h: u32,
@@ -800,7 +814,7 @@ fn downsample_rgba(
 }
 
 /// Compute preview dimensions maintaining aspect ratio
-fn preview_dims(w: u32, h: u32) -> (u32, u32) {
+pub(crate) fn preview_dims(w: u32, h: u32) -> (u32, u32) {
     if w <= PREVIEW_MAX_DIM && h <= PREVIEW_MAX_DIM {
         return (w, h);
     }
@@ -811,15 +825,29 @@ fn preview_dims(w: u32, h: u32) -> (u32, u32) {
 }
 
 /// Encode a frame to a FrameSnapshot, downscaling for IPC efficiency.
-fn encode_frame(f: &crate::input::adapter::FramePacket) -> FrameSnapshot {
+///
+/// BGRA frames are downsampled first (8MB → 57KB), then swizzled to RGBA
+/// on the small preview buffer. This is ~140x cheaper than swizzling the
+/// full-resolution source frame.
+pub(crate) fn encode_frame(f: &crate::input::adapter::FramePacket) -> FrameSnapshot {
     use base64::Engine;
+    use crate::input::adapter::PixelFormat;
 
     let (pw, ph) = preview_dims(f.width, f.height);
-    let data = if pw == f.width && ph == f.height {
+    let mut data = if pw == f.width && ph == f.height {
         f.data.clone()
     } else {
+        // downsample_rgba works on any 4-byte-per-pixel layout (RGBA or BGRA)
         downsample_rgba(&f.data, f.width, f.height, pw, ph)
     };
+
+    // BGRA→RGBA swizzle on the small preview buffer (57KB vs 8MB)
+    if f.pixel_format == PixelFormat::Bgra8 {
+        for chunk in data.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
+    }
+
     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
 
     FrameSnapshot {
@@ -846,47 +874,17 @@ pub async fn poll_layer_frame(
 }
 
 /// Poll frames for ALL layers that have sources assigned.
-/// Returns a map of layer_id -> FrameSnapshot. Much more efficient than
-/// calling poll_layer_frame per-layer since it only acquires the lock once.
+/// Returns a map of layer_id -> FrameSnapshot.
+///
+/// This reads from the PreviewCache (populated by the frame pump thread)
+/// instead of re-polling Metal/Syphon sources — eliminates the ~160ms
+/// GPU readback that was making the editor preview lag at 5fps.
 #[tauri::command]
 pub async fn poll_all_frames(
-    input: State<'_, Arc<parking_lot::RwLock<crate::input::adapter::InputManager>>>,
+    cache: State<'_, Arc<PreviewCache>>,
 ) -> Result<std::collections::HashMap<String, FrameSnapshot>, String> {
-    let t0 = std::time::Instant::now();
-
-    let mut mgr = input.write();
-    let bound = mgr.bound_layer_ids();
-    let mut result = std::collections::HashMap::new();
-    let mut frame_count = 0u32;
-
-    for layer_id in &bound {
-        let binding = mgr.get_binding(layer_id).map(|s| s.to_string());
-        if let Some(f) = mgr.poll_frame_for_layer(layer_id) {
-            // Log first 4 pixels (16 bytes) as fingerprint to detect cross-contamination
-            let fingerprint: Vec<u8> = f.data.iter().take(16).copied().collect();
-            log::debug!(
-                "poll_all_frames: layer={} source={:?} dims={}x{} fp={:?}",
-                &layer_id[..8],
-                binding,
-                f.width,
-                f.height,
-                fingerprint
-            );
-            result.insert(layer_id.clone(), encode_frame(&f));
-            frame_count += 1;
-        }
-    }
-
-    let elapsed = t0.elapsed();
-    if frame_count > 0 && elapsed.as_millis() > 16 {
-        log::warn!(
-            "poll_all_frames SLOW: {} frames, {:.1}ms",
-            frame_count,
-            elapsed.as_secs_f64() * 1000.0
-        );
-    }
-
-    Ok(result)
+    let frames = cache.frames.read();
+    Ok(frames.clone())
 }
 
 // =============================================================================
@@ -897,11 +895,19 @@ pub async fn poll_all_frames(
 pub struct RenderStats {
     pub gpu_name: String,
     pub gpu_ready: bool,
+    pub gpu_backend: String,
+    pub gpu_driver: String,
+    pub gpu_device_type: String,
+    pub frame_pacing: String,
+    pub texture_count: usize,
+    pub buffer_cache_hits: u64,
+    pub buffer_cache_misses: u64,
 }
 
 #[tauri::command]
 pub async fn get_render_stats(
     app: tauri::AppHandle,
+    render: State<'_, Arc<RenderState>>,
 ) -> Result<RenderStats, String> {
     let engine_state = app
         .try_state::<Arc<parking_lot::RwLock<crate::renderer::engine::RenderEngine>>>();
@@ -910,16 +916,92 @@ pub async fn get_render_stats(
         Some(engine_lock) => {
             let engine = engine_lock.read();
             let info = engine.gpu.adapter.get_info();
+            let pacing = render.frame_pacing.read();
             Ok(RenderStats {
                 gpu_name: info.name.clone(),
                 gpu_ready: true,
+                gpu_backend: format!("{:?}", info.backend),
+                gpu_driver: info.driver.clone(),
+                gpu_device_type: format!("{:?}", info.device_type),
+                frame_pacing: pacing.label().to_string(),
+                texture_count: engine.texture_manager.source_texture_count(),
+                buffer_cache_hits: engine.buffer_cache.stats.hits,
+                buffer_cache_misses: engine.buffer_cache.stats.misses,
             })
         }
         None => Ok(RenderStats {
             gpu_name: "Initializing GPU...".to_string(),
             gpu_ready: false,
+            gpu_backend: String::new(),
+            gpu_driver: String::new(),
+            gpu_device_type: String::new(),
+            frame_pacing: String::new(),
+            texture_count: 0,
+            buffer_cache_hits: 0,
+            buffer_cache_misses: 0,
         }),
     }
+}
+
+// =============================================================================
+// Source diagnostics
+// =============================================================================
+
+#[derive(Serialize)]
+pub struct SourceDiagnostics {
+    pub source_id: String,
+    pub name: String,
+    pub protocol: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fps: Option<f64>,
+    pub layers_using: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn get_source_diagnostics(
+    input: State<'_, Arc<parking_lot::RwLock<crate::input::adapter::InputManager>>>,
+) -> Result<Vec<SourceDiagnostics>, String> {
+    let mgr = input.read();
+    let sources = mgr.list_all_sources();
+    let bound_ids = mgr.bound_layer_ids();
+
+    let diagnostics: Vec<SourceDiagnostics> = sources
+        .into_iter()
+        .map(|src| {
+            let layers_using: Vec<String> = bound_ids
+                .iter()
+                .filter(|layer_id| mgr.get_binding(layer_id) == Some(&src.id))
+                .cloned()
+                .collect();
+
+            SourceDiagnostics {
+                source_id: src.id,
+                name: src.name,
+                protocol: src.protocol,
+                width: src.width,
+                height: src.height,
+                fps: src.fps,
+                layers_using,
+            }
+        })
+        .collect();
+
+    Ok(diagnostics)
+}
+
+// =============================================================================
+// Frame pacing
+// =============================================================================
+
+#[tauri::command]
+pub async fn set_frame_pacing(
+    mode: crate::renderer::gpu::FramePacingMode,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<(), String> {
+    *render.frame_pacing.write() = mode;
+    log::info!("Frame pacing set to {:?}", mode);
+    Ok(())
 }
 
 // =============================================================================

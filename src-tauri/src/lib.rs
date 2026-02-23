@@ -10,6 +10,7 @@ use scene::state::SceneState;
 use renderer::engine::RenderState;
 use renderer::projector::GpuProjector;
 use input::adapter::InputManager;
+use commands::PreviewCache;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,6 +37,7 @@ pub fn run() {
         .manage(scene_state)
         .manage(render_state)
         .manage(input_manager)
+        .manage(Arc::new(PreviewCache::new()))
         .manage(Arc::new(parking_lot::Mutex::new(sysinfo::System::new_all())))
         .manage(Arc::new(parking_lot::Mutex::new(GpuProjector::new())))
         .invoke_handler(tauri::generate_handler![
@@ -90,6 +92,9 @@ pub fn run() {
             commands::get_render_stats,
             // GPU projector
             commands::get_projector_stats,
+            // Diagnostics
+            commands::get_source_diagnostics,
+            commands::set_frame_pacing,
             // System
             commands::get_system_stats,
         ])
@@ -136,18 +141,23 @@ pub fn run() {
                 let frame_interval = std::time::Duration::from_millis(33); // ~30fps
                 let mut log_counter = 0u64;
                 let mut reconnect_timer = std::time::Instant::now();
-                let reconnect_interval = std::time::Duration::from_secs(3);
+                let reconnect_interval = std::time::Duration::from_secs(10);
 
                 loop {
                     let start = std::time::Instant::now();
 
-                    // Rate-limited auto-reconnect for stale sources (~every 3s)
+                    // Rate-limited auto-reconnect for stale sources (~every 10s).
+                    // Uses a read-lock pre-check to avoid taking an expensive write lock
+                    // when all sources are already connected.
                     if reconnect_timer.elapsed() >= reconnect_interval {
                         reconnect_timer = std::time::Instant::now();
                         let input_mgr = app_handle_pump.state::<Arc<parking_lot::RwLock<InputManager>>>();
-                        let recovered = input_mgr.write().try_reconnect_stale();
-                        if !recovered.is_empty() {
-                            log::info!("Auto-reconnected {} source(s): {:?}", recovered.len(), recovered);
+                        let has_stale = input_mgr.read().has_stale_bindings();
+                        if has_stale {
+                            let recovered = input_mgr.write().try_reconnect_stale();
+                            if !recovered.is_empty() {
+                                log::info!("Auto-reconnected {} source(s): {:?}", recovered.len(), recovered);
+                            }
                         }
                     }
 
@@ -160,25 +170,49 @@ pub fn run() {
                             .try_state::<Arc<parking_lot::RwLock<renderer::engine::RenderEngine>>>();
 
                         if let Some(engine_lock) = engine_state {
-                            // PHASE 1: Poll frames from input sources (hold input lock only)
-                            // This is separate from texture upload to avoid holding both locks
-                            // simultaneously, which causes a deadlock chain:
-                            //   GPU projector: holds engine.read()
-                            //   Frame pump: holds input.write(), waits for engine.write()
-                            //   poll_all_frames: waits for input.write()
-                            let mut polled_frames: Vec<(String, crate::input::adapter::FramePacket)> = Vec::new();
+                            // PHASE 1: Collect source bindings and deduplicate by source_id.
+                            // Multiple layers sharing the same source only need 1 poll + 1 upload.
+                            let mut source_to_layers: std::collections::HashMap<String, Vec<String>> =
+                                std::collections::HashMap::new();
                             {
-                                let mut input = input_mgr.write();
+                                let input = input_mgr.read();
                                 for layer_id in &bound_ids {
-                                    if let Some(frame) = input.poll_frame_for_layer(layer_id) {
-                                        polled_frames.push((layer_id.clone(), frame));
+                                    if let Some(source_id) = input.get_binding(layer_id) {
+                                        source_to_layers
+                                            .entry(source_id.to_string())
+                                            .or_default()
+                                            .push(layer_id.clone());
                                     }
                                 }
-                                // Input lock released here
                             }
 
-                            // PHASE 2: Upload polled frames to GPU textures (hold engine lock only)
-                            if !polled_frames.is_empty() {
+                            // PHASE 2: Poll frames from unique sources (hold input lock only).
+                            // Each unique source is polled once via any layer bound to it.
+                            // Uses try_write() to avoid blocking behind auto-reconnect —
+                            // if the lock is held, we skip this cycle and use cached frames.
+                            let t_poll = std::time::Instant::now();
+                            let mut polled_source_frames: Vec<(String, Vec<String>, crate::input::adapter::FramePacket)> = Vec::new();
+                            {
+                                if let Some(mut input) = input_mgr.try_write() {
+                                    for (source_id, layer_ids) in &source_to_layers {
+                                        if let Some(first_layer) = layer_ids.first() {
+                                            if let Some(frame) = input.poll_frame_for_layer(first_layer) {
+                                                polled_source_frames.push((
+                                                    source_id.clone(),
+                                                    layer_ids.clone(),
+                                                    frame,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                // Input lock released here (or was never taken)
+                            }
+                            let poll_ms = t_poll.elapsed().as_secs_f64() * 1000.0;
+
+                            // PHASE 3: Upload each unique source frame once and sync layer bindings.
+                            let t_upload = std::time::Instant::now();
+                            if !polled_source_frames.is_empty() {
                                 let mut engine = engine_lock.write();
 
                                 let renderer::engine::RenderEngine {
@@ -187,28 +221,55 @@ pub fn run() {
                                     ..
                                 } = *engine;
 
-                                for (layer_id, frame) in &polled_frames {
-                                    texture_manager.upload_frame(
+                                for (source_id, layer_ids, frame) in &polled_source_frames {
+                                    // Upload once per source
+                                    texture_manager.upload_frame_for_source(
                                         &gpu.device,
                                         &gpu.queue,
-                                        layer_id,
+                                        source_id,
                                         frame,
                                     );
+                                    // Ensure all layers are bound to this source
+                                    for layer_id in layer_ids {
+                                        texture_manager.bind_layer_to_source(layer_id, source_id);
+                                    }
                                 }
                                 // Engine lock released here
 
                                 render_state.request_redraw();
                             }
+                            let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
 
-                            // Log every ~5 seconds (150 ticks at 30fps)
+                            // PHASE 4: Generate preview snapshots for the editor.
+                            // This runs on the frame pump thread so poll_all_frames (IPC)
+                            // reads from cache instead of triggering a second Metal readback.
+                            let t_preview = std::time::Instant::now();
+                            if !polled_source_frames.is_empty() {
+                                let preview_cache = app_handle_pump.state::<Arc<PreviewCache>>();
+                                let mut cache = preview_cache.frames.write();
+                                // Remove stale entries for layers no longer bound
+                                cache.retain(|lid, _| bound_ids.contains(lid));
+                                for (_source_id, layer_ids, frame) in &polled_source_frames {
+                                    let snapshot = commands::encode_frame(frame);
+                                    for layer_id in layer_ids {
+                                        cache.insert(layer_id.clone(), snapshot.clone());
+                                    }
+                                }
+                            }
+                            let preview_ms = t_preview.elapsed().as_secs_f64() * 1000.0;
+
+                            // Debounced logging: every ~5 seconds (150 ticks at 30fps)
                             log_counter += 1;
                             if log_counter % 150 == 0 {
-                                let pump_ms = start.elapsed().as_secs_f64() * 1000.0;
-                                log::debug!(
-                                    "Frame pump: {} layers bound, {} uploaded, {:.1}ms",
+                                let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                log::info!(
+                                    "Frame pump: {} layers, {} sources, poll={:.1}ms upload={:.1}ms preview={:.1}ms total={:.1}ms",
                                     bound_ids.len(),
-                                    polled_frames.len(),
-                                    pump_ms
+                                    source_to_layers.len(),
+                                    poll_ms,
+                                    upload_ms,
+                                    preview_ms,
+                                    total_ms
                                 );
                             }
                         }

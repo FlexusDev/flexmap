@@ -131,9 +131,28 @@ export interface UndoRedoResult {
   can_redo: boolean;
 }
 
+export type FramePacingMode = "show" | "lowLatency" | "benchmark";
+
 export interface RenderStats {
   gpu_name: string;
   gpu_ready: boolean;
+  gpu_backend: string;
+  gpu_driver: string;
+  gpu_device_type: string;
+  frame_pacing: string;
+  texture_count: number;
+  buffer_cache_hits: number;
+  buffer_cache_misses: number;
+}
+
+export interface SourceDiagnostics {
+  source_id: string;
+  name: string;
+  protocol: string;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  layers_using: string[];
 }
 
 export interface SystemStats {

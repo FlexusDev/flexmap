@@ -73,3 +73,25 @@
            [&::-webkit-slider-thumb]:cursor-pointer;
   }
 }
+
+/* ── Resizable panel handles ─────────────────────────────────── */
+
+[data-group][data-orientation="horizontal"] > [data-separator] {
+  width: 4px;
+  background: #2a2a2a;
+  cursor: col-resize;
+  transition: background 150ms ease;
+}
+
+[data-group][data-orientation="vertical"] > [data-separator] {
+  height: 4px;
+  background: #2a2a2a;
+  cursor: row-resize;
+  transition: background 150ms ease;
+}
+
+[data-separator]:hover,
+[data-separator="hover"],
+[data-separator="active"] {
+  background: #6366f1;
+}

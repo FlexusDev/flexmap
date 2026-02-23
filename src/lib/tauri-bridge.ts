@@ -283,7 +283,17 @@ const mockCommands: Record<string, (args: any) => any> = {
 
   undo: () => null,
   redo: () => null,
-  get_render_stats: () => ({ gpu_name: "Mock GPU", gpu_ready: true }),
+  get_render_stats: () => ({
+    gpu_name: "Mock GPU (Apple M1 Pro)", gpu_ready: true,
+    gpu_backend: "Metal", gpu_driver: "Apple", gpu_device_type: "IntegratedGpu",
+    frame_pacing: "Show (VSync)", texture_count: 2,
+    buffer_cache_hits: 1200, buffer_cache_misses: 4,
+  }),
+  get_source_diagnostics: () => [
+    { source_id: "test:color_bars", name: "Test: Color Bars", protocol: "test", width: 640, height: 480, fps: 30, layers_using: [] },
+    { source_id: "test:gradient", name: "Test: Gradient Sweep", protocol: "test", width: 640, height: 480, fps: 30, layers_using: [] },
+  ],
+  set_frame_pacing: () => {},
   get_projector_stats: () => ({ gpu_native: false, fps: 0, frametime_ms: 0 }),
   get_system_stats: () => ({
     process_cpu: 12.5, process_mem: 128 * 1024 * 1024,
