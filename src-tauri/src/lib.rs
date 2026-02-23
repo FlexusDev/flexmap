@@ -69,6 +69,9 @@ pub fn run() {
             commands::is_dirty,
             commands::has_recovery,
             commands::load_recovery,
+            // Syphon management
+            commands::check_syphon_status,
+            commands::install_syphon_framework,
             // Sources
             commands::list_sources,
             commands::refresh_sources,

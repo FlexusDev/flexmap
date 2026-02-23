@@ -654,6 +654,228 @@ pub async fn disconnect_source(
 }
 
 // =============================================================================
+// Syphon framework management (macOS only)
+// =============================================================================
+
+/// Syphon framework status diagnostic info
+#[derive(Serialize)]
+pub struct SyphonStatus {
+    /// Whether the bridge was compiled (framework found at build time)
+    pub bridge_compiled: bool,
+    /// Whether the runtime check reports the framework is usable
+    pub bridge_available: bool,
+    /// Paths checked and whether each exists
+    pub search_paths: Vec<(String, bool)>,
+    /// Hint message for the user
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn check_syphon_status() -> Result<SyphonStatus, String> {
+    #[cfg(all(target_os = "macos", feature = "input-syphon"))]
+    {
+        let bridge_compiled = cfg!(has_syphon_bridge);
+        let bridge_available = crate::input::syphon::is_bridge_available();
+
+        let search_paths: Vec<(String, bool)> = crate::input::syphon::framework_search_paths()
+            .into_iter()
+            .map(|p| {
+                let exists = std::path::Path::new(&p).exists();
+                (p, exists)
+            })
+            .collect();
+
+        let message = if bridge_available {
+            "Syphon is ready. Syphon servers should appear automatically.".to_string()
+        } else if bridge_compiled {
+            "Syphon bridge was compiled but the framework is not available at runtime. \
+             Try reinstalling Syphon.framework."
+                .to_string()
+        } else {
+            "Syphon.framework was not found at build time. Install it, then rebuild the app."
+                .to_string()
+        };
+
+        log::info!(
+            "check_syphon_status: compiled={} available={} paths={:?}",
+            bridge_compiled,
+            bridge_available,
+            search_paths
+        );
+
+        Ok(SyphonStatus {
+            bridge_compiled,
+            bridge_available,
+            search_paths,
+            message,
+        })
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "input-syphon")))]
+    {
+        Ok(SyphonStatus {
+            bridge_compiled: false,
+            bridge_available: false,
+            search_paths: Vec::new(),
+            message: "Syphon is only available on macOS.".to_string(),
+        })
+    }
+}
+
+/// Download and install Syphon.framework to ~/Library/Frameworks/
+/// This downloads the latest release from GitHub, extracts the framework,
+/// and copies it to the user's frameworks directory.
+#[tauri::command]
+pub async fn install_syphon_framework() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+
+        let home = std::env::var("HOME").map_err(|_| "Cannot determine HOME directory")?;
+        let frameworks_dir = format!("{}/Library/Frameworks", home);
+        let target_path = format!("{}/Syphon.framework", frameworks_dir);
+
+        // Check if already installed
+        if std::path::Path::new(&target_path).exists() {
+            log::info!("Syphon.framework already exists at {}", target_path);
+            return Ok(format!(
+                "Syphon.framework is already installed at {}. Rebuild the app to enable it.",
+                target_path
+            ));
+        }
+
+        // Ensure ~/Library/Frameworks/ exists
+        std::fs::create_dir_all(&frameworks_dir)
+            .map_err(|e| format!("Failed to create {}: {}", frameworks_dir, e))?;
+
+        log::info!("Syphon: downloading framework from GitHub...");
+
+        // Download the latest Syphon release
+        // The Syphon project distributes a .zip containing Syphon.framework
+        let download_url =
+            "https://github.com/Syphon/Syphon-Framework/releases/latest/download/Syphon.SDK.zip";
+        let tmp_dir = std::env::temp_dir().join("auramap_syphon_install");
+        let zip_path = tmp_dir.join("Syphon.SDK.zip");
+
+        // Clean up any previous attempt
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir)
+            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+
+        // Download with curl (available on all macOS)
+        let curl_output = Command::new("curl")
+            .args([
+                "-L",
+                "-o",
+                zip_path.to_str().unwrap(),
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "60",
+                download_url,
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run curl: {}", e))?;
+
+        if !curl_output.status.success() {
+            let stderr = String::from_utf8_lossy(&curl_output.stderr);
+            log::error!("Syphon: download failed: {}", stderr);
+            return Err(format!(
+                "Download failed. You can install manually:\n\
+                 1. Download from https://github.com/Syphon/Syphon-Framework/releases\n\
+                 2. Extract Syphon.framework to {}\n\
+                 3. Rebuild the app",
+                frameworks_dir
+            ));
+        }
+
+        log::info!("Syphon: downloaded SDK zip, extracting...");
+
+        // Extract the zip
+        let unzip_output = Command::new("unzip")
+            .args([
+                "-o",
+                zip_path.to_str().unwrap(),
+                "-d",
+                tmp_dir.to_str().unwrap(),
+            ])
+            .output()
+            .map_err(|e| format!("Failed to run unzip: {}", e))?;
+
+        if !unzip_output.status.success() {
+            let stderr = String::from_utf8_lossy(&unzip_output.stderr);
+            return Err(format!("Failed to extract zip: {}", stderr));
+        }
+
+        // Find Syphon.framework in the extracted contents
+        // It might be at the root or inside a subdirectory
+        let find_output = Command::new("find")
+            .args([
+                tmp_dir.to_str().unwrap(),
+                "-name",
+                "Syphon.framework",
+                "-type",
+                "d",
+                "-maxdepth",
+                "4",
+            ])
+            .output()
+            .map_err(|e| format!("Failed to search for framework: {}", e))?;
+
+        let found_path = String::from_utf8_lossy(&find_output.stdout)
+            .lines()
+            .next()
+            .map(|s| s.to_string());
+
+        let framework_source = match found_path {
+            Some(p) if !p.is_empty() => p,
+            _ => {
+                return Err(format!(
+                    "Could not find Syphon.framework in downloaded archive. \
+                     Please install manually from https://github.com/Syphon/Syphon-Framework/releases \
+                     to {}",
+                    frameworks_dir
+                ));
+            }
+        };
+
+        log::info!(
+            "Syphon: found framework at {}, copying to {}",
+            framework_source,
+            target_path
+        );
+
+        // Copy to ~/Library/Frameworks/
+        let cp_output = Command::new("cp")
+            .args(["-R", &framework_source, &target_path])
+            .output()
+            .map_err(|e| format!("Failed to copy framework: {}", e))?;
+
+        if !cp_output.status.success() {
+            let stderr = String::from_utf8_lossy(&cp_output.stderr);
+            return Err(format!("Failed to copy framework: {}", stderr));
+        }
+
+        // Clean up temp dir
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        log::info!("Syphon: framework installed successfully at {}", target_path);
+
+        Ok(format!(
+            "Syphon.framework installed to {}.\n\
+             Please restart the app (cargo tauri dev) to enable Syphon input.",
+            target_path
+        ))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Syphon is only available on macOS.".to_string())
+    }
+}
+
+// =============================================================================
 // Output config
 // =============================================================================
 
