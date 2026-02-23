@@ -6,6 +6,7 @@
 //! - The projector window surface is managed here
 
 use parking_lot::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wgpu::util::DeviceExt;
 
 use super::buffer_cache::BufferCache;
@@ -26,6 +27,9 @@ pub struct RenderState {
     pub output_width: RwLock<u32>,
     pub output_height: RwLock<u32>,
     pub frame_pacing: RwLock<FramePacingMode>,
+    /// Monotonically increasing counter, bumped by update_layers().
+    /// The projector uses this to skip prepare_all_buffers when layers haven't changed.
+    pub layer_generation: AtomicU64,
 }
 
 impl RenderState {
@@ -37,12 +41,19 @@ impl RenderState {
             output_width: RwLock::new(1920),
             output_height: RwLock::new(1080),
             frame_pacing: RwLock::new(FramePacingMode::default()),
+            layer_generation: AtomicU64::new(0),
         }
     }
 
     pub fn update_layers(&self, layers: Vec<Layer>) {
         *self.layers.write() = layers;
+        self.layer_generation.fetch_add(1, Ordering::Release);
         *self.needs_redraw.write() = true;
+    }
+
+    /// Current layer generation (monotonically increasing on each update_layers call).
+    pub fn layer_generation(&self) -> u64 {
+        self.layer_generation.load(Ordering::Acquire)
     }
 
     pub fn update_calibration(&self, config: CalibrationConfig) {
@@ -51,6 +62,7 @@ impl RenderState {
     }
 
     pub fn request_redraw(&self) {
+        self.layer_generation.fetch_add(1, Ordering::Release);
         *self.needs_redraw.write() = true;
     }
 
@@ -90,6 +102,17 @@ pub struct RenderEngine {
     pub layer_temp_view: wgpu::TextureView,
     /// Buffer cache for dirty tracking (avoids rebuilding buffers every frame)
     pub buffer_cache: BufferCache,
+    /// Cached blit bind groups + uniform buffer (rebuilt only on offscreen resize)
+    blit_cache: Option<BlitCache>,
+}
+
+/// Cached GPU objects for the blit pass (offscreen → surface).
+/// Content is constant (blend_mode=0, opacity=1.0), only the offscreen
+/// texture view reference changes on resize.
+struct BlitCache {
+    source_bg: wgpu::BindGroup,
+    dest_bg: wgpu::BindGroup,
+    uniform_bg: wgpu::BindGroup,
 }
 
 impl RenderEngine {
@@ -129,6 +152,13 @@ impl RenderEngine {
         let (layer_temp_texture, layer_temp_view) =
             Self::create_offscreen_target(&gpu.device, width, height, surface_format);
 
+        let blit_cache = Self::build_blit_cache(
+            &gpu.device,
+            &pipeline,
+            &offscreen_view,
+            &white_texture_view,
+        );
+
         Self {
             gpu,
             pipeline,
@@ -144,6 +174,7 @@ impl RenderEngine {
             layer_temp_texture,
             layer_temp_view,
             buffer_cache: BufferCache::new(),
+            blit_cache: Some(blit_cache),
         }
     }
 
@@ -192,6 +223,12 @@ impl RenderEngine {
         self.layer_temp_view = lt_view;
         self.offscreen_width = width;
         self.offscreen_height = height;
+        self.blit_cache = Some(Self::build_blit_cache(
+            &self.gpu.device,
+            &self.pipeline,
+            &self.offscreen_view,
+            &self.white_texture_view,
+        ));
     }
 
     /// Pre-populate the buffer cache for all visible layers.
@@ -704,48 +741,42 @@ impl RenderEngine {
         Ok(())
     }
 
-    /// Blit the offscreen render target to an arbitrary target view.
-    /// Used by the projector to copy the composited scene to the surface.
-    pub fn blit_to_view(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        target_view: &wgpu::TextureView,
-    ) {
-        let blit_bg = self
-            .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Blit Source BG"),
-                layout: &self.pipeline.blend_source_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.offscreen_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
-                    },
-                ],
-            });
+    /// Build cached bind groups for the blit pass.
+    fn build_blit_cache(
+        device: &wgpu::Device,
+        pipeline: &RenderPipeline,
+        offscreen_view: &wgpu::TextureView,
+        white_texture_view: &wgpu::TextureView,
+    ) -> BlitCache {
+        let source_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Blit Source BG (cached)"),
+            layout: &pipeline.blend_source_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(offscreen_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
+                },
+            ],
+        });
 
-        let dummy_dest_bg = self
-            .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Blit Dummy Dest BG"),
-                layout: &self.pipeline.blend_dest_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.white_texture_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
-                    },
-                ],
-            });
+        let dest_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Blit Dummy Dest BG (cached)"),
+            layout: &pipeline.blend_dest_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(white_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
+                },
+            ],
+        });
 
         let blit_uniforms = BlendUniforms {
             blend_mode: 0, // Normal = passthrough
@@ -753,26 +784,36 @@ impl RenderEngine {
             _pad0: 0.0,
             _pad1: 0.0,
         };
-        let uniform_buffer = self
-            .gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Blit Uniform Buffer"),
+        let uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Blit Uniform Buffer (cached)"),
                 contents: bytemuck::cast_slice(&[blit_uniforms]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-        let uniform_bg = self
-            .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Blit Uniform BG"),
-                layout: &self.pipeline.blend_uniform_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                }],
-            });
+        let uniform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Blit Uniform BG (cached)"),
+            layout: &pipeline.blend_uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
 
+        BlitCache {
+            source_bg,
+            dest_bg,
+            uniform_bg,
+        }
+    }
+
+    /// Blit the offscreen render target to an arbitrary target view.
+    /// Used by the projector to copy the composited scene to the surface.
+    /// Uses cached bind groups when available (rebuilt only on offscreen resize).
+    pub fn blit_to_view(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+    ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Blit Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -789,9 +830,24 @@ impl RenderEngine {
         });
 
         pass.set_pipeline(&self.pipeline.blend_composite_pipeline);
-        pass.set_bind_group(0, &blit_bg, &[]);
-        pass.set_bind_group(1, &dummy_dest_bg, &[]);
-        pass.set_bind_group(2, &uniform_bg, &[]);
+
+        if let Some(cache) = &self.blit_cache {
+            pass.set_bind_group(0, &cache.source_bg, &[]);
+            pass.set_bind_group(1, &cache.dest_bg, &[]);
+            pass.set_bind_group(2, &cache.uniform_bg, &[]);
+        } else {
+            // Fallback: create inline (should not happen in normal operation)
+            let fallback = Self::build_blit_cache(
+                &self.gpu.device,
+                &self.pipeline,
+                &self.offscreen_view,
+                &self.white_texture_view,
+            );
+            pass.set_bind_group(0, &fallback.source_bg, &[]);
+            pass.set_bind_group(1, &fallback.dest_bg, &[]);
+            pass.set_bind_group(2, &fallback.uniform_bg, &[]);
+        }
+
         pass.draw(0..3, 0..1);
     }
 

@@ -779,9 +779,11 @@ pub struct FrameSnapshot {
 }
 
 /// Shared preview frame cache — populated by the frame pump thread,
-/// read by poll_all_frames. Eliminates duplicate Metal GPU readbacks.
+/// read by poll_all_frames. Uses Arc<FrameSnapshot> so cloning the map
+/// for IPC is a refcount bump (~16 bytes) instead of deep-cloning ~76KB
+/// base64 strings per source.
 pub struct PreviewCache {
-    pub frames: parking_lot::RwLock<std::collections::HashMap<String, FrameSnapshot>>,
+    pub frames: parking_lot::RwLock<std::collections::HashMap<String, Arc<FrameSnapshot>>>,
 }
 
 impl PreviewCache {
@@ -879,10 +881,13 @@ pub async fn poll_layer_frame(
 /// This reads from the PreviewCache (populated by the frame pump thread)
 /// instead of re-polling Metal/Syphon sources — eliminates the ~160ms
 /// GPU readback that was making the editor preview lag at 5fps.
+///
+/// Uses Arc<FrameSnapshot> internally so cloning for IPC is a refcount
+/// bump instead of deep-cloning ~76KB base64 strings per source.
 #[tauri::command]
 pub async fn poll_all_frames(
     cache: State<'_, Arc<PreviewCache>>,
-) -> Result<std::collections::HashMap<String, FrameSnapshot>, String> {
+) -> Result<std::collections::HashMap<String, Arc<FrameSnapshot>>, String> {
     let frames = cache.frames.read();
     Ok(frames.clone())
 }

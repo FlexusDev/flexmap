@@ -70,7 +70,7 @@ impl GpuContext {
                     label: Some("AuraMap GPU Device"),
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits {
-                        max_texture_dimension_2d: 4096,
+                        max_texture_dimension_2d: 8192,
                         ..wgpu::Limits::downlevel_defaults()
                     },
                     memory_hints: wgpu::MemoryHints::Performance,

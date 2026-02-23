@@ -530,7 +530,7 @@ impl InputBackend for SyphonBackend {
 
         // Debounced timing log every 150 frames (~5s at 30fps)
         if seq % 150 == 0 {
-            let total_poll_ms = t_readback.elapsed().as_secs_f64() * 1000.0 + readback_ms;
+            let total_poll_ms = t_readback.elapsed().as_secs_f64() * 1000.0;
             log::info!(
                 "Syphon: poll #{} readback={:.1}ms total={:.1}ms {}x{} ({})",
                 seq,

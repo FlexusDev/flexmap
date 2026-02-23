@@ -142,6 +142,8 @@ pub fn run() {
                 let mut log_counter = 0u64;
                 let mut reconnect_timer = std::time::Instant::now();
                 let reconnect_interval = std::time::Duration::from_secs(10);
+                let mut last_uploaded_sequence: std::collections::HashMap<String, u64> =
+                    std::collections::HashMap::new();
 
                 loop {
                     let start = std::time::Instant::now();
@@ -210,6 +212,22 @@ pub fn run() {
                             }
                             let poll_ms = t_poll.elapsed().as_secs_f64() * 1000.0;
 
+                            // Filter out frames with unchanged sequence numbers.
+                            // At 30fps pump with ~10fps Syphon, ~20 ticks return cached frames
+                            // with the same sequence — skip the 8MB GPU upload + preview encode.
+                            polled_source_frames.retain(|(source_id, _, frame)| {
+                                let seq = frame.sequence.unwrap_or(0);
+                                if seq == 0 {
+                                    return true; // No sequence tracking — always upload
+                                }
+                                let prev = last_uploaded_sequence.get(source_id).copied().unwrap_or(0);
+                                if seq == prev {
+                                    return false; // Same frame — skip
+                                }
+                                last_uploaded_sequence.insert(source_id.clone(), seq);
+                                true
+                            });
+
                             // PHASE 3: Upload each unique source frame once and sync layer bindings.
                             let t_upload = std::time::Instant::now();
                             if !polled_source_frames.is_empty() {
@@ -250,7 +268,7 @@ pub fn run() {
                                 // Remove stale entries for layers no longer bound
                                 cache.retain(|lid, _| bound_ids.contains(lid));
                                 for (_source_id, layer_ids, frame) in &polled_source_frames {
-                                    let snapshot = commands::encode_frame(frame);
+                                    let snapshot = Arc::new(commands::encode_frame(frame));
                                     for layer_id in layer_ids {
                                         cache.insert(layer_id.clone(), snapshot.clone());
                                     }
