@@ -139,7 +139,7 @@ function SourcePanel() {
             disabled={installing}
             className="btn-ghost text-[10px] px-2 py-0.5 bg-yellow-600/30 hover:bg-yellow-600/50 text-yellow-200"
           >
-            {installing ? "Installing..." : "Install Syphon Framework"}
+            {installing ? "Building Syphon (this may take a minute)..." : "Build & Install Syphon Framework"}
           </button>
         </div>
       )}
