@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use wgpu::util::DeviceExt;
 
-use super::pipeline::{LayerUniforms, LayerVertex, generate_layer_mesh};
+use super::pipeline::{LayerUniforms, generate_layer_mesh};
 use super::texture_manager::TextureManager;
-use crate::scene::layer::Layer;
+use crate::scene::layer::{Layer, LayerGeometry};
 
 /// Cached GPU buffers for a single layer
 pub struct CachedLayerBuffers {
@@ -32,20 +32,47 @@ pub struct BufferCache {
     pub stats: CacheStats,
 }
 
-/// Hash f32 slices by converting to bits (stable, no NaN issues for our data)
-fn hash_f32_slice(state: &mut impl Hasher, slice: &[f32]) {
-    for &v in slice {
-        v.to_bits().hash(state);
-    }
+/// Hash f64 by converting to bits (stable, no NaN issues for our data)
+fn hash_f64(state: &mut impl Hasher, v: f64) {
+    v.to_bits().hash(state);
 }
 
-fn compute_geometry_hash(vertices: &[LayerVertex], indices: &[u16]) -> u64 {
+/// Hash the LayerGeometry struct directly — avoids generating the full mesh
+/// just to compute a cache key on the hot path.
+fn compute_geometry_hash(geometry: &LayerGeometry) -> u64 {
     let mut hasher = std::hash::DefaultHasher::new();
-    for v in vertices {
-        hash_f32_slice(&mut hasher, &v.position);
-        hash_f32_slice(&mut hasher, &v.tex_coord);
+    std::mem::discriminant(geometry).hash(&mut hasher);
+    match geometry {
+        LayerGeometry::Quad { corners } => {
+            for p in corners {
+                hash_f64(&mut hasher, p.x);
+                hash_f64(&mut hasher, p.y);
+            }
+        }
+        LayerGeometry::Triangle { vertices } => {
+            for p in vertices {
+                hash_f64(&mut hasher, p.x);
+                hash_f64(&mut hasher, p.y);
+            }
+        }
+        LayerGeometry::Mesh { cols, rows, points } => {
+            cols.hash(&mut hasher);
+            rows.hash(&mut hasher);
+            for p in points {
+                hash_f64(&mut hasher, p.x);
+                hash_f64(&mut hasher, p.y);
+            }
+        }
+        LayerGeometry::Circle { center, radius, bounds } => {
+            hash_f64(&mut hasher, center.x);
+            hash_f64(&mut hasher, center.y);
+            hash_f64(&mut hasher, *radius);
+            for p in bounds {
+                hash_f64(&mut hasher, p.x);
+                hash_f64(&mut hasher, p.y);
+            }
+        }
     }
-    indices.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -76,12 +103,9 @@ impl BufferCache {
         texture_manager: &TextureManager,
         layer: &Layer,
     ) -> Option<&CachedLayerBuffers> {
-        let (vertices, indices) = generate_layer_mesh(&layer.geometry);
-        if vertices.is_empty() || indices.is_empty() {
-            return None;
-        }
-
-        let geom_hash = compute_geometry_hash(&vertices, &indices);
+        // Hash geometry struct directly — avoids allocating Vec<LayerVertex> + Vec<u16>
+        // on every cache hit (60fps × N layers).
+        let geom_hash = compute_geometry_hash(&layer.geometry);
         let uniforms = LayerUniforms::from(&layer.properties);
         let prop_hash = compute_properties_hash(&uniforms);
 
@@ -102,8 +126,13 @@ impl BufferCache {
             }
         }
 
-        // Cache miss — rebuild
+        // Cache miss — generate mesh and rebuild GPU buffers
         self.stats.misses += 1;
+
+        let (vertices, indices) = generate_layer_mesh(&layer.geometry);
+        if vertices.is_empty() || indices.is_empty() {
+            return None;
+        }
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Cached Vertex Buffer"),

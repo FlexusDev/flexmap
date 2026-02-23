@@ -81,6 +81,7 @@ impl GpuProjector {
                 let mut fps_timer = std::time::Instant::now();
                 let target_interval = std::time::Duration::from_micros(16_667); // ~60fps cap
                 let mut current_pacing = FramePacingMode::Show;
+                let mut last_prepared_generation: u64 = u64::MAX; // Force first prepare
 
                 loop {
                     if stop_signal.load(Ordering::SeqCst) {
@@ -147,13 +148,18 @@ impl GpuProjector {
                         if needs_resize {
                             let mut eng = engine.write();
                             eng.resize_offscreen(out_w, out_h);
+                            last_prepared_generation = u64::MAX; // Force re-prepare after resize
                             drop(eng);
                         }
 
-                        // Pre-populate buffer cache (needs &mut, then released)
-                        {
+                        // Pre-populate buffer cache only when layers/textures changed.
+                        // This avoids taking an expensive write lock at 60fps when only
+                        // the projector is rendering unchanged content.
+                        let current_gen = render_state.layer_generation();
+                        if current_gen != last_prepared_generation {
                             let mut eng = engine.write();
                             eng.prepare_all_buffers(&layers);
+                            last_prepared_generation = current_gen;
                         }
 
                         let eng = engine.read();
