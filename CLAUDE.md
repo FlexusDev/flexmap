@@ -1,8 +1,8 @@
-# AuraMap — Claude Development Rules
+# FlexMap — Claude Development Rules
 
 ## Project Overview
 
-AuraMap is a lightweight projection mapping desktop app for live visual artists.
+FlexMap is a lightweight projection mapping desktop app for live visual artists.
 Stack: Tauri v2 (Rust backend + React/TypeScript/Tailwind frontend), wgpu v23 (Metal on macOS).
 
 ## Architecture
@@ -77,4 +77,4 @@ Every mutation command in `commands.rs` must:
 - **B: 2D Editor** — Done (layer CRUD, geometry editing, drag/nudge, undo/redo, keyboard shortcuts)
 - **C: GPU Renderer** — Done (RenderEngine, pipelines, shaders, texture manager, GPU projector render loop with direct wgpu surface rendering)
 - **D: Input Routing** — Done (InputBackend trait, adapter, test pattern generator, media file backend, Spout backend with D3D11 shared texture capture, Syphon backend with Metal client via ObjC bridge)
-- **E: Persistence** — Done (save/load .auramap JSON, autosave, crash recovery)
+- **E: Persistence** — Done (save/load .flexmap JSON, autosave, crash recovery)

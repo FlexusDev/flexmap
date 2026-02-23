@@ -1,6 +1,7 @@
 import { useAppStore } from "../../store/useAppStore";
 import { tauriOpenDialog, tauriSaveDialog } from "../../lib/tauri-bridge";
 import OutputConfigPanel from "../output/OutputConfigPanel";
+import pkg from "../../../package.json";
 
 function Toolbar() {
   const {
@@ -24,7 +25,7 @@ function Toolbar() {
 
   const handleOpen = async () => {
     const result = await tauriOpenDialog({
-      filters: [{ name: "AuraMap Project", extensions: ["auramap", "json"] }],
+      filters: [{ name: "FlexMap Project", extensions: ["flexmap", "json"] }],
     });
     if (result) {
       await loadProjectFile(result);
@@ -41,8 +42,8 @@ function Toolbar() {
 
   const handleSaveAs = async () => {
     const path = await tauriSaveDialog({
-      filters: [{ name: "AuraMap Project", extensions: ["auramap"] }],
-      defaultPath: "project.auramap",
+      filters: [{ name: "FlexMap Project", extensions: ["flexmap"] }],
+      defaultPath: "project.flexmap",
     });
     if (path) {
       await saveProject(path);
@@ -112,7 +113,10 @@ function Toolbar() {
 
       {/* Title */}
       <span className="text-xs text-aura-text-dim font-mono">
-        AuraMap
+        FlexMap
+      </span>
+      <span className="text-xs text-aura-text-dim/80 font-mono ml-2">
+        v{pkg.version} · Alpha 1
       </span>
     </div>
   );

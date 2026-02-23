@@ -67,7 +67,7 @@ impl GpuContext {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    label: Some("AuraMap GPU Device"),
+                    label: Some("FlexMap GPU Device"),
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits {
                         max_texture_dimension_2d: 8192,

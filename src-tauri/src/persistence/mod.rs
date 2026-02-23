@@ -1,7 +1,7 @@
 use crate::scene::project::ProjectFile;
 use std::path::{Path, PathBuf};
 
-const AUTOSAVE_FILENAME: &str = ".auramap_autosave.json";
+const AUTOSAVE_FILENAME: &str = ".flexmap_autosave.json";
 
 /// Save a project to a JSON file
 pub fn save_project(project: &ProjectFile, path: &Path) -> Result<(), String> {
@@ -52,7 +52,7 @@ fn dirs_next() -> Option<PathBuf> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
         .map(PathBuf::from)
-        .map(|p| p.join(".auramap"))
+        .map(|p| p.join(".flexmap"))
 }
 
 /// Save autosave file

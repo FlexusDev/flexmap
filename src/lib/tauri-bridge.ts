@@ -520,7 +520,7 @@ const mockCommands: Record<string, (args: any) => any> = {
   retarget_projector: () => {},
 
   save_project: (args: { path?: string }) => {
-    const path = args.path ?? "mock://project.auramap";
+    const path = args.path ?? "mock://project.flexmap";
     console.log("[mock] Project saved to", path);
     return path;
   },
@@ -721,5 +721,5 @@ export async function tauriSaveDialog(options?: {
   }
 
   // Browser fallback — prompt
-  return window.prompt("Save project as:", options?.defaultPath ?? "project.auramap") ?? null;
+  return window.prompt("Save project as:", options?.defaultPath ?? "project.flexmap") ?? null;
 }

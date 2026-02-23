@@ -12,7 +12,7 @@ interface Shortcut {
 const SHORTCUTS: Shortcut[] = [
   // Project
   { keys: ["meta", "n"],       label: "New",        description: "Create a new blank project",                   category: "project" },
-  { keys: ["meta", "o"],       label: "Open",       description: "Open an existing .auramap project file",       category: "project" },
+  { keys: ["meta", "o"],       label: "Open",       description: "Open an existing .flexmap project file",       category: "project" },
   { keys: ["meta", "s"],       label: "Save",       description: "Save the current project (Save As if new)",    category: "project" },
   { keys: ["meta", "shift", "s"], label: "Save As",  description: "Save the project to a new file location",     category: "project" },
   // Edit
