@@ -67,7 +67,7 @@ function EditorCanvas() {
     index: number;
   } | null>(null);
 
-  const { layers, selectedLayerId, selectLayer, updateGeometry, beginInteraction, setEditorPerf } =
+  const { layers, selectedLayerId, selectLayer, updateGeometry, beginInteraction, setEditorPerf, snapEnabled } =
     useAppStore();
   // Track whether we've already pushed undo for the current arrow-nudge burst
   const nudgeUndoPushed = useRef(false);
@@ -322,10 +322,17 @@ function EditorCanvas() {
       const dx = (mx - dragState.startMouse.x) / canvasSize.w;
       const dy = (my - dragState.startMouse.y) / canvasSize.h;
 
-      const newPt: Point2D = {
-        x: Math.max(0, Math.min(1, dragState.startPoint.x + dx)),
-        y: Math.max(0, Math.min(1, dragState.startPoint.y + dy)),
-      };
+      let nx = Math.max(0, Math.min(1, dragState.startPoint.x + dx));
+      let ny = Math.max(0, Math.min(1, dragState.startPoint.y + dy));
+
+      // Snap to grid (0.05 = 20 divisions)
+      if (snapEnabled) {
+        const SNAP_GRID = 0.05;
+        nx = Math.round(nx / SNAP_GRID) * SNAP_GRID;
+        ny = Math.round(ny / SNAP_GRID) * SNAP_GRID;
+      }
+
+      const newPt: Point2D = { x: nx, y: ny };
 
       const newGeom = setPoint(layer.geometry, dragState.pointIndex, newPt);
       updateGeometry(layer.id, newGeom);

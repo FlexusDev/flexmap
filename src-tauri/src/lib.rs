@@ -135,9 +135,21 @@ pub fn run() {
                 log::info!("Frame pump thread started");
                 let frame_interval = std::time::Duration::from_millis(33); // ~30fps
                 let mut log_counter = 0u64;
+                let mut reconnect_timer = std::time::Instant::now();
+                let reconnect_interval = std::time::Duration::from_secs(3);
 
                 loop {
                     let start = std::time::Instant::now();
+
+                    // Rate-limited auto-reconnect for stale sources (~every 3s)
+                    if reconnect_timer.elapsed() >= reconnect_interval {
+                        reconnect_timer = std::time::Instant::now();
+                        let input_mgr = app_handle_pump.state::<Arc<parking_lot::RwLock<InputManager>>>();
+                        let recovered = input_mgr.write().try_reconnect_stale();
+                        if !recovered.is_empty() {
+                            log::info!("Auto-reconnected {} source(s): {:?}", recovered.len(), recovered);
+                        }
+                    }
 
                     let input_mgr = app_handle_pump.state::<Arc<parking_lot::RwLock<InputManager>>>();
                     let render_state = app_handle_pump.state::<Arc<RenderState>>();

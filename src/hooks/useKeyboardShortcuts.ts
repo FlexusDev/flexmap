@@ -108,6 +108,21 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // G — Toggle snap to grid
+      if (!meta && !e.altKey && e.key.toLowerCase() === "g") {
+        const target = e.target as HTMLElement;
+        if (
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+        e.preventDefault();
+        state.toggleSnap();
+        return;
+      }
+
       // Number keys 0-9 — Quick opacity for selected layer (no modifier)
       // 1=10%, 2=20%, ..., 9=90%, 0=100%
       if (

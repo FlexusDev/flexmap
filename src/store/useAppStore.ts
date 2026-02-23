@@ -14,6 +14,15 @@ import type {
   BlendMode,
 } from "../types";
 
+export interface Toast {
+  id: string;
+  message: string;
+  type: "error" | "warning" | "info";
+  timestamp: number;
+}
+
+let toastCounter = 0;
+
 export interface PerfStats {
   fps: number;
   frametime: number;
@@ -53,6 +62,15 @@ interface AppState {
   projectorWindowOpen: boolean;
   canUndo: boolean;
   canRedo: boolean;
+
+  // Toasts
+  toasts: Toast[];
+  addToast: (message: string, type: Toast["type"]) => void;
+  dismissToast: (id: string) => void;
+
+  // Snap-to-grid
+  snapEnabled: boolean;
+  toggleSnap: () => void;
 
   // Performance metrics
   editorPerf: PerfStats;
@@ -130,6 +148,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   canUndo: false,
   canRedo: false,
 
+  toasts: [],
+  addToast: (message, type) => {
+    const id = `toast-${++toastCounter}`;
+    const toast: Toast = { id, message, type, timestamp: Date.now() };
+    set((s) => ({ toasts: [...s.toasts, toast] }));
+    setTimeout(() => {
+      set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+    }, 5000);
+  },
+  dismissToast: (id) => {
+    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+  },
+
+  snapEnabled: false,
+  toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
+
   editorPerf: { ...EMPTY_PERF },
   projectorPerf: { ...EMPTY_PERF },
   setEditorPerf: (stats) => set({ editorPerf: stats }),
@@ -146,7 +180,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (e) {
       console.error("Failed to load project:", e);
-    }
+      get().addToast("Failed to load project", "error");
+}
   },
 
   fetchLayers: async () => {
@@ -171,6 +206,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
     } catch (e) {
       console.error("Failed to add layer:", e);
+      get().addToast("Failed to add layer", "error");
     }
   },
 
@@ -185,6 +221,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
     } catch (e) {
       console.error("Failed to remove layer:", e);
+      get().addToast("Failed to remove layer", "error");
     }
   },
 
@@ -336,6 +373,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ projectorWindowOpen: true });
     } catch (e) {
       console.error("Failed to open projector:", e);
+      get().addToast("Failed to open projector", "error");
     }
   },
 
@@ -379,6 +417,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return info;
     } catch (e) {
       console.error("Failed to add media file:", e);
+      get().addToast("Failed to add media file", "error");
       return null;
     }
   },
@@ -415,6 +454,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
     } catch (e) {
       console.error("Failed to connect source:", e);
+      get().addToast("Failed to connect source", "error");
     }
   },
 
@@ -439,6 +479,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ projectPath: savedPath, isDirty: false });
     } catch (e) {
       console.error("Failed to save project:", e);
+      get().addToast("Failed to save project", "error");
     }
   },
 
@@ -458,7 +499,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (e) {
       console.error("Failed to load project:", e);
-    }
+      get().addToast("Failed to load project", "error");
+}
   },
 
   newProject: async () => {

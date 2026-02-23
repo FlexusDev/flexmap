@@ -83,6 +83,188 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// WGSL shader for blend compositing (ping-pong multi-pass)
+/// Combines a source layer with the current composite using various blend modes.
+pub const BLEND_COMPOSITE_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+struct BlendUniforms {
+    blend_mode: u32,
+    opacity: f32,
+    _pad0: f32,
+    _pad1: f32,
+};
+
+@group(0) @binding(0) var t_source: texture_2d<f32>;
+@group(0) @binding(1) var s_source: sampler;
+@group(1) @binding(0) var t_dest: texture_2d<f32>;
+@group(1) @binding(1) var s_dest: sampler;
+@group(2) @binding(0) var<uniform> uniforms: BlendUniforms;
+
+// Fullscreen triangle vertex shader
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var out: VertexOutput;
+    let x = f32(i32(vertex_index) / 2) * 4.0 - 1.0;
+    let y = f32(i32(vertex_index) % 2) * 4.0 - 1.0;
+    out.clip_position = vec4<f32>(x, y, 0.0, 1.0);
+    out.uv = vec2<f32>((x + 1.0) / 2.0, (1.0 - y) / 2.0);
+    return out;
+}
+
+// Blend mode implementations (standard Photoshop math)
+fn blend_multiply(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return base * blend;
+}
+
+fn blend_screen(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return 1.0 - (1.0 - base) * (1.0 - blend);
+}
+
+fn blend_overlay_ch(base: f32, blend: f32) -> f32 {
+    if base < 0.5 {
+        return 2.0 * base * blend;
+    } else {
+        return 1.0 - 2.0 * (1.0 - base) * (1.0 - blend);
+    }
+}
+
+fn blend_overlay(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        blend_overlay_ch(base.r, blend.r),
+        blend_overlay_ch(base.g, blend.g),
+        blend_overlay_ch(base.b, blend.b),
+    );
+}
+
+fn blend_darken(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return min(base, blend);
+}
+
+fn blend_lighten(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return max(base, blend);
+}
+
+fn blend_color_dodge_ch(base: f32, blend: f32) -> f32 {
+    if blend >= 1.0 { return 1.0; }
+    return min(1.0, base / (1.0 - blend));
+}
+
+fn blend_color_dodge(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        blend_color_dodge_ch(base.r, blend.r),
+        blend_color_dodge_ch(base.g, blend.g),
+        blend_color_dodge_ch(base.b, blend.b),
+    );
+}
+
+fn blend_color_burn_ch(base: f32, blend: f32) -> f32 {
+    if blend <= 0.0 { return 0.0; }
+    return max(0.0, 1.0 - (1.0 - base) / blend);
+}
+
+fn blend_color_burn(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        blend_color_burn_ch(base.r, blend.r),
+        blend_color_burn_ch(base.g, blend.g),
+        blend_color_burn_ch(base.b, blend.b),
+    );
+}
+
+fn blend_soft_light_ch(base: f32, blend: f32) -> f32 {
+    if blend <= 0.5 {
+        return base - (1.0 - 2.0 * blend) * base * (1.0 - base);
+    } else {
+        var d: f32;
+        if base <= 0.25 {
+            d = ((16.0 * base - 12.0) * base + 4.0) * base;
+        } else {
+            d = sqrt(base);
+        }
+        return base + (2.0 * blend - 1.0) * (d - base);
+    }
+}
+
+fn blend_soft_light(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        blend_soft_light_ch(base.r, blend.r),
+        blend_soft_light_ch(base.g, blend.g),
+        blend_soft_light_ch(base.b, blend.b),
+    );
+}
+
+fn blend_hard_light(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    // Hard light is overlay with base and blend swapped
+    return vec3<f32>(
+        blend_overlay_ch(blend.r, base.r),
+        blend_overlay_ch(blend.g, base.g),
+        blend_overlay_ch(blend.b, base.b),
+    );
+}
+
+fn blend_difference(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return abs(base - blend);
+}
+
+fn blend_exclusion(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    return base + blend - 2.0 * base * blend;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let src = textureSample(t_source, s_source, in.uv);
+    let dst = textureSample(t_dest, s_dest, in.uv);
+
+    // Source is pre-multiplied from the layer shader; extract straight color
+    let src_a = src.a * uniforms.opacity;
+    var src_rgb = src.rgb;
+    if src.a > 0.001 {
+        src_rgb = src.rgb / src.a;
+    }
+    let dst_rgb = dst.rgb;
+
+    var blended: vec3<f32>;
+    switch uniforms.blend_mode {
+        // 0 = Normal (shouldn't reach here, but handle as fallback)
+        case 0u: { blended = src_rgb; }
+        // 1 = Multiply
+        case 1u: { blended = blend_multiply(dst_rgb, src_rgb); }
+        // 2 = Screen
+        case 2u: { blended = blend_screen(dst_rgb, src_rgb); }
+        // 3 = Overlay
+        case 3u: { blended = blend_overlay(dst_rgb, src_rgb); }
+        // 4 = Darken
+        case 4u: { blended = blend_darken(dst_rgb, src_rgb); }
+        // 5 = Lighten
+        case 5u: { blended = blend_lighten(dst_rgb, src_rgb); }
+        // 6 = ColorDodge
+        case 6u: { blended = blend_color_dodge(dst_rgb, src_rgb); }
+        // 7 = ColorBurn
+        case 7u: { blended = blend_color_burn(dst_rgb, src_rgb); }
+        // 8 = SoftLight
+        case 8u: { blended = blend_soft_light(dst_rgb, src_rgb); }
+        // 9 = HardLight
+        case 9u: { blended = blend_hard_light(dst_rgb, src_rgb); }
+        // 10 = Difference
+        case 10u: { blended = blend_difference(dst_rgb, src_rgb); }
+        // 11 = Exclusion
+        case 11u: { blended = blend_exclusion(dst_rgb, src_rgb); }
+        // 12 = Additive (shouldn't reach here, uses hw blend)
+        case 12u: { blended = src_rgb; }
+        default: { blended = src_rgb; }
+    }
+
+    // Composite: blend result mixed with destination based on source alpha
+    let out_rgb = mix(dst_rgb, blended, src_a);
+    let out_a = dst.a + src_a * (1.0 - dst.a);
+
+    return clamp(vec4<f32>(out_rgb, out_a), vec4<f32>(0.0), vec4<f32>(1.0));
+}
+"#;
+
 /// WGSL shader for calibration test pattern rendering
 pub const CALIBRATION_SHADER: &str = r#"
 struct VertexOutput {

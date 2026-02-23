@@ -276,6 +276,7 @@ function StatusBar() {
     projectorWindowOpen,
     isDirty,
     calibrationEnabled,
+    snapEnabled,
     project,
     editorPerf,
   } = useAppStore();
@@ -327,6 +328,9 @@ function StatusBar() {
       {/* GPU badge with system stats on hover */}
       {gpuInfo && <GpuBadge gpuInfo={gpuInfo} />}
 
+      {snapEnabled && (
+        <span className="text-cyan-400 font-medium">SNAP</span>
+      )}
       {calibrationEnabled && (
         <span className="text-amber-400 font-medium">CALIBRATION</span>
       )}

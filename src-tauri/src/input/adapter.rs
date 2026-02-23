@@ -350,6 +350,62 @@ impl InputManager {
         }
         false
     }
+
+    /// Attempt to reconnect bound sources that are discoverable but not actively
+    /// connected. Returns a list of source_ids that were successfully reconnected.
+    pub fn try_reconnect_stale(&mut self) -> Vec<String> {
+        let mut recovered = Vec::new();
+
+        // Collect bindings to check
+        let bindings: Vec<(String, String)> = self
+            .layer_bindings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        for (_layer_id, source_id) in &bindings {
+            // Skip if already recovered this source in this pass
+            if recovered.contains(source_id) {
+                continue;
+            }
+
+            // Check if any backend has this source active
+            let already_active = self
+                .backends
+                .iter()
+                .any(|b| b.is_source_active(source_id));
+            if already_active {
+                continue;
+            }
+
+            // Check if any backend can discover this source
+            for backend in &mut self.backends {
+                let discoverable = backend
+                    .list_sources()
+                    .iter()
+                    .any(|s| s.id == *source_id);
+
+                if discoverable {
+                    match backend.connect(source_id) {
+                        Ok(()) => {
+                            log::info!("Auto-reconnected stale source: {}", source_id);
+                            recovered.push(source_id.clone());
+                        }
+                        Err(e) => {
+                            log::debug!(
+                                "Auto-reconnect failed for source {}: {}",
+                                source_id,
+                                e
+                            );
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        recovered
+    }
 }
 
 impl Default for InputManager {
