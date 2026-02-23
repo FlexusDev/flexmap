@@ -5,12 +5,117 @@ pub mod renderer;
 pub mod scene;
 
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use scene::state::SceneState;
 use renderer::engine::RenderState;
 use renderer::projector::GpuProjector;
 use input::adapter::InputManager;
 use commands::PreviewCache;
+
+fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let file_new = MenuItem::with_id(app, "app.new", "New Project", true, Some("CmdOrCtrl+N"))?;
+    let file_open = MenuItem::with_id(app, "app.open", "Open Project...", true, Some("CmdOrCtrl+O"))?;
+    let file_save = MenuItem::with_id(app, "app.save", "Save", true, Some("CmdOrCtrl+S"))?;
+    let file_save_as = MenuItem::with_id(app, "app.save_as", "Save As...", true, Some("CmdOrCtrl+Shift+S"))?;
+    let file_sep_1 = PredefinedMenuItem::separator(app)?;
+    let file_sep_2 = PredefinedMenuItem::separator(app)?;
+    let file_close = PredefinedMenuItem::close_window(app, None)?;
+    let file_submenu = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[
+            &file_new,
+            &file_open,
+            &file_sep_1,
+            &file_save,
+            &file_save_as,
+            &file_sep_2,
+            &file_close,
+        ],
+    )?;
+
+    let edit_undo = MenuItem::with_id(app, "app.undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
+    let edit_redo = MenuItem::with_id(app, "app.redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;
+    let edit_duplicate = MenuItem::with_id(app, "app.duplicate", "Duplicate", true, Some("CmdOrCtrl+D"))?;
+    let edit_sep_1 = PredefinedMenuItem::separator(app)?;
+    let edit_sep_2 = PredefinedMenuItem::separator(app)?;
+    let edit_cut = PredefinedMenuItem::cut(app, None)?;
+    let edit_copy = PredefinedMenuItem::copy(app, None)?;
+    let edit_paste = PredefinedMenuItem::paste(app, None)?;
+    let edit_select_all = PredefinedMenuItem::select_all(app, None)?;
+    let edit_submenu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &edit_undo,
+            &edit_redo,
+            &edit_sep_1,
+            &edit_duplicate,
+            &edit_sep_2,
+            &edit_cut,
+            &edit_copy,
+            &edit_paste,
+            &edit_select_all,
+        ],
+    )?;
+
+    let view_projector =
+        MenuItem::with_id(app, "app.toggle_projector", "Toggle Projector", true, Some("CmdOrCtrl+P"))?;
+    let view_submenu = Submenu::with_items(app, "View", true, &[&view_projector])?;
+
+    #[cfg(target_os = "macos")]
+    let app_submenu = {
+        let app_name = app.package_info().name.clone();
+        let app_about = PredefinedMenuItem::about(app, None, Some(AboutMetadata::default()))?;
+        let app_services = PredefinedMenuItem::services(app, None)?;
+        let app_hide = PredefinedMenuItem::hide(app, None)?;
+        let app_hide_others = PredefinedMenuItem::hide_others(app, None)?;
+        let app_quit = PredefinedMenuItem::quit(app, None)?;
+        let app_sep_1 = PredefinedMenuItem::separator(app)?;
+        let app_sep_2 = PredefinedMenuItem::separator(app)?;
+        let app_sep_3 = PredefinedMenuItem::separator(app)?;
+
+        Submenu::with_items(
+            app,
+            app_name,
+            true,
+            &[
+                &app_about,
+                &app_sep_1,
+                &app_services,
+                &app_sep_2,
+                &app_hide,
+                &app_hide_others,
+                &app_sep_3,
+                &app_quit,
+            ],
+        )?
+    };
+
+    #[cfg(target_os = "macos")]
+    return Menu::with_items(app, &[&app_submenu, &file_submenu, &edit_submenu, &view_submenu]);
+
+    #[cfg(not(target_os = "macos"))]
+    return Menu::with_items(app, &[&file_submenu, &edit_submenu, &view_submenu]);
+}
+
+fn menu_shortcut_action(id: &str) -> Option<&'static str> {
+    match id {
+        "app.undo" => Some("undo"),
+        "app.redo" => Some("redo"),
+        "app.new" => Some("new"),
+        "app.open" => Some("open"),
+        "app.save" => Some("save"),
+        "app.save_as" => Some("save_as"),
+        "app.duplicate" => Some("duplicate"),
+        "app.toggle_projector" => Some("toggle_projector"),
+        _ => None,
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,6 +130,33 @@ pub fn run() {
     let input_manager = Arc::new(parking_lot::RwLock::new(InputManager::new()));
 
     tauri::Builder::default()
+        .menu(|app| build_app_menu(app))
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            let action = menu_shortcut_action(id).or_else(|| {
+                // Fallback for any platform-provided predefined ids.
+                let lower = id.to_lowercase();
+                if lower.contains("undo") {
+                    Some("undo")
+                } else if lower.contains("redo") {
+                    Some("redo")
+                } else if lower.contains("save") && lower.contains("as") {
+                    Some("save_as")
+                } else if lower == "save" || lower.ends_with(":save") {
+                    Some("save")
+                } else if lower.contains("open") {
+                    Some("open")
+                } else if lower.contains("new") {
+                    Some("new")
+                } else {
+                    None
+                }
+            });
+
+            if let Some(action) = action {
+                let _ = app.emit("native-menu-shortcut", action);
+            }
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // If a second instance tries to launch, just focus the existing main window
             if let Some(win) = app.get_webview_window("main") {

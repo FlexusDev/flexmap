@@ -33,6 +33,69 @@ function isTypingTarget(target: EventTarget | null): boolean {
  */
 export function useKeyboardShortcuts() {
   useEffect(() => {
+    const getSelectedIds = () => {
+      const state = useAppStore.getState();
+      return state.selectedLayerIds.length > 0
+        ? state.selectedLayerIds
+        : state.selectedLayerId
+          ? [state.selectedLayerId]
+          : [];
+    };
+
+    const runAction = (action: "undo" | "redo" | "save" | "save_as" | "new" | "open" | "duplicate" | "toggle_projector") => {
+      const state = useAppStore.getState();
+      const selectedIds = getSelectedIds();
+
+      switch (action) {
+        case "undo":
+          state.undo();
+          return;
+        case "redo":
+          state.redo();
+          return;
+        case "save":
+          if (state.projectPath) {
+            state.saveProject();
+          } else {
+            tauriSaveDialog({
+              filters: [{ name: "AuraMap Project", extensions: ["auramap"] }],
+              defaultPath: "project.auramap",
+            }).then((path) => {
+              if (path) state.saveProject(path);
+            });
+          }
+          return;
+        case "save_as":
+          tauriSaveDialog({
+            filters: [{ name: "AuraMap Project", extensions: ["auramap"] }],
+            defaultPath: "project.auramap",
+          }).then((path) => {
+            if (path) state.saveProject(path);
+          });
+          return;
+        case "new":
+          state.newProject();
+          return;
+        case "open":
+          tauriOpenDialog({
+            filters: [{ name: "AuraMap Project", extensions: ["auramap", "json"] }],
+          }).then((path) => {
+            if (path) state.loadProjectFile(path);
+          });
+          return;
+        case "duplicate":
+          if (selectedIds.length > 0) state.duplicateSelectedLayers();
+          return;
+        case "toggle_projector":
+          if (state.projectorWindowOpen) {
+            state.closeProjector();
+          } else {
+            state.openProjector();
+          }
+          return;
+      }
+    };
+
     const markHandled = (e: KeyboardEvent) => {
       (e as KeyboardEvent & { __auraShortcutHandled?: boolean }).__auraShortcutHandled = true;
     };
@@ -49,21 +112,13 @@ export function useKeyboardShortcuts() {
         key === expectedKey || code === expectedCode;
       const state = useAppStore.getState();
       const target = e.target as EventTarget | null;
-      const selectedIds = state.selectedLayerIds.length > 0
-        ? state.selectedLayerIds
-        : state.selectedLayerId
-          ? [state.selectedLayerId]
-          : [];
+      const selectedIds = getSelectedIds();
 
       // Cmd+Z / Cmd+Shift+Z — Undo / Redo
       if (meta && matchesKey("z", "KeyZ")) {
         e.preventDefault();
         markHandled(e);
-        if (e.shiftKey) {
-          state.redo();
-        } else {
-          state.undo();
-        }
+        runAction(e.shiftKey ? "redo" : "undo");
         return;
       }
 
@@ -71,26 +126,7 @@ export function useKeyboardShortcuts() {
       if (meta && matchesKey("s", "KeyS")) {
         e.preventDefault();
         markHandled(e);
-        if (e.shiftKey) {
-          // Save As
-          tauriSaveDialog({
-            filters: [{ name: "AuraMap Project", extensions: ["auramap"] }],
-            defaultPath: "project.auramap",
-          }).then((path) => {
-            if (path) state.saveProject(path);
-          });
-        } else {
-          if (state.projectPath) {
-            state.saveProject();
-          } else {
-            tauriSaveDialog({
-              filters: [{ name: "AuraMap Project", extensions: ["auramap"] }],
-              defaultPath: "project.auramap",
-            }).then((path) => {
-              if (path) state.saveProject(path);
-            });
-          }
-        }
+        runAction(e.shiftKey ? "save_as" : "save");
         return;
       }
 
@@ -98,7 +134,7 @@ export function useKeyboardShortcuts() {
       if (meta && matchesKey("n", "KeyN")) {
         e.preventDefault();
         markHandled(e);
-        state.newProject();
+        runAction("new");
         return;
       }
 
@@ -106,11 +142,7 @@ export function useKeyboardShortcuts() {
       if (meta && matchesKey("o", "KeyO")) {
         e.preventDefault();
         markHandled(e);
-        tauriOpenDialog({
-          filters: [{ name: "AuraMap Project", extensions: ["auramap", "json"] }],
-        }).then((path) => {
-          if (path) state.loadProjectFile(path);
-        });
+        runAction("open");
         return;
       }
 
@@ -118,9 +150,7 @@ export function useKeyboardShortcuts() {
       if (meta && matchesKey("d", "KeyD")) {
         e.preventDefault();
         markHandled(e);
-        if (selectedIds.length > 0) {
-          state.duplicateSelectedLayers();
-        }
+        runAction("duplicate");
         return;
       }
 
@@ -157,11 +187,7 @@ export function useKeyboardShortcuts() {
       if (meta && matchesKey("p", "KeyP")) {
         e.preventDefault();
         markHandled(e);
-        if (state.projectorWindowOpen) {
-          state.closeProjector();
-        } else {
-          state.openProjector();
-        }
+        runAction("toggle_projector");
         return;
       }
 
@@ -216,12 +242,42 @@ export function useKeyboardShortcuts() {
       }
     };
 
+    let unlistenNativeMenu: (() => void) | null = null;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<string>("native-menu-shortcut", (event) => {
+          switch (event.payload) {
+            case "undo":
+            case "redo":
+            case "save":
+            case "save_as":
+            case "new":
+            case "open":
+            case "duplicate":
+            case "toggle_projector":
+              runAction(event.payload);
+              break;
+            default:
+              break;
+          }
+        })
+      )
+      .then((unlisten) => {
+        unlistenNativeMenu = unlisten;
+      })
+      .catch(() => {
+        // Running without Tauri event bridge (e.g. plain web preview).
+      });
+
     // Capture phase helps intercept Tab before browser focus navigation.
     window.addEventListener("keydown", handler, true);
     document.addEventListener("keydown", handler, true);
     return () => {
       window.removeEventListener("keydown", handler, true);
       document.removeEventListener("keydown", handler, true);
+      if (unlistenNativeMenu) {
+        unlistenNativeMenu();
+      }
     };
   }, []);
 }
