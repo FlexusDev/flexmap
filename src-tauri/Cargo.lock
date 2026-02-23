@@ -278,6 +278,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
+ "cc",
  "chrono",
  "env_logger",
  "image",
@@ -298,6 +299,7 @@ dependencies = [
  "tokio",
  "uuid",
  "wgpu",
+ "windows 0.58.0",
 ]
 
 [[package]]

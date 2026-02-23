@@ -290,6 +290,18 @@ const mockCommands: Record<string, (args: any) => any> = {
     total_mem: 16 * 1024 * 1024 * 1024, used_mem: 8 * 1024 * 1024 * 1024,
     system_cpu: 25.0, cpu_count: 8, cpu_name: "Mock CPU",
   }),
+
+  check_syphon_status: () => ({
+    bridge_compiled: false,
+    bridge_available: false,
+    search_paths: [
+      ["/Library/Frameworks/Syphon.framework", false],
+      ["~/Library/Frameworks/Syphon.framework", false],
+    ],
+    message: "Syphon is only available on macOS (mock mode).",
+  }),
+
+  install_syphon_framework: () => "Mock: Syphon.framework install simulated. Restart app to enable.",
 };
 
 /**

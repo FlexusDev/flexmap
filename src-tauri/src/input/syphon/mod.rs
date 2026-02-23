@@ -4,7 +4,8 @@
 //! Syphon framework's SyphonServerDirectory and SyphonMetalClient APIs.
 //!
 //! If Syphon.framework is not installed, the backend compiles but reports
-//! no available sources at runtime.
+//! no available sources at runtime. Users can trigger installation from
+//! the UI via the `install_syphon_framework` IPC command.
 //!
 //! Multi-source: multiple Syphon servers can be active simultaneously.
 
@@ -71,9 +72,9 @@ struct ServerSnapshot {
 
 #[cfg(has_syphon_bridge)]
 fn discover_servers() -> Vec<ServerSnapshot> {
+    log::info!("Syphon: scanning for servers via SyphonServerDirectory...");
     const MAX: i32 = 32;
     let mut buf = Vec::with_capacity(MAX as usize);
-    // Zero-init the structs
     for _ in 0..MAX {
         buf.push(ffi::SyphonServerInfo {
             name: [0; 256],
@@ -83,22 +84,35 @@ fn discover_servers() -> Vec<ServerSnapshot> {
     }
 
     let count = unsafe { ffi::syphon_list_servers(buf.as_mut_ptr(), MAX) };
+    log::info!("Syphon: syphon_list_servers returned {} server(s)", count);
     let count = count.max(0) as usize;
 
     buf.truncate(count);
-    buf.iter()
-        .map(|s| ServerSnapshot {
-            name: c_chars_to_string(&s.name),
-            app_name: c_chars_to_string(&s.app_name),
-            uuid: c_chars_to_string(&s.uuid),
+    let servers: Vec<ServerSnapshot> = buf
+        .iter()
+        .map(|s| {
+            let snap = ServerSnapshot {
+                name: c_chars_to_string(&s.name),
+                app_name: c_chars_to_string(&s.app_name),
+                uuid: c_chars_to_string(&s.uuid),
+            };
+            log::info!(
+                "Syphon: found server name={:?} app={:?} uuid={:?}",
+                snap.name,
+                snap.app_name,
+                snap.uuid
+            );
+            snap
         })
         .filter(|s| !s.uuid.is_empty())
-        .collect()
+        .collect();
+    servers
 }
 
 #[cfg(not(has_syphon_bridge))]
 fn discover_servers() -> Vec<ServerSnapshot> {
-    Vec::new() // No bridge linked
+    log::debug!("Syphon: bridge not compiled — cannot discover servers");
+    Vec::new()
 }
 
 // ─── Per-source client state ────────────────────────────────────────────────
@@ -106,15 +120,21 @@ fn discover_servers() -> Vec<ServerSnapshot> {
 struct ActiveClient {
     #[cfg(has_syphon_bridge)]
     handle: ffi::SyphonClientHandle,
+    #[allow(dead_code)]
     uuid: String,
+    #[allow(dead_code)]
     width: u32,
+    #[allow(dead_code)]
     height: u32,
+    #[allow(dead_code)]
     is_bgra: bool,
+    #[allow(dead_code)]
     pixel_buf: Vec<u8>,
 }
 
 impl Drop for ActiveClient {
     fn drop(&mut self) {
+        log::info!("Syphon: destroying client for uuid={}", self.uuid);
         #[cfg(has_syphon_bridge)]
         unsafe {
             if !self.handle.is_null() {
@@ -136,6 +156,7 @@ pub struct SyphonBackend {
     bridge_available: bool,
 }
 
+#[allow(dead_code)]
 struct CachedFrame {
     width: u32,
     height: u32,
@@ -145,6 +166,31 @@ struct CachedFrame {
 // SyphonBackend holds raw pointers that are accessed only through RwLock<InputManager>
 unsafe impl Send for SyphonBackend {}
 unsafe impl Sync for SyphonBackend {}
+
+/// Check whether the Syphon bridge was compiled (framework found at build time).
+pub fn is_bridge_available() -> bool {
+    #[cfg(has_syphon_bridge)]
+    {
+        unsafe { ffi::syphon_is_available() != 0 }
+    }
+    #[cfg(not(has_syphon_bridge))]
+    {
+        false
+    }
+}
+
+/// Return a list of framework search paths that build.rs checks.
+pub fn framework_search_paths() -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    vec![
+        "/Library/Frameworks/Syphon.framework".to_string(),
+        format!("{}/Library/Frameworks/Syphon.framework", home),
+        "/Applications/Synesthesia.app/Contents/Frameworks/Syphon.framework".to_string(),
+        "/Applications/Resolume Arena.app/Contents/Frameworks/Syphon.framework".to_string(),
+        "/Applications/VDMX5.app/Contents/Frameworks/Syphon.framework".to_string(),
+        "/Applications/MadMapper.app/Contents/Frameworks/Syphon.framework".to_string(),
+    ]
+}
 
 impl SyphonBackend {
     pub fn new() -> Self {
@@ -159,12 +205,21 @@ impl SyphonBackend {
         }
 
         if bridge_available {
-            log::info!("Syphon bridge loaded — Metal client ready");
+            log::info!("Syphon: ObjC bridge loaded — Metal client ready");
         } else {
-            log::info!(
-                "Syphon bridge not available (framework not installed). \
-                 Syphon sources will not be discovered."
+            log::warn!(
+                "Syphon: bridge NOT available. Syphon.framework was not found at build time."
             );
+            log::warn!(
+                "Syphon: install from https://github.com/Syphon/Syphon-Framework/releases"
+            );
+            log::warn!("Syphon: then rebuild with `cargo tauri dev`");
+
+            // Log which paths we checked
+            for path in framework_search_paths() {
+                let exists = std::path::Path::new(&path).exists();
+                log::info!("Syphon: search path {:?} exists={}", path, exists);
+            }
         }
 
         let mut backend = Self {
@@ -186,10 +241,15 @@ impl SyphonBackend {
         self.last_discovery = std::time::Instant::now();
 
         if !self.bridge_available {
+            log::debug!("Syphon: skipping refresh — bridge not available");
             return;
         }
 
         let servers = discover_servers();
+        log::info!(
+            "Syphon: refresh complete — {} server(s) discovered",
+            servers.len()
+        );
 
         self.sources = servers
             .iter()
@@ -206,22 +266,18 @@ impl SyphonBackend {
                     id: format!("syphon:{}", s.uuid),
                     name: display,
                     protocol: "syphon".to_string(),
-                    width: None,  // dimensions unknown until connected
+                    width: None,
                     height: None,
                     fps: None,
                 }
             })
             .collect();
 
-        if !self.sources.is_empty() {
-            log::debug!(
-                "Syphon: {} server(s) found: {}",
-                self.sources.len(),
-                self.sources
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+        for src in &self.sources {
+            log::info!(
+                "Syphon: source available: id={} name={:?}",
+                src.id,
+                src.name
             );
         }
     }
@@ -234,18 +290,25 @@ impl SyphonBackend {
 
         let uuid = match source_id.strip_prefix("syphon:") {
             Some(u) => u,
-            None => return false,
+            None => {
+                log::warn!("Syphon: invalid source_id format: {}", source_id);
+                return false;
+            }
         };
 
-        // Create null-terminated C string
+        log::info!("Syphon: creating Metal client for uuid={}", uuid);
         let c_uuid = std::ffi::CString::new(uuid).unwrap_or_default();
         let handle = unsafe { ffi::syphon_create_client(c_uuid.as_ptr()) };
 
         if handle.is_null() {
-            log::warn!("Syphon: failed to create client for {}", source_id);
+            log::error!(
+                "Syphon: syphon_create_client returned NULL for uuid={}",
+                uuid
+            );
             return false;
         }
 
+        log::info!("Syphon: Metal client created successfully for uuid={}", uuid);
         self.clients.insert(
             source_id.to_string(),
             ActiveClient {
@@ -264,6 +327,19 @@ impl SyphonBackend {
     fn ensure_client(&mut self, _source_id: &str) -> bool {
         false
     }
+
+    fn return_cached_frame(&self, source_id: &str) -> Option<FramePacket> {
+        let cached = self.frame_cache.get(source_id)?;
+        let seq = self.sequence_counters.get(source_id).copied().unwrap_or(0);
+        Some(FramePacket {
+            width: cached.width,
+            height: cached.height,
+            pixel_format: PixelFormat::Rgba8,
+            data: cached.rgba_data.clone(),
+            timestamp: None,
+            sequence: Some(seq),
+        })
+    }
 }
 
 impl InputBackend for SyphonBackend {
@@ -276,9 +352,13 @@ impl InputBackend for SyphonBackend {
     }
 
     fn connect(&mut self, source_id: &str) -> Result<(), InputError> {
+        log::info!("Syphon: connect requested for {}", source_id);
+
         if !self.bridge_available {
+            log::error!("Syphon: cannot connect — bridge not available");
             return Err(InputError::ConnectionFailed(
-                "Syphon.framework not installed — download from https://syphon.info"
+                "Syphon.framework not installed. Use the Install Syphon button in Sources panel, \
+                 then restart the app."
                     .into(),
             ));
         }
@@ -286,6 +366,11 @@ impl InputBackend for SyphonBackend {
         self.refresh_sources();
 
         if !self.sources.iter().any(|s| s.id == source_id) {
+            log::error!(
+                "Syphon: source {} not found in {} available sources",
+                source_id,
+                self.sources.len()
+            );
             return Err(InputError::SourceNotFound(source_id.to_string()));
         }
 
@@ -298,7 +383,7 @@ impl InputBackend for SyphonBackend {
 
         self.active_sources.insert(source_id.to_string());
         log::info!(
-            "Syphon source connected: {} (active: {})",
+            "Syphon: source connected: {} (active count: {})",
             source_id,
             self.active_sources.len()
         );
@@ -306,23 +391,22 @@ impl InputBackend for SyphonBackend {
     }
 
     fn disconnect(&mut self) {
+        log::info!(
+            "Syphon: disconnecting all ({} active)",
+            self.active_sources.len()
+        );
         self.active_sources.clear();
-        self.clients.clear(); // Drop triggers syphon_destroy_client
+        self.clients.clear();
         self.frame_cache.clear();
         self.sequence_counters.clear();
-        log::info!("All Syphon sources disconnected");
     }
 
     fn disconnect_source(&mut self, source_id: &str) {
+        log::info!("Syphon: disconnecting source {}", source_id);
         self.active_sources.remove(source_id);
-        self.clients.remove(source_id); // Drop triggers cleanup
+        self.clients.remove(source_id);
         self.frame_cache.remove(source_id);
         self.sequence_counters.remove(source_id);
-        log::info!(
-            "Syphon source disconnected: {} (active: {})",
-            source_id,
-            self.active_sources.len()
-        );
     }
 
     fn poll_frame(&mut self) -> Option<FramePacket> {
@@ -341,7 +425,6 @@ impl InputBackend for SyphonBackend {
 
         #[cfg(has_syphon_bridge)]
         {
-            // Ensure client exists
             if !self.ensure_client(source_id) {
                 return self.return_cached_frame(source_id);
             }
@@ -351,13 +434,11 @@ impl InputBackend for SyphonBackend {
                 None => return self.return_cached_frame(source_id),
             };
 
-            // Check for new frame
             let has_new = unsafe { ffi::syphon_has_new_frame(client.handle) } != 0;
             if !has_new {
                 return self.return_cached_frame(source_id);
             }
 
-            // Get frame dimensions
             let mut width: u32 = 0;
             let mut height: u32 = 0;
             let mut is_bgra: i32 = 1;
@@ -371,6 +452,7 @@ impl InputBackend for SyphonBackend {
             }
 
             if width == 0 || height == 0 {
+                log::debug!("Syphon: frame has zero dimensions for {}", source_id);
                 return self.return_cached_frame(source_id);
             }
 
@@ -378,11 +460,9 @@ impl InputBackend for SyphonBackend {
             client.height = height;
             client.is_bgra = is_bgra != 0;
 
-            // Allocate pixel buffer
             let total_bytes = (width * height * 4) as usize;
             client.pixel_buf.resize(total_bytes, 0);
 
-            // Copy frame pixels
             let result = unsafe {
                 ffi::syphon_copy_frame_pixels(
                     client.handle,
@@ -392,6 +472,11 @@ impl InputBackend for SyphonBackend {
             };
 
             if result != 1 {
+                log::debug!(
+                    "Syphon: syphon_copy_frame_pixels returned {} for {}",
+                    result,
+                    source_id
+                );
                 return self.return_cached_frame(source_id);
             }
 
@@ -399,7 +484,7 @@ impl InputBackend for SyphonBackend {
             let mut rgba_data = client.pixel_buf.clone();
             if client.is_bgra {
                 for chunk in rgba_data.chunks_exact_mut(4) {
-                    chunk.swap(0, 2); // swap R and B
+                    chunk.swap(0, 2);
                 }
             }
 
@@ -409,6 +494,18 @@ impl InputBackend for SyphonBackend {
                 .or_insert(0);
             *counter += 1;
             let seq = *counter;
+
+            // Log first frame details
+            if seq == 1 {
+                log::info!(
+                    "Syphon: first frame from {} — {}x{} bgra={} ({} bytes)",
+                    source_id,
+                    width,
+                    height,
+                    client.is_bgra,
+                    total_bytes
+                );
+            }
 
             let packet = FramePacket {
                 width,
@@ -446,26 +543,11 @@ impl InputBackend for SyphonBackend {
     }
 
     fn connected_source(&self) -> Option<&SourceInfo> {
-        None // Multi-source backend
+        None
     }
 
     fn is_source_active(&self, source_id: &str) -> bool {
         self.active_sources.contains(source_id)
-    }
-}
-
-impl SyphonBackend {
-    fn return_cached_frame(&self, source_id: &str) -> Option<FramePacket> {
-        let cached = self.frame_cache.get(source_id)?;
-        let seq = self.sequence_counters.get(source_id).copied().unwrap_or(0);
-        Some(FramePacket {
-            width: cached.width,
-            height: cached.height,
-            pixel_format: PixelFormat::Rgba8,
-            data: cached.rgba_data.clone(),
-            timestamp: None,
-            sequence: Some(seq),
-        })
     }
 }
 

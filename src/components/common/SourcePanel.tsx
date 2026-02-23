@@ -1,5 +1,13 @@
+import { useState, useEffect, useCallback } from "react";
 import { useAppStore } from "../../store/useAppStore";
-import { isTauri } from "../../lib/tauri-bridge";
+import { isTauri, tauriInvoke } from "../../lib/tauri-bridge";
+
+interface SyphonStatus {
+  bridge_compiled: boolean;
+  bridge_available: boolean;
+  search_paths: [string, boolean][];
+  message: string;
+}
 
 function SourcePanel() {
   const {
@@ -11,6 +19,31 @@ function SourcePanel() {
     connectSource,
     disconnectSource,
   } = useAppStore();
+
+  const [syphonStatus, setSyphonStatus] = useState<SyphonStatus | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installResult, setInstallResult] = useState<string | null>(null);
+
+  // Check Syphon status on mount
+  useEffect(() => {
+    tauriInvoke<SyphonStatus>("check_syphon_status").then(setSyphonStatus);
+  }, []);
+
+  const handleInstallSyphon = useCallback(async () => {
+    setInstalling(true);
+    setInstallResult(null);
+    try {
+      const result = await tauriInvoke<string>("install_syphon_framework");
+      setInstallResult(result);
+      // Re-check status after install
+      const status = await tauriInvoke<SyphonStatus>("check_syphon_status");
+      setSyphonStatus(status);
+    } catch (e) {
+      setInstallResult(`Error: ${e}`);
+    } finally {
+      setInstalling(false);
+    }
+  }, []);
 
   const handleAddMedia = async () => {
     let path: string | null = null;
@@ -80,6 +113,30 @@ function SourcePanel() {
               <span className="text-aura-text-dim italic">no source</span>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Syphon status banner — show if bridge is NOT available */}
+      {syphonStatus && !syphonStatus.bridge_available && (
+        <div className="px-3 py-2 border-b border-aura-border/50 bg-yellow-500/10">
+          <div className="text-[10px] text-yellow-300 mb-1">
+            Syphon not available
+          </div>
+          <div className="text-[10px] text-aura-text-dim mb-1.5">
+            {syphonStatus.message}
+          </div>
+          {installResult && (
+            <div className="text-[10px] text-aura-text-dim mb-1.5 whitespace-pre-wrap">
+              {installResult}
+            </div>
+          )}
+          <button
+            onClick={handleInstallSyphon}
+            disabled={installing}
+            className="btn-ghost text-[10px] px-2 py-0.5 bg-yellow-600/30 hover:bg-yellow-600/50 text-yellow-200"
+          >
+            {installing ? "Installing..." : "Install Syphon Framework"}
+          </button>
         </div>
       )}
 
