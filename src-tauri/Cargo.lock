@@ -273,36 +273,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "auramap"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "bytemuck",
- "cc",
- "chrono",
- "env_logger",
- "image",
- "log",
- "notify",
- "parking_lot",
- "pollster",
- "raw-window-handle",
- "serde",
- "serde_json",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-single-instance",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
- "wgpu",
- "windows 0.58.0",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1162,6 +1132,36 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "flexmap"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytemuck",
+ "cc",
+ "chrono",
+ "env_logger",
+ "image",
+ "log",
+ "notify",
+ "parking_lot",
+ "pollster",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-single-instance",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "wgpu",
+ "windows 0.58.0",
 ]
 
 [[package]]

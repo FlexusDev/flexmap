@@ -123,7 +123,7 @@ pub fn run() {
         .format_timestamp_millis()
         .init();
 
-    log::info!("AuraMap starting...");
+    log::info!("FlexMap starting...");
 
     let scene_state = SceneState::new();
     let render_state = Arc::new(RenderState::new());
@@ -251,7 +251,7 @@ pub fn run() {
             commands::subdivide_mesh,
         ])
         .setup(|app| {
-            log::info!("AuraMap setup complete");
+            log::info!("FlexMap setup complete");
 
             // Main editor window is always resizable; aspect lock applies only to projector + preview.
             if let Some(main_window) = app.get_webview_window("main") {
@@ -483,5 +483,5 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running AuraMap");
+        .expect("error while running FlexMap");
 }

@@ -257,7 +257,7 @@ pub async fn open_projector_window(
                     .fullscreen(false)
                     .visible(true)
                     .inner_size(960.0, 540.0)
-                    .title("AuraMap Projector Output [GPU]")
+                    .title("FlexMap Projector Output [GPU]")
                     .build()
                     .map_err(|e| format!("Window creation failed: {}", e))?;
 
@@ -360,7 +360,7 @@ pub async fn open_projector_window(
     .fullscreen(false)
     .visible(true)
     .inner_size(960.0, 540.0)
-    .title("AuraMap Projector Output")
+    .title("FlexMap Projector Output")
     .build()
     .map_err(|e: tauri::Error| e.to_string())?;
 

@@ -19,7 +19,7 @@ function RecoveryDialog({ onRecover, onDismiss }: { onRecover: () => void; onDis
       <div className="bg-aura-surface border border-aura-border rounded-lg shadow-2xl p-6 max-w-sm">
         <div className="text-sm font-medium mb-2">Recover Unsaved Work?</div>
         <div className="text-xs text-aura-text-dim mb-4">
-          AuraMap found an autosave file from a previous session. Would you like to recover it?
+          FlexMap found an autosave file from a previous session. Would you like to recover it?
         </div>
         <div className="flex gap-2 justify-end">
           <button onClick={onDismiss} className="btn-ghost text-xs">
@@ -41,9 +41,9 @@ function App() {
   useKeyboardShortcuts();
 
   const { defaultLayout: mainLayout, onLayoutChanged: onMainLayoutChanged } =
-    useDefaultLayout({ id: "auramap-main", storage: localStorage });
+    useDefaultLayout({ id: "flexmap-main", storage: localStorage });
   const { defaultLayout: leftLayout, onLayoutChanged: onLeftLayoutChanged } =
-    useDefaultLayout({ id: "auramap-left-split", storage: localStorage });
+    useDefaultLayout({ id: "flexmap-left-split", storage: localStorage });
 
   useEffect(() => {
     loadProject();

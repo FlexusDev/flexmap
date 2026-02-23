@@ -27,7 +27,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * Global keyboard shortcuts for AuraMap.
+ * Global keyboard shortcuts for FlexMap.
  * Cmd+S = Save, Cmd+Shift+S = Save As, Cmd+N = New, Cmd+O = Open,
  * Cmd+Z = Undo, Cmd+Shift+Z = Redo, Delete/Backspace = Delete selected layer
  */
@@ -58,8 +58,8 @@ export function useKeyboardShortcuts() {
             state.saveProject();
           } else {
             tauriSaveDialog({
-              filters: [{ name: "AuraMap Project", extensions: ["auramap"] }],
-              defaultPath: "project.auramap",
+              filters: [{ name: "FlexMap Project", extensions: ["flexmap"] }],
+              defaultPath: "project.flexmap",
             }).then((path) => {
               if (path) state.saveProject(path);
             });
@@ -67,8 +67,8 @@ export function useKeyboardShortcuts() {
           return;
         case "save_as":
           tauriSaveDialog({
-            filters: [{ name: "AuraMap Project", extensions: ["auramap"] }],
-            defaultPath: "project.auramap",
+            filters: [{ name: "FlexMap Project", extensions: ["flexmap"] }],
+            defaultPath: "project.flexmap",
           }).then((path) => {
             if (path) state.saveProject(path);
           });
@@ -78,7 +78,7 @@ export function useKeyboardShortcuts() {
           return;
         case "open":
           tauriOpenDialog({
-            filters: [{ name: "AuraMap Project", extensions: ["auramap", "json"] }],
+            filters: [{ name: "FlexMap Project", extensions: ["flexmap", "json"] }],
           }).then((path) => {
             if (path) state.loadProjectFile(path);
           });
