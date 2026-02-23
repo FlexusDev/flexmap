@@ -12,8 +12,8 @@ use wgpu::util::DeviceExt;
 use super::buffer_cache::BufferCache;
 use super::gpu::{FramePacingMode, GpuContext};
 use super::pipeline::{
-    BlendUniforms, CalibrationUniforms, LayerUniforms, RenderPipeline, blend_mode_to_u32,
-    generate_layer_mesh,
+    BlendUniforms, CalibrationUniforms, LayerUniforms, LayerVertex, RenderPipeline,
+    blend_mode_to_u32, generate_layer_calibration_mesh, generate_layer_mesh,
 };
 use super::texture_manager::TextureManager;
 use crate::scene::layer::{BlendMode, Layer};
@@ -197,7 +197,8 @@ impl RenderEngine {
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -245,6 +246,7 @@ impl RenderEngine {
 
             self.buffer_cache.prepare_layer(
                 &self.gpu.device,
+                &self.gpu.queue,
                 &self.pipeline.layer_bind_group_layout,
                 &self.pipeline.sampler,
                 texture_view,
@@ -271,8 +273,17 @@ impl RenderEngine {
             });
 
         if calibration.enabled {
-            // Calibration: simple single pass
-            {
+            if let Some(ref target) = calibration.target_layer {
+                // Layer-level calibration: render scene normally then overlay pattern on target layer
+                self.render_layers_multipass(&mut encoder, layers);
+                if let Some(target_layer) = layers.iter().find(|l| l.id == target.layer_id && l.visible) {
+                    let (verts, idxs) = generate_layer_calibration_mesh(&target_layer.geometry);
+                    if !verts.is_empty() {
+                        self.render_face_calibration_pass(&mut encoder, calibration, &verts, &idxs);
+                    }
+                }
+            } else {
+                // Global calibration: single fullscreen pass
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Calibration Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -584,7 +595,7 @@ impl RenderEngine {
             .unwrap_or(&self.white_texture_view);
 
         // Create per-layer uniform buffer
-        let uniforms = LayerUniforms::from(&layer.properties);
+        let uniforms = LayerUniforms::from_layer(layer);
         let uniform_buffer =
             self.gpu
                 .device
@@ -849,6 +860,92 @@ impl RenderEngine {
         }
 
         pass.draw(0..3, 0..1);
+    }
+
+    /// Render face-level calibration pattern overlay onto the offscreen texture.
+    /// Does NOT clear — overlays on top of the already-rendered scene.
+    fn render_face_calibration_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        calibration: &CalibrationConfig,
+        vertices: &[LayerVertex],
+        indices: &[u16],
+    ) {
+        let pattern_id: u32 = match calibration.pattern {
+            CalibrationPattern::Grid => 0,
+            CalibrationPattern::Crosshair => 1,
+            CalibrationPattern::Checkerboard => 2,
+            CalibrationPattern::FullWhite => 3,
+            CalibrationPattern::ColorBars => 4,
+            CalibrationPattern::Black => 5,
+        };
+
+        let uniforms = CalibrationUniforms {
+            pattern: pattern_id,
+            line_width: 0.005,
+            grid_divisions: 10.0,
+            brightness: 1.0,
+        };
+
+        let uniform_buffer =
+            self.gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Face Calibration Uniform Buffer"),
+                    contents: bytemuck::cast_slice(&[uniforms]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+
+        let bind_group = self
+            .gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Face Calibration Bind Group"),
+                layout: &self.pipeline.calibration_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }],
+            });
+
+        let vertex_buffer =
+            self.gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Face Calib Vertex Buffer"),
+                    contents: bytemuck::cast_slice(vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+
+        let index_buffer =
+            self.gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Face Calib Index Buffer"),
+                    contents: bytemuck::cast_slice(indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Face Calibration Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.offscreen_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load, // Overlay on top of existing scene
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_pipeline(&self.pipeline.face_calibration_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
     }
 
     /// Render scene to the offscreen texture and read pixels back (for preview/screenshot)

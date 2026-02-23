@@ -7,12 +7,17 @@ import type {
   SourceAssignment,
   ProjectFile,
   CalibrationPattern,
+  CalibrationTarget,
   MonitorInfo,
   SourceInfo,
   UndoRedoResult,
   OutputConfig,
   BlendMode,
   FramePacingMode,
+  UvAdjustment,
+  InputTransform,
+  Point2D,
+  EditorSelectionMode,
 } from "../types";
 
 export interface Toast {
@@ -38,6 +43,13 @@ export const EMPTY_PERF: PerfStats = {
   fps: 0, frametime: 0, pollMs: 0, decodeMs: 0, drawMs: 0, frameCount: 0, totalBytes: 0,
 };
 
+function normalizeEditorSelectionMode(
+  mode: EditorSelectionMode,
+  layer: Layer | null | undefined
+): EditorSelectionMode {
+  return layer ? mode : "shape";
+}
+
 interface AppState {
   // Project
   project: ProjectFile | null;
@@ -47,6 +59,8 @@ interface AppState {
   // Layers
   layers: Layer[];
   selectedLayerId: string | null;
+  selectedFaceIndices: number[];
+  editorSelectionMode: EditorSelectionMode;
 
   // Calibration
   calibrationEnabled: boolean;
@@ -87,11 +101,22 @@ interface AppState {
   duplicateLayer: (id: string) => Promise<void>;
   renameLayer: (id: string, name: string) => Promise<void>;
   selectLayer: (id: string | null) => void;
+  setEditorSelectionMode: (mode: EditorSelectionMode) => void;
+  toggleEditorSelectionMode: () => void;
+  setSelectedFaces: (indices: number[]) => void;
+  toggleFaceSelection: (index: number) => void;
+  clearFaceSelection: () => void;
   setLayerVisibility: (id: string, visible: boolean) => Promise<void>;
   setLayerLocked: (id: string, locked: boolean) => Promise<void>;
   reorderLayers: (ids: string[]) => Promise<void>;
   updateGeometry: (id: string, geometry: LayerGeometry) => Promise<void>;
+  updateLayerPoint: (id: string, pointIndex: number, point: Point2D) => Promise<void>;
+  applyGeometryTransformDelta: (
+    id: string,
+    delta: { dx: number; dy: number; dRotation: number; sx: number; sy: number }
+  ) => Promise<void>;
   updateProperties: (id: string, properties: LayerProperties) => Promise<void>;
+  setLayerInputTransform: (id: string, inputTransform: InputTransform) => Promise<void>;
   setLayerSource: (
     id: string,
     source: SourceAssignment | null
@@ -130,6 +155,16 @@ interface AppState {
   undo: () => Promise<void>;
   redo: () => Promise<void>;
 
+  // Face operations
+  toggleFaceMask: (layerId: string, faceIndices: number[], masked: boolean) => Promise<void>;
+  createFaceGroup: (layerId: string, name: string, faceIndices: number[], color: string) => Promise<void>;
+  removeFaceGroup: (layerId: string, groupIndex: number) => Promise<void>;
+  renameFaceGroup: (layerId: string, groupIndex: number, name: string) => Promise<void>;
+  setCalibrationTarget: (target: CalibrationTarget | null) => Promise<void>;
+  setFaceUvOverride: (layerId: string, faceIndex: number, adjustment: UvAdjustment) => Promise<void>;
+  clearFaceUvOverride: (layerId: string, faceIndex: number) => Promise<void>;
+  subdivideMesh: (layerId: string) => Promise<void>;
+
   // Output
   setOutputConfig: (config: OutputConfig) => Promise<void>;
 
@@ -148,6 +183,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   isDirty: false,
   layers: [],
   selectedLayerId: null,
+  selectedFaceIndices: [],
+  editorSelectionMode: "shape",
   calibrationEnabled: false,
   calibrationPattern: "grid",
   sources: [],
@@ -184,6 +221,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         project,
         layers: project.layers,
+        selectedLayerId: null,
+        selectedFaceIndices: [],
+        editorSelectionMode: "shape",
         calibrationEnabled: project.calibration.enabled,
         calibrationPattern: project.calibration.pattern,
       });
@@ -196,7 +236,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   fetchLayers: async () => {
     try {
       const layers = await tauriInvoke<Layer[]>("get_layers");
-      set({ layers });
+      set((s) => {
+        const selectedLayer = s.selectedLayerId
+          ? layers.find((l) => l.id === s.selectedLayerId)
+          : null;
+        const selectedLayerId = selectedLayer ? s.selectedLayerId : null;
+        return {
+          layers,
+          selectedLayerId,
+          selectedFaceIndices: selectedLayerId ? s.selectedFaceIndices : [],
+          editorSelectionMode: normalizeEditorSelectionMode(s.editorSelectionMode, selectedLayer),
+        };
+      });
     } catch (e) {
       console.error("Failed to fetch layers:", e);
     }
@@ -210,6 +261,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => ({
         layers: [...s.layers, layer],
         selectedLayerId: layer.id,
+        selectedFaceIndices: [],
+        editorSelectionMode: normalizeEditorSelectionMode(s.editorSelectionMode, layer),
         isDirty: true,
         canUndo: true,
       }));
@@ -225,6 +278,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => ({
         layers: s.layers.filter((l) => l.id !== id),
         selectedLayerId: s.selectedLayerId === id ? null : s.selectedLayerId,
+        selectedFaceIndices: s.selectedLayerId === id ? [] : s.selectedFaceIndices,
+        editorSelectionMode: s.selectedLayerId === id ? "shape" : s.editorSelectionMode,
         isDirty: true,
         canUndo: true,
       }));
@@ -243,6 +298,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         set((s) => ({
           layers: [...s.layers, layer],
           selectedLayerId: layer.id,
+          selectedFaceIndices: [],
+          editorSelectionMode: normalizeEditorSelectionMode(s.editorSelectionMode, layer),
           isDirty: true,
           canUndo: true,
         }));
@@ -264,7 +321,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  selectLayer: (id) => set({ selectedLayerId: id }),
+  selectLayer: (id) =>
+    set((s) => {
+      const nextLayer = id ? s.layers.find((l) => l.id === id) : null;
+      return {
+        selectedLayerId: id,
+        selectedFaceIndices: [],
+        editorSelectionMode: normalizeEditorSelectionMode(s.editorSelectionMode, nextLayer),
+      };
+    }),
+  setEditorSelectionMode: (mode) =>
+    set((s) => {
+      return mode === s.editorSelectionMode ? s : { editorSelectionMode: mode };
+    }),
+  toggleEditorSelectionMode: () =>
+    set((s) => {
+      return { editorSelectionMode: s.editorSelectionMode === "shape" ? "uv" : "shape" };
+    }),
+  setSelectedFaces: (indices) => set({ selectedFaceIndices: indices }),
+  toggleFaceSelection: (index) =>
+    set((s) => ({
+      selectedFaceIndices: s.selectedFaceIndices.includes(index)
+        ? s.selectedFaceIndices.filter((i) => i !== index)
+        : [...s.selectedFaceIndices, index],
+    })),
+  clearFaceSelection: () => set({ selectedFaceIndices: [] }),
 
   setLayerVisibility: async (id, visible) => {
     try {
@@ -313,6 +394,45 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  updateLayerPoint: async (id, pointIndex, point) => {
+    try {
+      const geometry = await tauriInvoke<LayerGeometry | null>("update_layer_point", {
+        layerId: id,
+        pointIndex,
+        point,
+      });
+      if (!geometry) return;
+      set((s) => ({
+        layers: s.layers.map((l) => (l.id === id ? { ...l, geometry } : l)),
+        isDirty: true,
+        canUndo: true,
+      }));
+    } catch (e) {
+      console.error("Failed to update layer point:", e);
+    }
+  },
+
+  applyGeometryTransformDelta: async (id, delta) => {
+    try {
+      const geometry = await tauriInvoke<LayerGeometry | null>("apply_layer_geometry_transform_delta", {
+        layerId: id,
+        dx: delta.dx,
+        dy: delta.dy,
+        dRotation: delta.dRotation,
+        sx: delta.sx,
+        sy: delta.sy,
+      });
+      if (!geometry) return;
+      set((s) => ({
+        layers: s.layers.map((l) => (l.id === id ? { ...l, geometry } : l)),
+        isDirty: true,
+        canUndo: true,
+      }));
+    } catch (e) {
+      console.error("Failed to apply geometry transform delta:", e);
+    }
+  },
+
   updateProperties: async (id, properties) => {
     try {
       await tauriInvoke<boolean>("update_layer_properties", {
@@ -327,6 +447,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
     } catch (e) {
       console.error("Failed to update properties:", e);
+    }
+  },
+
+  setLayerInputTransform: async (id, inputTransform) => {
+    try {
+      await tauriInvoke<boolean>("set_layer_input_transform", { layerId: id, inputTransform });
+      set((s) => ({
+        layers: s.layers.map((l) =>
+          l.id === id ? { ...l, input_transform: inputTransform } : l
+        ),
+        isDirty: true,
+      }));
+    } catch (e) {
+      console.error("Failed to set layer input transform:", e);
     }
   },
 
@@ -503,6 +637,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         calibrationPattern: project.calibration.pattern,
         isDirty: false,
         selectedLayerId: null,
+        selectedFaceIndices: [],
+        editorSelectionMode: "shape",
         canUndo: false,
         canRedo: false,
       });
@@ -520,6 +656,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         projectPath: null,
         layers: [],
         selectedLayerId: null,
+        selectedFaceIndices: [],
+        editorSelectionMode: "shape",
         calibrationEnabled: false,
         calibrationPattern: "grid",
         isDirty: false,
@@ -569,6 +707,96 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       console.error("Failed to redo:", e);
+    }
+  },
+
+  toggleFaceMask: async (layerId, faceIndices, masked) => {
+    try {
+      await tauriInvoke<boolean>("toggle_face_mask", { layerId, faceIndices, masked });
+      const layers = await tauriInvoke<Layer[]>("get_layers");
+      set({ layers, isDirty: true, canUndo: true });
+    } catch (e) {
+      console.error("Failed to toggle face mask:", e);
+    }
+  },
+
+  createFaceGroup: async (layerId, name, faceIndices, color) => {
+    try {
+      await tauriInvoke<boolean>("create_face_group", { layerId, name, faceIndices, color });
+      const layers = await tauriInvoke<Layer[]>("get_layers");
+      set({ layers, isDirty: true, canUndo: true });
+    } catch (e) {
+      console.error("Failed to create face group:", e);
+    }
+  },
+
+  removeFaceGroup: async (layerId, groupIndex) => {
+    try {
+      await tauriInvoke<boolean>("remove_face_group", { layerId, groupIndex });
+      const layers = await tauriInvoke<Layer[]>("get_layers");
+      set({ layers, isDirty: true, canUndo: true });
+    } catch (e) {
+      console.error("Failed to remove face group:", e);
+    }
+  },
+
+  renameFaceGroup: async (layerId, groupIndex, name) => {
+    try {
+      await tauriInvoke<boolean>("rename_face_group", { layerId, groupIndex, name });
+      const layers = await tauriInvoke<Layer[]>("get_layers");
+      set({ layers, isDirty: true, canUndo: true });
+    } catch (e) {
+      console.error("Failed to rename face group:", e);
+    }
+  },
+
+  setCalibrationTarget: async (target) => {
+    try {
+      await tauriInvoke<void>("set_calibration_target", { target });
+      set((s) => ({
+        project: s.project
+          ? { ...s.project, calibration: { ...s.project.calibration, target_layer: target } }
+          : null,
+        isDirty: true,
+      }));
+    } catch (e) {
+      console.error("Failed to set calibration target:", e);
+    }
+  },
+
+  setFaceUvOverride: async (layerId, faceIndex, adjustment) => {
+    try {
+      await tauriInvoke<boolean>("set_face_uv_override", { layerId, faceIndex, adjustment });
+      const layers = await tauriInvoke<Layer[]>("get_layers");
+      set({ layers, isDirty: true });
+    } catch (e) {
+      console.error("Failed to set face UV override:", e);
+    }
+  },
+
+  clearFaceUvOverride: async (layerId, faceIndex) => {
+    try {
+      await tauriInvoke<boolean>("clear_face_uv_override", { layerId, faceIndex });
+      const layers = await tauriInvoke<Layer[]>("get_layers");
+      set({ layers, isDirty: true, canUndo: true });
+    } catch (e) {
+      console.error("Failed to clear face UV override:", e);
+    }
+  },
+
+  subdivideMesh: async (layerId) => {
+    try {
+      const newGeometry = await tauriInvoke<LayerGeometry | null>("subdivide_mesh", { layerId });
+      if (newGeometry) {
+        set((s) => ({
+          layers: s.layers.map((l) => l.id === layerId ? { ...l, geometry: newGeometry } : l),
+          selectedFaceIndices: [],
+          isDirty: true,
+          canUndo: true,
+        }));
+      }
+    } catch (e) {
+      console.error("Failed to subdivide mesh:", e);
     }
   },
 

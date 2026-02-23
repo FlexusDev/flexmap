@@ -5,16 +5,50 @@ export interface Point2D {
   y: number;
 }
 
+export interface FaceGroup {
+  name: string;
+  face_indices: number[];
+  color: string;
+}
+
+export interface UvAdjustment {
+  offset: [number, number];
+  rotation: number;
+  scale: [number, number];
+}
+
+export interface InputTransform {
+  offset: [number, number];
+  rotation: number;
+  scale: [number, number];
+}
+
+export interface CalibrationTarget {
+  layer_id: string;
+  // face_indices removed — calibration targets the whole layer
+}
+
 export type LayerGeometry =
   | { type: "Quad"; data: { corners: [Point2D, Point2D, Point2D, Point2D] } }
   | { type: "Triangle"; data: { vertices: [Point2D, Point2D, Point2D] } }
-  | { type: "Mesh"; data: { cols: number; rows: number; points: Point2D[] } }
+  | {
+      type: "Mesh";
+      data: {
+        cols: number;
+        rows: number;
+        points: Point2D[];
+        face_groups?: FaceGroup[];
+        masked_faces?: number[];
+        uv_overrides?: Record<number, UvAdjustment>;
+      };
+    }
   | {
       type: "Circle";
       data: {
         center: Point2D;
-        radius: number;
-        bounds: [Point2D, Point2D, Point2D, Point2D];
+        radius_x: number;
+        radius_y: number;
+        rotation: number;
       };
     };
 
@@ -72,6 +106,7 @@ export interface Layer {
   zIndex: number;
   source: SourceAssignment | null;
   geometry: LayerGeometry;
+  input_transform: InputTransform;
   properties: LayerProperties;
   blend_mode: BlendMode;
 }
@@ -94,6 +129,7 @@ export type CalibrationPattern =
 export interface CalibrationConfig {
   enabled: boolean;
   pattern: CalibrationPattern;
+  target_layer?: CalibrationTarget | null;
 }
 
 export interface ProjectFile {
@@ -132,6 +168,7 @@ export interface UndoRedoResult {
 }
 
 export type FramePacingMode = "show" | "lowLatency" | "benchmark";
+export type EditorSelectionMode = "shape" | "uv";
 
 export interface RenderStats {
   gpu_name: string;
@@ -183,4 +220,10 @@ export const DEFAULT_LAYER_PROPERTIES: LayerProperties = {
   gamma: 1.0,
   opacity: 1.0,
   feather: 0.0,
+};
+
+export const DEFAULT_INPUT_TRANSFORM: InputTransform = {
+  offset: [0, 0],
+  rotation: 0,
+  scale: [1, 1],
 };

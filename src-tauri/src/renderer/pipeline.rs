@@ -1,5 +1,5 @@
 use super::shaders;
-use crate::scene::layer::{BlendMode, LayerGeometry};
+use crate::scene::layer::{BlendMode, Layer, LayerGeometry};
 use bytemuck::{Pod, Zeroable};
 
 /// Vertex format for layer rendering
@@ -35,27 +35,39 @@ impl LayerVertex {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct LayerUniforms {
-    pub brightness: f32,
-    pub contrast: f32,
-    pub gamma: f32,
-    pub opacity: f32,
-    pub feather: f32,
-    pub _pad0: f32,
-    pub _pad1: f32,
-    pub _pad2: f32,
+    /// brightness, contrast, gamma, opacity
+    pub color_adjust: [f32; 4],
+    /// feather, shape_kind (0=regular, 1=ellipse mask), pad, pad
+    pub feather_and_shape: [f32; 4],
+    /// input offset x/y, pad, pad
+    pub input_offset: [f32; 4],
+    /// input scale x/y, pad, pad
+    pub input_scale: [f32; 4],
+    /// input rotation cos/sin, pad, pad
+    pub input_rot: [f32; 4],
 }
 
-impl From<&crate::scene::layer::LayerProperties> for LayerUniforms {
-    fn from(props: &crate::scene::layer::LayerProperties) -> Self {
+impl LayerUniforms {
+    pub fn from_layer(layer: &Layer) -> Self {
+        let props = &layer.properties;
+        let input = &layer.input_transform;
+        let shape_kind = if matches!(layer.geometry, LayerGeometry::Circle { .. }) {
+            1.0
+        } else {
+            0.0
+        };
+        let rot = input.rotation as f32;
         Self {
-            brightness: props.brightness as f32,
-            contrast: props.contrast as f32,
-            gamma: props.gamma as f32,
-            opacity: props.opacity as f32,
-            feather: props.feather as f32,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            _pad2: 0.0,
+            color_adjust: [
+                props.brightness as f32,
+                props.contrast as f32,
+                props.gamma as f32,
+                props.opacity as f32,
+            ],
+            feather_and_shape: [props.feather as f32, shape_kind, 0.0, 0.0],
+            input_offset: [input.offset[0] as f32, input.offset[1] as f32, 0.0, 0.0],
+            input_scale: [input.scale[0] as f32, input.scale[1] as f32, 0.0, 0.0],
+            input_rot: [rot.cos(), rot.sin(), 0.0, 0.0],
         }
     }
 }
@@ -105,6 +117,8 @@ pub struct RenderPipeline {
     /// Pipeline for Additive blend mode (hardware SrcAlpha + One)
     pub additive_pipeline: wgpu::RenderPipeline,
     pub calibration_pipeline: wgpu::RenderPipeline,
+    /// Pipeline for face-level calibration overlay (uses LayerVertex, alpha blending)
+    pub face_calibration_pipeline: wgpu::RenderPipeline,
     /// Pipeline for shader-based blend compositing (ping-pong)
     pub blend_composite_pipeline: wgpu::RenderPipeline,
     pub layer_bind_group_layout: wgpu::BindGroupLayout,
@@ -245,6 +259,42 @@ impl RenderPipeline {
                     targets: &[Some(wgpu::ColorTargetState {
                         format: surface_format,
                         blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
+        // --- Face calibration pipeline (vertex buffer + alpha blend overlay) ---
+        let face_calib_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Face Calibration Shader"),
+            source: wgpu::ShaderSource::Wgsl(shaders::FACE_CALIBRATION_SHADER.into()),
+        });
+
+        let face_calibration_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Face Calibration Pipeline"),
+                layout: Some(&calibration_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &face_calib_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[LayerVertex::desc()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &face_calib_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: Default::default(),
@@ -429,6 +479,7 @@ impl RenderPipeline {
             layer_pipeline,
             additive_pipeline,
             calibration_pipeline,
+            face_calibration_pipeline,
             blend_composite_pipeline,
             layer_bind_group_layout,
             calibration_bind_group_layout,
@@ -440,7 +491,8 @@ impl RenderPipeline {
     }
 }
 
-/// Generate vertices and indices for a layer's geometry
+/// Generate vertices and indices for a layer's geometry.
+/// Handles masked faces (skip), UV overrides (duplicate vertices with transformed UVs).
 pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u16>) {
     match geometry {
         LayerGeometry::Quad { corners } => {
@@ -484,12 +536,17 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
             let indices = vec![0, 1, 2];
             (vertices, indices)
         }
-        LayerGeometry::Mesh { cols, rows, points } => {
+        LayerGeometry::Mesh { cols, rows, points, masked_faces, uv_overrides, .. } => {
             let cols = *cols as usize;
             let rows = *rows as usize;
-            let mut vertices = Vec::with_capacity((rows + 1) * (cols + 1));
-            let mut indices = Vec::new();
 
+            // O(1) lookup for masked faces
+            let mask_set: std::collections::HashSet<usize> = masked_faces.iter().copied().collect();
+
+            let mut vertices = Vec::with_capacity((rows + 1) * (cols + 1));
+            let mut indices: Vec<u16> = Vec::new();
+
+            // Build base vertex grid
             for r in 0..=rows {
                 for c in 0..=cols {
                     let idx = r * (cols + 1) + c;
@@ -504,43 +561,194 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
             // Generate triangle indices for the grid
             for r in 0..rows {
                 for c in 0..cols {
-                    let tl = (r * (cols + 1) + c) as u16;
-                    let tr = tl + 1;
-                    let bl = ((r + 1) * (cols + 1) + c) as u16;
-                    let br = bl + 1;
-                    // Two triangles per cell
-                    indices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
+                    let face_idx = r * cols + c;
+
+                    // Skip masked faces
+                    if mask_set.contains(&face_idx) {
+                        continue;
+                    }
+
+                    if let Some(adj) = uv_overrides.get(&face_idx) {
+                        // UV override: duplicate this face's 4 vertices with transformed UVs
+                        let center_u = (c as f32 + 0.5) / cols as f32;
+                        let center_v = (r as f32 + 0.5) / rows as f32;
+                        let cos_r = (adj.rotation as f32).cos();
+                        let sin_r = (adj.rotation as f32).sin();
+                        let sx = adj.scale[0] as f32;
+                        let sy = adj.scale[1] as f32;
+                        let ox = adj.offset[0] as f32;
+                        let oy = adj.offset[1] as f32;
+
+                        let corner_positions = [
+                            vertices[r * (cols + 1) + c].position,
+                            vertices[r * (cols + 1) + c + 1].position,
+                            vertices[(r + 1) * (cols + 1) + c + 1].position,
+                            vertices[(r + 1) * (cols + 1) + c].position,
+                        ];
+                        let base_uvs: [[f32; 2]; 4] = [
+                            [c as f32 / cols as f32, r as f32 / rows as f32],
+                            [(c + 1) as f32 / cols as f32, r as f32 / rows as f32],
+                            [(c + 1) as f32 / cols as f32, (r + 1) as f32 / rows as f32],
+                            [c as f32 / cols as f32, (r + 1) as f32 / rows as f32],
+                        ];
+
+                        let new_base = vertices.len() as u16;
+                        for i in 0..4 {
+                            let bu = base_uvs[i][0];
+                            let bv = base_uvs[i][1];
+                            let su = (bu - center_u) * sx;
+                            let sv = (bv - center_v) * sy;
+                            let new_u = su * cos_r - sv * sin_r + center_u + ox;
+                            let new_v = su * sin_r + sv * cos_r + center_v + oy;
+                            vertices.push(LayerVertex {
+                                position: corner_positions[i],
+                                tex_coord: [new_u, new_v],
+                            });
+                        }
+                        // TL=0, TR=1, BR=2, BL=3
+                        indices.extend_from_slice(&[
+                            new_base, new_base + 1, new_base + 2,
+                            new_base, new_base + 2, new_base + 3,
+                        ]);
+                    } else {
+                        // Standard shared-vertex indices
+                        let tl = (r * (cols + 1) + c) as u16;
+                        let tr = tl + 1;
+                        let bl = ((r + 1) * (cols + 1) + c) as u16;
+                        let br = bl + 1;
+                        indices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
+                    }
                 }
             }
 
             (vertices, indices)
         }
         LayerGeometry::Circle {
-            center: _,
-            radius: _,
-            bounds,
+            center,
+            radius_x,
+            radius_y,
+            rotation,
         } => {
-            // Render as a quad with circle masking done in the shader
-            // The feather/mask will handle the circular shape
+            let cx = center.x as f32;
+            let cy = center.y as f32;
+            let rx = *radius_x as f32;
+            let ry = *radius_y as f32;
+            let c = (*rotation as f32).cos();
+            let s = (*rotation as f32).sin();
+
+            let corner_local = [(-rx, -ry), (rx, -ry), (rx, ry), (-rx, ry)];
+            let corner_world = corner_local.map(|(lx, ly)| {
+                let x = cx + lx * c - ly * s;
+                let y = cy + lx * s + ly * c;
+                [x, y]
+            });
+
+            // Oriented quad + analytic ellipse mask in shader.
             let vertices = vec![
                 LayerVertex {
-                    position: [bounds[0].x as f32, bounds[0].y as f32],
+                    position: corner_world[0],
                     tex_coord: [0.0, 0.0],
                 },
                 LayerVertex {
-                    position: [bounds[1].x as f32, bounds[1].y as f32],
+                    position: corner_world[1],
                     tex_coord: [1.0, 0.0],
                 },
                 LayerVertex {
-                    position: [bounds[2].x as f32, bounds[2].y as f32],
+                    position: corner_world[2],
                     tex_coord: [1.0, 1.0],
                 },
                 LayerVertex {
-                    position: [bounds[3].x as f32, bounds[3].y as f32],
+                    position: corner_world[3],
                     tex_coord: [0.0, 1.0],
                 },
             ];
             let indices = vec![0, 1, 2, 0, 2, 3];
+            (vertices, indices)
+        }
+    }
+}
+
+/// Generate vertices and indices for a layer-level calibration overlay.
+/// Covers the whole layer shape regardless of geometry type.
+/// UV [0,0]→[1,1] so the calibration pattern fills the layer independently.
+pub fn generate_layer_calibration_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u16>) {
+    match geometry {
+        LayerGeometry::Quad { corners } => {
+            let vertices = vec![
+                LayerVertex { position: [corners[0].x as f32, corners[0].y as f32], tex_coord: [0.0, 0.0] },
+                LayerVertex { position: [corners[1].x as f32, corners[1].y as f32], tex_coord: [1.0, 0.0] },
+                LayerVertex { position: [corners[2].x as f32, corners[2].y as f32], tex_coord: [1.0, 1.0] },
+                LayerVertex { position: [corners[3].x as f32, corners[3].y as f32], tex_coord: [0.0, 1.0] },
+            ];
+            let indices = vec![0, 1, 2, 0, 2, 3];
+            (vertices, indices)
+        }
+        LayerGeometry::Triangle { vertices: verts } => {
+            let vertices = vec![
+                LayerVertex { position: [verts[0].x as f32, verts[0].y as f32], tex_coord: [0.5, 0.0] },
+                LayerVertex { position: [verts[1].x as f32, verts[1].y as f32], tex_coord: [1.0, 1.0] },
+                LayerVertex { position: [verts[2].x as f32, verts[2].y as f32], tex_coord: [0.0, 1.0] },
+            ];
+            let indices = vec![0, 1, 2];
+            (vertices, indices)
+        }
+        LayerGeometry::Circle {
+            center,
+            radius_x,
+            radius_y,
+            rotation,
+        } => {
+            let cx = center.x as f32;
+            let cy = center.y as f32;
+            let rx = *radius_x as f32;
+            let ry = *radius_y as f32;
+            let c = (*rotation as f32).cos();
+            let s = (*rotation as f32).sin();
+
+            let corner_local = [(-rx, -ry), (rx, -ry), (rx, ry), (-rx, ry)];
+            let corner_world = corner_local.map(|(lx, ly)| {
+                let x = cx + lx * c - ly * s;
+                let y = cy + lx * s + ly * c;
+                [x, y]
+            });
+
+            // Same oriented quad used in the regular render path.
+            let vertices = vec![
+                LayerVertex { position: corner_world[0], tex_coord: [0.0, 0.0] },
+                LayerVertex { position: corner_world[1], tex_coord: [1.0, 0.0] },
+                LayerVertex { position: corner_world[2], tex_coord: [1.0, 1.0] },
+                LayerVertex { position: corner_world[3], tex_coord: [0.0, 1.0] },
+            ];
+            let indices = vec![0, 1, 2, 0, 2, 3];
+            (vertices, indices)
+        }
+        LayerGeometry::Mesh { cols, rows, points, .. } => {
+            // Shared-vertex topology (one vertex per grid point) — avoids cracks at shared edges
+            let cols = *cols as usize;
+            let rows = *rows as usize;
+            let mut vertices = Vec::with_capacity((rows + 1) * (cols + 1));
+            let mut indices: Vec<u16> = Vec::with_capacity(rows * cols * 6);
+
+            for r in 0..=rows {
+                for c in 0..=cols {
+                    let pt = &points[r * (cols + 1) + c];
+                    vertices.push(LayerVertex {
+                        position: [pt.x as f32, pt.y as f32],
+                        tex_coord: [c as f32 / cols as f32, r as f32 / rows as f32],
+                    });
+                }
+            }
+
+            for r in 0..rows {
+                for c in 0..cols {
+                    let tl = (r * (cols + 1) + c) as u16;
+                    let tr = tl + 1;
+                    let bl = ((r + 1) * (cols + 1) + c) as u16;
+                    let br = bl + 1;
+                    indices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
+                }
+            }
+
             (vertices, indices)
         }
     }

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use super::layer::Layer;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Output configuration for the projector
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,11 +25,21 @@ impl Default for OutputConfig {
     }
 }
 
+/// Target for layer-level calibration overlay
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CalibrationTarget {
+    pub layer_id: String,
+    // face_indices removed — calibration targets the whole layer
+}
+
 /// Calibration state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalibrationConfig {
     pub enabled: bool,
     pub pattern: CalibrationPattern,
+    /// When Some, calibration pattern is rendered only on this layer (rest of scene normal)
+    #[serde(default)]
+    pub target_layer: Option<CalibrationTarget>,
 }
 
 impl Default for CalibrationConfig {
@@ -37,6 +47,7 @@ impl Default for CalibrationConfig {
         Self {
             enabled: false,
             pattern: CalibrationPattern::Grid,
+            target_layer: None,
         }
     }
 }

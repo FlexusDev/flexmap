@@ -20,7 +20,10 @@
       "mcp__MCP_DOCKER__resolve-library-id",
       "WebFetch(domain:www.npmjs.com)",
       "Bash(wc:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(git reset:*)",
+      "mcp__MCP_DOCKER__sequentialthinking",
+      "WebFetch(domain:semisignal.com)"
     ]
   }
 }
