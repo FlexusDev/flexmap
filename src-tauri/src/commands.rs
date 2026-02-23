@@ -727,8 +727,9 @@ pub async fn check_syphon_status() -> Result<SyphonStatus, String> {
 /// Build and install Syphon.framework from source to ~/Library/Frameworks/.
 ///
 /// The official Syphon SDK 5 release is x86_64-only. Apple Silicon Macs need
-/// an arm64 build, so we clone the repo and build a universal framework via
-/// xcodebuild. Requires Xcode command-line tools.
+/// an arm64 build. We clone the repo and compile directly with clang —
+/// no Xcode.app needed, just the command-line tools already present
+/// (since cargo/rustc is working, clang is available).
 #[tauri::command]
 pub async fn install_syphon_framework() -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -747,23 +748,19 @@ pub async fn install_syphon_framework() -> Result<String, String> {
                            Refresh sources to see Syphon servers."
                     .to_string());
             }
-            // Exists but can't load — likely wrong architecture.
-            // Remove and rebuild.
+            // Exists but can't load — wrong architecture or corrupt.
             log::warn!(
-                "Syphon: existing framework at {} can't be loaded (likely x86_64-only). Rebuilding...",
+                "Syphon: existing framework at {} can't be loaded. Removing and rebuilding...",
                 target_path
             );
             let _ = std::fs::remove_dir_all(&target_path);
         }
 
-        // Check for Xcode command-line tools
-        let xcrun = Command::new("xcrun")
-            .args(["--find", "xcodebuild"])
-            .output();
-        if xcrun.is_err() || !xcrun.unwrap().status.success() {
+        // Verify clang is available
+        let clang_check = Command::new("clang").arg("--version").output();
+        if clang_check.is_err() || !clang_check.unwrap().status.success() {
             return Err(
-                "Xcode command-line tools are required to build Syphon.\n\
-                 Install them with: xcode-select --install"
+                "clang not found. Install command-line tools with: xcode-select --install"
                     .to_string(),
             );
         }
@@ -798,148 +795,184 @@ pub async fn install_syphon_framework() -> Result<String, String> {
             return Err(format!("Failed to clone Syphon repo: {}", stderr));
         }
 
-        // Build universal framework (arm64 + x86_64) using xcodebuild archive + export
-        log::info!("Syphon: building universal framework with xcodebuild...");
-
-        let archive_path = tmp_dir.join("Syphon.xcarchive");
-
-        // Build the framework archive
-        let build_output = Command::new("xcodebuild")
-            .current_dir(&repo_dir)
+        // Find all .m source files in the repo
+        let find_output = Command::new("find")
             .args([
-                "archive",
-                "-project",
-                "Syphon.xcodeproj",
-                "-scheme",
-                "Syphon",
-                "-archivePath",
-                archive_path.to_str().unwrap(),
-                "-configuration",
-                "Release",
-                "ONLY_ACTIVE_ARCH=NO",
-                "SKIP_INSTALL=NO",
-                "BUILD_LIBRARY_FOR_DISTRIBUTION=YES",
+                repo_dir.to_str().unwrap(),
+                "-name",
+                "*.m",
+                "-not",
+                "-path",
+                "*/Test*",
+                "-not",
+                "-path",
+                "*Example*",
             ])
             .output()
-            .map_err(|e| format!("Failed to run xcodebuild: {}", e))?;
+            .map_err(|e| format!("find failed: {}", e))?;
 
-        if !build_output.status.success() {
-            let stderr = String::from_utf8_lossy(&build_output.stderr);
-            let stdout = String::from_utf8_lossy(&build_output.stdout);
-            log::error!("xcodebuild archive failed:\nstdout: {}\nstderr: {}", stdout, stderr);
+        let source_files: Vec<String> = String::from_utf8_lossy(&find_output.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
 
-            // Fallback: try a simple build instead of archive
-            log::info!("Syphon: trying simple xcodebuild build...");
-            let simple_build = Command::new("xcodebuild")
-                .current_dir(&repo_dir)
-                .args([
-                    "-project",
-                    "Syphon.xcodeproj",
-                    "-scheme",
-                    "Syphon",
-                    "-configuration",
-                    "Release",
-                    "ONLY_ACTIVE_ARCH=NO",
-                    "BUILD_LIBRARY_FOR_DISTRIBUTION=YES",
-                ])
-                .output()
-                .map_err(|e| format!("Failed to run xcodebuild: {}", e))?;
+        if source_files.is_empty() {
+            return Err("No .m source files found in Syphon repo".to_string());
+        }
 
-            if !simple_build.status.success() {
-                let stderr2 = String::from_utf8_lossy(&simple_build.stderr);
-                return Err(format!(
-                    "xcodebuild failed. Make sure Xcode is installed.\n\
-                     Error: {}",
-                    stderr2.chars().take(500).collect::<String>()
-                ));
+        log::info!(
+            "Syphon: found {} source files, compiling with clang...",
+            source_files.len()
+        );
+
+        // Detect current architecture for build
+        let arch_output = Command::new("uname")
+            .arg("-m")
+            .output()
+            .map_err(|e| format!("uname failed: {}", e))?;
+        let native_arch = String::from_utf8_lossy(&arch_output.stdout)
+            .trim()
+            .to_string();
+
+        log::info!("Syphon: native architecture: {}", native_arch);
+
+        // Build framework bundle structure
+        let fw_dir = tmp_dir.join("Syphon.framework");
+        let fw_versions = fw_dir.join("Versions/A");
+        let fw_headers = fw_versions.join("Headers");
+        let fw_resources = fw_versions.join("Resources");
+
+        std::fs::create_dir_all(&fw_headers)
+            .map_err(|e| format!("mkdir failed: {}", e))?;
+        std::fs::create_dir_all(&fw_resources)
+            .map_err(|e| format!("mkdir failed: {}", e))?;
+
+        // Compile all .m files into a single dylib using clang directly.
+        // This uses the same compiler that cc crate uses for our bridge.m.
+        let dylib_path = fw_versions.join("Syphon");
+
+        let mut clang_args: Vec<String> = vec![
+            "-dynamiclib".to_string(),
+            "-fobjc-arc".to_string(),
+            "-O2".to_string(),
+            "-arch".to_string(),
+            native_arch.clone(),
+            "-framework".to_string(),
+            "Foundation".to_string(),
+            "-framework".to_string(),
+            "Metal".to_string(),
+            "-framework".to_string(),
+            "IOSurface".to_string(),
+            "-framework".to_string(),
+            "Cocoa".to_string(),
+            "-framework".to_string(),
+            "OpenGL".to_string(),
+            // Set install name so dlopen works
+            "-install_name".to_string(),
+            "@rpath/Syphon.framework/Versions/A/Syphon".to_string(),
+            // Include paths for Syphon's own headers
+            "-I".to_string(),
+            repo_dir.to_str().unwrap().to_string(),
+            "-o".to_string(),
+            dylib_path.to_str().unwrap().to_string(),
+        ];
+
+        // Add all source files
+        for src in &source_files {
+            clang_args.push(src.clone());
+        }
+
+        log::info!("Syphon: running clang with {} args", clang_args.len());
+
+        let compile_output = Command::new("clang")
+            .args(&clang_args)
+            .output()
+            .map_err(|e| format!("clang failed to start: {}", e))?;
+
+        if !compile_output.status.success() {
+            let stderr = String::from_utf8_lossy(&compile_output.stderr);
+            log::error!("Syphon: clang compilation failed:\n{}", stderr);
+            return Err(format!(
+                "Compilation failed:\n{}",
+                stderr.chars().take(800).collect::<String>()
+            ));
+        }
+
+        log::info!("Syphon: compilation successful!");
+
+        // Copy public headers
+        let headers_find = Command::new("find")
+            .args([
+                repo_dir.to_str().unwrap(),
+                "-name",
+                "*.h",
+                "-not",
+                "-path",
+                "*/Test*",
+            ])
+            .output()
+            .map_err(|e| format!("find failed: {}", e))?;
+
+        for header in String::from_utf8_lossy(&headers_find.stdout).lines() {
+            if header.is_empty() {
+                continue;
             }
+            let filename = std::path::Path::new(header)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            let _ = std::fs::copy(header, fw_headers.join(filename));
+        }
 
-            // Find the built framework in DerivedData or build dir
-            let find_output = Command::new("find")
-                .args([
-                    repo_dir.to_str().unwrap(),
-                    "-name",
-                    "Syphon.framework",
-                    "-type",
-                    "d",
-                    "-path",
-                    "*/Release/*",
-                ])
-                .output()
-                .map_err(|e| format!("Failed to search for built framework: {}", e))?;
+        // Create Info.plist
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>info.syphon.Syphon</string>
+    <key>CFBundleName</key>
+    <string>Syphon</string>
+    <key>CFBundleVersion</key>
+    <string>5.0</string>
+    <key>CFBundlePackageType</key>
+    <string>FMWK</string>
+    <key>CFBundleExecutable</key>
+    <string>Syphon</string>
+</dict>
+</plist>"#;
+        std::fs::write(fw_resources.join("Info.plist"), plist)
+            .map_err(|e| format!("Failed to write Info.plist: {}", e))?;
 
-            let found = String::from_utf8_lossy(&find_output.stdout)
-                .lines()
-                .next()
-                .map(|s| s.to_string());
+        // Create framework symlinks (standard macOS framework structure)
+        // Syphon.framework/Versions/Current -> A
+        // Syphon.framework/Syphon -> Versions/Current/Syphon
+        // Syphon.framework/Headers -> Versions/Current/Headers
+        // Syphon.framework/Resources -> Versions/Current/Resources
+        let _ = std::os::unix::fs::symlink("A", fw_dir.join("Versions/Current"));
+        let _ = std::os::unix::fs::symlink(
+            "Versions/Current/Syphon",
+            fw_dir.join("Syphon"),
+        );
+        let _ = std::os::unix::fs::symlink(
+            "Versions/Current/Headers",
+            fw_dir.join("Headers"),
+        );
+        let _ = std::os::unix::fs::symlink(
+            "Versions/Current/Resources",
+            fw_dir.join("Resources"),
+        );
 
-            match found {
-                Some(p) if !p.is_empty() => {
-                    log::info!("Syphon: found built framework at {}", p);
-                    let cp = Command::new("cp")
-                        .args(["-R", &p, &target_path])
-                        .output()
-                        .map_err(|e| format!("Failed to copy: {}", e))?;
-                    if !cp.status.success() {
-                        return Err("Failed to copy built framework".to_string());
-                    }
-                }
-                _ => {
-                    // Also check DerivedData
-                    let dd_find = Command::new("find")
-                        .args([
-                            &format!("{}/Library/Developer/Xcode/DerivedData", home),
-                            "-name",
-                            "Syphon.framework",
-                            "-type",
-                            "d",
-                            "-path",
-                            "*/Release/*",
-                        ])
-                        .output();
+        // Copy the built framework to ~/Library/Frameworks/
+        let cp = Command::new("cp")
+            .args(["-R", fw_dir.to_str().unwrap(), &target_path])
+            .output()
+            .map_err(|e| format!("Failed to copy: {}", e))?;
 
-                    let dd_found = dd_find
-                        .ok()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                        .and_then(|s| s.lines().next().map(|l| l.to_string()));
-
-                    match dd_found {
-                        Some(p) if !p.is_empty() => {
-                            log::info!("Syphon: found in DerivedData at {}", p);
-                            let cp = Command::new("cp")
-                                .args(["-R", &p, &target_path])
-                                .output()
-                                .map_err(|e| format!("Failed to copy: {}", e))?;
-                            if !cp.status.success() {
-                                return Err("Failed to copy built framework".to_string());
-                            }
-                        }
-                        _ => {
-                            return Err(
-                                "Build succeeded but could not find the output framework."
-                                    .to_string(),
-                            );
-                        }
-                    }
-                }
-            }
-        } else {
-            // Archive succeeded — extract the framework from the archive
-            let archive_fw = archive_path.join("Products/Library/Frameworks/Syphon.framework");
-            if archive_fw.exists() {
-                let cp = Command::new("cp")
-                    .args(["-R", archive_fw.to_str().unwrap(), &target_path])
-                    .output()
-                    .map_err(|e| format!("Failed to copy: {}", e))?;
-                if !cp.status.success() {
-                    return Err("Failed to copy archived framework".to_string());
-                }
-            } else {
-                return Err(format!(
-                    "Archive succeeded but framework not found at expected path: {:?}",
-                    archive_fw
-                ));
-            }
+        if !cp.status.success() {
+            return Err("Failed to copy framework to ~/Library/Frameworks/".to_string());
         }
 
         // Clean up
@@ -947,7 +980,7 @@ pub async fn install_syphon_framework() -> Result<String, String> {
 
         log::info!("Syphon: framework built and installed at {}", target_path);
 
-        // Try to load immediately
+        // Try to load immediately via dlopen
         let loaded = crate::input::syphon::try_reload();
         if loaded {
             log::info!("Syphon: framework loaded at runtime — ready to use!");
