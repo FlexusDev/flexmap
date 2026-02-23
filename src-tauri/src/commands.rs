@@ -686,10 +686,15 @@ pub async fn check_syphon_status() -> Result<SyphonStatus, String> {
             })
             .collect();
 
+        let any_exists = search_paths.iter().any(|(_, exists)| *exists);
         let message = if bridge_available {
             "Syphon is ready. Syphon servers should appear automatically.".to_string()
+        } else if any_exists {
+            "Syphon.framework found but can't load (likely wrong architecture). \
+             Click below to build a native version for your Mac."
+                .to_string()
         } else {
-            "Syphon.framework not found. Click 'Install Syphon Framework' below to download it."
+            "Syphon.framework not found. Click below to build and install it."
                 .to_string()
         };
 
@@ -719,9 +724,11 @@ pub async fn check_syphon_status() -> Result<SyphonStatus, String> {
     }
 }
 
-/// Download and install Syphon.framework to ~/Library/Frameworks/
-/// This downloads the latest release from GitHub, extracts the framework,
-/// and copies it to the user's frameworks directory.
+/// Build and install Syphon.framework from source to ~/Library/Frameworks/.
+///
+/// The official Syphon SDK 5 release is x86_64-only. Apple Silicon Macs need
+/// an arm64 build, so we clone the repo and build a universal framework via
+/// xcodebuild. Requires Xcode command-line tools.
 #[tauri::command]
 pub async fn install_syphon_framework() -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -732,151 +739,225 @@ pub async fn install_syphon_framework() -> Result<String, String> {
         let frameworks_dir = format!("{}/Library/Frameworks", home);
         let target_path = format!("{}/Syphon.framework", frameworks_dir);
 
-        // Check if already installed — just try to load it
+        // If already installed, try to load it first
         if std::path::Path::new(&target_path).exists() {
-            log::info!("Syphon.framework already exists at {}, attempting runtime load", target_path);
             let loaded = crate::input::syphon::try_reload();
             if loaded {
-                return Ok("Syphon.framework is already installed and loaded! Refresh sources to see Syphon servers.".to_string());
-            } else {
-                return Ok(format!(
-                    "Syphon.framework exists at {} but failed to load at runtime. \
-                     Try restarting the app.",
-                    target_path
-                ));
+                return Ok("Syphon.framework is already installed and loaded! \
+                           Refresh sources to see Syphon servers."
+                    .to_string());
             }
+            // Exists but can't load — likely wrong architecture.
+            // Remove and rebuild.
+            log::warn!(
+                "Syphon: existing framework at {} can't be loaded (likely x86_64-only). Rebuilding...",
+                target_path
+            );
+            let _ = std::fs::remove_dir_all(&target_path);
+        }
+
+        // Check for Xcode command-line tools
+        let xcrun = Command::new("xcrun")
+            .args(["--find", "xcodebuild"])
+            .output();
+        if xcrun.is_err() || !xcrun.unwrap().status.success() {
+            return Err(
+                "Xcode command-line tools are required to build Syphon.\n\
+                 Install them with: xcode-select --install"
+                    .to_string(),
+            );
         }
 
         // Ensure ~/Library/Frameworks/ exists
         std::fs::create_dir_all(&frameworks_dir)
             .map_err(|e| format!("Failed to create {}: {}", frameworks_dir, e))?;
 
-        log::info!("Syphon: downloading framework from GitHub...");
-
-        // Download Syphon SDK 5 from GitHub releases
-        // Asset: Syphon.SDK.5.zip (~1010 KB)
-        let download_url =
-            "https://github.com/Syphon/Syphon-Framework/releases/download/5/Syphon.SDK.5.zip";
-        let tmp_dir = std::env::temp_dir().join("auramap_syphon_install");
-        let zip_path = tmp_dir.join("Syphon.SDK.5.zip");
+        let tmp_dir = std::env::temp_dir().join("auramap_syphon_build");
+        let repo_dir = tmp_dir.join("Syphon-Framework");
 
         // Clean up any previous attempt
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir)
             .map_err(|e| format!("Failed to create temp dir: {}", e))?;
 
-        // Download with curl (available on all macOS)
-        let curl_output = Command::new("curl")
+        // Clone the Syphon-Framework repo (shallow clone for speed)
+        log::info!("Syphon: cloning Syphon-Framework from GitHub...");
+        let git_output = Command::new("git")
             .args([
-                "-L",
-                "-o",
-                zip_path.to_str().unwrap(),
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--max-time",
-                "60",
-                download_url,
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/Syphon/Syphon-Framework.git",
+                repo_dir.to_str().unwrap(),
             ])
             .output()
-            .map_err(|e| format!("Failed to run curl: {}", e))?;
+            .map_err(|e| format!("Failed to run git: {}", e))?;
 
-        if !curl_output.status.success() {
-            let stderr = String::from_utf8_lossy(&curl_output.stderr);
-            log::error!("Syphon: download failed: {}", stderr);
-            return Err(format!(
-                "Download failed. You can install manually:\n\
-                 1. Download from https://github.com/Syphon/Syphon-Framework/releases\n\
-                 2. Extract Syphon.framework to {}\n\
-                 3. Rebuild the app",
-                frameworks_dir
-            ));
+        if !git_output.status.success() {
+            let stderr = String::from_utf8_lossy(&git_output.stderr);
+            return Err(format!("Failed to clone Syphon repo: {}", stderr));
         }
 
-        log::info!("Syphon: downloaded SDK zip, extracting...");
+        // Build universal framework (arm64 + x86_64) using xcodebuild archive + export
+        log::info!("Syphon: building universal framework with xcodebuild...");
 
-        // Extract the zip
-        let unzip_output = Command::new("unzip")
+        let archive_path = tmp_dir.join("Syphon.xcarchive");
+
+        // Build the framework archive
+        let build_output = Command::new("xcodebuild")
+            .current_dir(&repo_dir)
             .args([
-                "-o",
-                zip_path.to_str().unwrap(),
-                "-d",
-                tmp_dir.to_str().unwrap(),
+                "archive",
+                "-project",
+                "Syphon.xcodeproj",
+                "-scheme",
+                "Syphon",
+                "-archivePath",
+                archive_path.to_str().unwrap(),
+                "-configuration",
+                "Release",
+                "ONLY_ACTIVE_ARCH=NO",
+                "SKIP_INSTALL=NO",
+                "BUILD_LIBRARY_FOR_DISTRIBUTION=YES",
             ])
             .output()
-            .map_err(|e| format!("Failed to run unzip: {}", e))?;
+            .map_err(|e| format!("Failed to run xcodebuild: {}", e))?;
 
-        if !unzip_output.status.success() {
-            let stderr = String::from_utf8_lossy(&unzip_output.stderr);
-            return Err(format!("Failed to extract zip: {}", stderr));
-        }
+        if !build_output.status.success() {
+            let stderr = String::from_utf8_lossy(&build_output.stderr);
+            let stdout = String::from_utf8_lossy(&build_output.stdout);
+            log::error!("xcodebuild archive failed:\nstdout: {}\nstderr: {}", stdout, stderr);
 
-        // Find Syphon.framework in the extracted contents
-        // It might be at the root or inside a subdirectory
-        let find_output = Command::new("find")
-            .args([
-                tmp_dir.to_str().unwrap(),
-                "-name",
-                "Syphon.framework",
-                "-type",
-                "d",
-                "-maxdepth",
-                "4",
-            ])
-            .output()
-            .map_err(|e| format!("Failed to search for framework: {}", e))?;
+            // Fallback: try a simple build instead of archive
+            log::info!("Syphon: trying simple xcodebuild build...");
+            let simple_build = Command::new("xcodebuild")
+                .current_dir(&repo_dir)
+                .args([
+                    "-project",
+                    "Syphon.xcodeproj",
+                    "-scheme",
+                    "Syphon",
+                    "-configuration",
+                    "Release",
+                    "ONLY_ACTIVE_ARCH=NO",
+                    "BUILD_LIBRARY_FOR_DISTRIBUTION=YES",
+                ])
+                .output()
+                .map_err(|e| format!("Failed to run xcodebuild: {}", e))?;
 
-        let found_path = String::from_utf8_lossy(&find_output.stdout)
-            .lines()
-            .next()
-            .map(|s| s.to_string());
-
-        let framework_source = match found_path {
-            Some(p) if !p.is_empty() => p,
-            _ => {
+            if !simple_build.status.success() {
+                let stderr2 = String::from_utf8_lossy(&simple_build.stderr);
                 return Err(format!(
-                    "Could not find Syphon.framework in downloaded archive. \
-                     Please install manually from https://github.com/Syphon/Syphon-Framework/releases \
-                     to {}",
-                    frameworks_dir
+                    "xcodebuild failed. Make sure Xcode is installed.\n\
+                     Error: {}",
+                    stderr2.chars().take(500).collect::<String>()
                 ));
             }
-        };
 
-        log::info!(
-            "Syphon: found framework at {}, copying to {}",
-            framework_source,
-            target_path
-        );
+            // Find the built framework in DerivedData or build dir
+            let find_output = Command::new("find")
+                .args([
+                    repo_dir.to_str().unwrap(),
+                    "-name",
+                    "Syphon.framework",
+                    "-type",
+                    "d",
+                    "-path",
+                    "*/Release/*",
+                ])
+                .output()
+                .map_err(|e| format!("Failed to search for built framework: {}", e))?;
 
-        // Copy to ~/Library/Frameworks/
-        let cp_output = Command::new("cp")
-            .args(["-R", &framework_source, &target_path])
-            .output()
-            .map_err(|e| format!("Failed to copy framework: {}", e))?;
+            let found = String::from_utf8_lossy(&find_output.stdout)
+                .lines()
+                .next()
+                .map(|s| s.to_string());
 
-        if !cp_output.status.success() {
-            let stderr = String::from_utf8_lossy(&cp_output.stderr);
-            return Err(format!("Failed to copy framework: {}", stderr));
+            match found {
+                Some(p) if !p.is_empty() => {
+                    log::info!("Syphon: found built framework at {}", p);
+                    let cp = Command::new("cp")
+                        .args(["-R", &p, &target_path])
+                        .output()
+                        .map_err(|e| format!("Failed to copy: {}", e))?;
+                    if !cp.status.success() {
+                        return Err("Failed to copy built framework".to_string());
+                    }
+                }
+                _ => {
+                    // Also check DerivedData
+                    let dd_find = Command::new("find")
+                        .args([
+                            &format!("{}/Library/Developer/Xcode/DerivedData", home),
+                            "-name",
+                            "Syphon.framework",
+                            "-type",
+                            "d",
+                            "-path",
+                            "*/Release/*",
+                        ])
+                        .output();
+
+                    let dd_found = dd_find
+                        .ok()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                        .and_then(|s| s.lines().next().map(|l| l.to_string()));
+
+                    match dd_found {
+                        Some(p) if !p.is_empty() => {
+                            log::info!("Syphon: found in DerivedData at {}", p);
+                            let cp = Command::new("cp")
+                                .args(["-R", &p, &target_path])
+                                .output()
+                                .map_err(|e| format!("Failed to copy: {}", e))?;
+                            if !cp.status.success() {
+                                return Err("Failed to copy built framework".to_string());
+                            }
+                        }
+                        _ => {
+                            return Err(
+                                "Build succeeded but could not find the output framework."
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            // Archive succeeded — extract the framework from the archive
+            let archive_fw = archive_path.join("Products/Library/Frameworks/Syphon.framework");
+            if archive_fw.exists() {
+                let cp = Command::new("cp")
+                    .args(["-R", archive_fw.to_str().unwrap(), &target_path])
+                    .output()
+                    .map_err(|e| format!("Failed to copy: {}", e))?;
+                if !cp.status.success() {
+                    return Err("Failed to copy archived framework".to_string());
+                }
+            } else {
+                return Err(format!(
+                    "Archive succeeded but framework not found at expected path: {:?}",
+                    archive_fw
+                ));
+            }
         }
 
-        // Clean up temp dir
+        // Clean up
         let _ = std::fs::remove_dir_all(&tmp_dir);
 
-        log::info!("Syphon: framework installed successfully at {}", target_path);
+        log::info!("Syphon: framework built and installed at {}", target_path);
 
-        // Try to load the framework immediately (no restart needed!)
+        // Try to load immediately
         let loaded = crate::input::syphon::try_reload();
         if loaded {
             log::info!("Syphon: framework loaded at runtime — ready to use!");
-            Ok(format!(
-                "Syphon.framework installed and loaded! Syphon sources should appear when you refresh."
-            ))
+            Ok("Syphon.framework built and loaded! Syphon sources should appear when you refresh."
+                .to_string())
         } else {
-            log::warn!("Syphon: framework installed but runtime load failed — restart may be needed");
+            log::warn!("Syphon: built and installed but runtime load failed");
             Ok(format!(
-                "Syphon.framework installed to {}.\n\
-                 Runtime loading failed — please restart the app to enable Syphon input.",
+                "Syphon.framework built and installed to {}.\n\
+                 Runtime loading failed — please restart the app.",
                 target_path
             ))
         }
