@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          APP="src-tauri/target/release/bundle/macos/FlexMap.app"
+          APP="src-tauri/target/release/bundle/macOS/FlexMap.app"
           ZIP="FlexMap-macOS-${VERSION}-portable.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
           echo "asset_path=$ZIP" >> "$GITHUB_OUTPUT"

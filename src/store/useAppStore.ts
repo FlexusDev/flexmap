@@ -36,9 +36,9 @@ export interface Toast {
 
 let toastCounter = 0;
 let installedShaderSyncFingerprint = "";
-const PERFORMANCE_PROFILE_KEY = "auramap:performance_profile";
-const BPM_CONFIG_KEY = "auramap:bpm_config";
-const BPM_DEVICE_KEY = "auramap:bpm_device";
+export const PERFORMANCE_PROFILE_KEY = "flexmap:performance_profile";
+const BPM_CONFIG_KEY = "flexmap:bpm_config";
+const BPM_DEVICE_KEY = "flexmap:bpm_device";
 
 const DEFAULT_BPM_CONFIG: BpmConfig = {
   enabled: false,
@@ -1079,7 +1079,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   connectSource: async (layerId: string, sourceId: string) => {
     try {
-      console.info("[Sources] connect_source request", { layerId, sourceId });
       await tauriInvoke<boolean>("connect_source", { layerId, sourceId });
       const source = get().sources.find((s) => s.id === sourceId);
       set((s) => ({

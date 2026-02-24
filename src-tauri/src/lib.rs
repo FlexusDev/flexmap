@@ -53,6 +53,7 @@ mod webkit_console {
 
     /// Method implementation added to the WKWebView UI delegate.
     /// WebKit calls `-_webView:didReceiveConsoleLogForTesting:` for every console message.
+    /// (Private Apple SPI — the "ForTesting" suffix is the actual selector name, not test-only.)
     unsafe extern "C" fn console_log_imp(
         _self: Id,
         _cmd: Sel,
@@ -517,7 +518,6 @@ pub fn run() {
             });
 
             // Check for crash recovery
-            let _state = app.state::<SceneState>();
             if persistence::has_recovery(None) {
                 log::info!("Autosave recovery file detected");
             }
@@ -559,8 +559,8 @@ pub fn run() {
                         .get_layers_snapshot();
                     let bpm_snapshot = {
                         let bpm_engine = app_handle_pump.state::<Arc<parking_lot::Mutex<BpmEngine>>>();
-                        let snapshot = bpm_engine.lock().runtime_snapshot();
-                        snapshot
+                        let s = bpm_engine.lock().runtime_snapshot();
+                        s
                     };
 
                     let engine_state = app_handle_pump

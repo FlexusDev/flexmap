@@ -1,4 +1,12 @@
-// Core types mirroring the Rust backend models
+// Core types mirroring the Rust backend models.
+//
+// Naming convention: interfaces for persisted scene structs (Layer, OutputConfig,
+// CalibrationConfig, etc.) use snake_case field names matching their Rust definitions
+// because they're serialized to .flexmap project files. IPC-only structs (RenderStats,
+// SystemStats, MonitorInfo, PreviewDelta, etc.) also currently use snake_case for
+// consistency with the Rust side. Audio/BPM structs use camelCase because their Rust
+// counterparts have #[serde(rename_all = "camelCase")].
+// TODO: add rename_all = "camelCase" to all IPC-only Rust structs and update TS types.
 
 export interface Point2D {
   x: number;

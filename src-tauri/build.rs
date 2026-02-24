@@ -137,7 +137,7 @@ fn build_syphon_framework() {
                 "-arch", &native_arch,
                 "-I", repo_dir.to_str().unwrap(),
                 "-I", &out_dir,
-                "-DSYPHONLOG(...)=",
+                "-DSYPHONLOG(...)=", // define SYPHONLOG macro as no-op
                 "-DGL_SILENCE_DEPRECATION",
                 "-Wno-deprecated-declarations",
                 "-Wno-implicit-function-declaration",

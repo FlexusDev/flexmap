@@ -58,7 +58,7 @@ All notable changes to FlexMap are documented here.
 
 ---
 
-## [0.1.0] - Initial release
+## [0.1.0] - 2026-02-10
 
 - Core shell: Tauri scaffolding, dual windows, persistence, autosave.
 - 2D editor: layer CRUD, geometry editing, drag/nudge, undo/redo, shortcuts.

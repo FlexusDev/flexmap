@@ -706,8 +706,7 @@ const mockCommands: Record<string, (args: any) => any> = {
     return { id: `media:${name}`, name, protocol: "media", width: 1920, height: 1080, fps: null };
   },
 
-  remove_media_file: (args: { sourceId: string }) => {
-    console.log("[mock] Remove media file:", args.sourceId);
+  remove_media_file: (_args: { sourceId: string }) => {
     return true;
   },
 
@@ -787,12 +786,10 @@ const mockCommands: Record<string, (args: any) => any> = {
 
   open_projector_window: () => {
     mockProjectorOpen = true;
-    console.log("[mock] Projector window opened");
   },
   close_projector_window: () => {
     mockProjectorOpen = false;
     mockProjectorFullscreen = false;
-    console.log("[mock] Projector window closed");
   },
   set_projector_fullscreen: (args: { fullscreen: boolean }) => {
     if (mockProjectorOpen) {
@@ -807,9 +804,7 @@ const mockCommands: Record<string, (args: any) => any> = {
   retarget_projector: () => {},
 
   save_project: (args: { path?: string }) => {
-    const path = args.path ?? "mock://project.flexmap";
-    console.log("[mock] Project saved to", path);
-    return path;
+    return args.path ?? "mock://project.flexmap";
   },
 
   load_project: () => {
