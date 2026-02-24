@@ -27,7 +27,11 @@
       "Bash(cd:*)",
       "WebFetch(domain:docs.rs)",
       "Bash(cd src-tauri && cargo xwin build --target x86_64-pc-windows-msvc 2>&1)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(git status:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(node:*)",
+      "Bash(git tag:*)"
     ]
   }
 }

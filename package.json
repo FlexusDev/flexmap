@@ -1,13 +1,15 @@
 {
   "name": "flexmap",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "clean": "rm -rf dist releases",
+    "clean:all": "npm run clean && rm -rf src-tauri/target",
     "build:portable:win": "npm run build && tauri build --no-bundle",
     "build:portable:mac": "npm run build && tauri build --bundles app",
     "build:win:mac": "npm run build && tauri build --no-bundle --runner cargo-xwin --target x86_64-pc-windows-msvc",

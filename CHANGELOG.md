@@ -2,6 +2,33 @@
 
 All notable changes to FlexMap are documented here.
 
+## [0.2.1] - 2026-02-24
+
+### Fixed
+
+- **Windows CI build**: gate Syphon build.rs code with `target_family = "unix"` so `std::os::unix` symlink calls don't compile on Windows hosts.
+- **ISF catalog fetch loop**: replace React state guard (`isFetching`) with a `useRef` guard in ShaderLibraryModal to prevent 40+ rapid re-fetches burning GitHub API rate limit.
+- **ISF preview compile errors**: add missing `IMG_THIS_PIXEL`, `IMG_THIS_NORM_PIXEL` function stubs and `lastFrame` uniform to ShaderPreviewCanvas so more ISF shaders compile in preview.
+- **Diagnostic log interpolation**: replace all `console.info/warn` calls using `%d`/`%s` format strings with template literals so values render correctly under `tauri-plugin-log`.
+
+### Added
+
+- **GitHub token for ISF catalog**: Settings modal section to save a GitHub personal access token (raises rate limit from 60 to 5,000 req/hr). Token is used for catalog fetch, source download, and install requests.
+- **Rate limit detection**: `RateLimitError` class with reset-time display; user-facing toast when GitHub API limit is hit.
+- **ISF pipeline diagnostics**: detailed `[ISF-diag]` logging across shader backend (`commands.rs`, `shader.rs`), store (`useAppStore`), and library (`shader-library.ts`) for tracing source sync, compile, and connect flows.
+- **Build scripts**: `npm run clean` and `npm run clean:all` for removing build artifacts; release artifact note in `DISTRIBUTION.md`.
+- **Shader grid hover preview**: hovering a shader card in the library grid shows a live animated preview instead of a static thumbnail.
+- **Preview FPS counter**: live shader preview displays a real-time frame rate indicator.
+
+### Changed
+
+- **Shared WebGL context**: thumbnail renderer reuses a single WebGL context across all shader cards instead of creating/destroying one per render, reducing GPU resource churn.
+- **ISF multi-pass support**: shader previews and thumbnails now handle ISF shaders with `PASSES` definitions, `lastFrame`, and buffer target samplers.
+- **ISF varying support**: previews dynamically generate matching vertex shaders for ISF fragments that declare custom `varying` variables (neighborhood coords, arrays).
+- **Preview error UI**: compile failures show an inline warning icon instead of a fallback thumbnail; loading state shows a spinner.
+
+---
+
 ## [0.2.0] - 2026-02-24
 
 ### Added
@@ -66,5 +93,6 @@ All notable changes to FlexMap are documented here.
 - Input routing: InputBackend trait, test pattern, media file, Spout, Syphon.
 - Persistence: save/load .flexmap JSON, autosave, crash recovery.
 
+[0.2.1]: https://github.com/FlexusDev/flexmap/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/FlexusDev/flexmap/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/FlexusDev/flexmap/releases/tag/v0.1.0
