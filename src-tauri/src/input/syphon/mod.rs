@@ -10,6 +10,9 @@
 use super::adapter::*;
 use std::collections::{HashMap, HashSet};
 
+const IDLE_DISCOVERY_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const ACTIVE_DISCOVERY_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+
 // ─── FFI declarations (match bridge.h) ──────────────────────────────────────
 
 mod ffi {
@@ -364,6 +367,14 @@ impl InputBackend for SyphonBackend {
     }
 
     fn refresh(&mut self) {
+        let min_interval = if self.active_sources.is_empty() {
+            IDLE_DISCOVERY_MIN_INTERVAL
+        } else {
+            ACTIVE_DISCOVERY_MIN_INTERVAL
+        };
+        if self.last_discovery.elapsed() < min_interval {
+            return;
+        }
         self.refresh_sources();
     }
 

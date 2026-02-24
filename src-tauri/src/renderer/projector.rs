@@ -211,7 +211,7 @@ impl GpuProjector {
                         fps_counter.store(fps, Ordering::Relaxed);
                         frame_count = 0;
                         fps_timer = std::time::Instant::now();
-                        log::info!("GPU projector: {} fps, {:.1}ms frametime, {} layers",
+                        log::debug!("GPU projector: {} fps, {:.1}ms frametime, {} layers",
                             fps, frame_elapsed.as_secs_f64() * 1000.0, layers.len());
                     }
 

@@ -1,14 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent, PointerEvent } from "react";
+import {
+  Group,
+  Panel,
+  Separator,
+  useDefaultLayout,
+  usePanelRef,
+} from "react-resizable-panels";
+import type { Layout, PanelSize } from "react-resizable-panels";
 import { useAppStore } from "../../store/useAppStore";
 import type {
-  BlendMode,
   InputTransform,
   LayerGeometry,
   LayerProperties,
   Point2D,
   UvAdjustment,
 } from "../../types";
-import { BLEND_MODES, DEFAULT_INPUT_TRANSFORM } from "../../types";
+import { DEFAULT_INPUT_TRANSFORM } from "../../types";
+import InspectorPane from "./InspectorPane";
+import AssignmentPane from "./panes/AssignmentPane";
+import TransformPane from "./panes/TransformPane";
+import LookPane, { type LookControl, type LookNumericKey } from "./panes/LookPane";
+import GeometryUvPane from "./panes/GeometryUvPane";
 
 const DEFAULT_UV: UvAdjustment = { offset: [0, 0], rotation: 0, scale: [1, 1] };
 const TWO_PI = Math.PI * 2;
@@ -33,6 +46,8 @@ type GeomDelta = {
   sy: number;
 };
 
+type PropertiesSectionId = "assignment" | "transform" | "look" | "geometryUv";
+
 const DEFAULT_GEOM_UI: GeomUi = {
   dx: 0,
   dy: 0,
@@ -40,6 +55,30 @@ const DEFAULT_GEOM_UI: GeomUi = {
   sx: 1,
   sy: 1,
 };
+
+const PROPERTIES_PANEL_IDS: Record<PropertiesSectionId, string> = {
+  assignment: "properties-assignment",
+  transform: "properties-transform",
+  look: "properties-look",
+  geometryUv: "properties-geometry-uv",
+};
+
+const PROPERTIES_SECTIONS: PropertiesSectionId[] = [
+  "assignment",
+  "transform",
+  "look",
+  "geometryUv",
+];
+
+const PROPERTIES_SECTION_DEFAULT_PX: Record<PropertiesSectionId, number> = {
+  assignment: 180,
+  transform: 320,
+  look: 220,
+  geometryUv: 260,
+};
+
+const PROPERTIES_SECTION_MIN_PX = 96;
+const PROPERTIES_SECTION_COLLAPSED_PX = 40;
 
 function deltaFromUi(prev: GeomUi, next: GeomUi): GeomDelta {
   return {
@@ -164,6 +203,42 @@ function PropertiesPanel() {
   const geomInFlightRef = useRef(false);
   const geomAppliedUiRef = useRef<GeomUi>(DEFAULT_GEOM_UI);
 
+  const assignmentPanelRef = usePanelRef();
+  const transformPanelRef = usePanelRef();
+  const lookPanelRef = usePanelRef();
+  const geometryUvPanelRef = usePanelRef();
+
+  const [collapsedSections, setCollapsedSections] = useState<Record<PropertiesSectionId, boolean>>({
+    assignment: false,
+    transform: false,
+    look: false,
+    geometryUv: false,
+  });
+  const [activeSection, setActiveSection] = useState<PropertiesSectionId>("transform");
+
+  const fallbackInspectorLayout = useMemo<Layout>(() => {
+    const total = Object.values(PROPERTIES_SECTION_DEFAULT_PX).reduce((sum, value) => sum + value, 0);
+    return {
+      [PROPERTIES_PANEL_IDS.assignment]:
+        (PROPERTIES_SECTION_DEFAULT_PX.assignment / total) * 100,
+      [PROPERTIES_PANEL_IDS.transform]:
+        (PROPERTIES_SECTION_DEFAULT_PX.transform / total) * 100,
+      [PROPERTIES_PANEL_IDS.look]:
+        (PROPERTIES_SECTION_DEFAULT_PX.look / total) * 100,
+      [PROPERTIES_PANEL_IDS.geometryUv]:
+        (PROPERTIES_SECTION_DEFAULT_PX.geometryUv / total) * 100,
+    };
+  }, []);
+
+  const { defaultLayout: persistedInspectorLayout, onLayoutChanged: onInspectorLayoutChanged } =
+    useDefaultLayout({
+      id: "flexmap-properties-v2",
+      panelIds: PROPERTIES_SECTIONS.map((sectionId) => PROPERTIES_PANEL_IDS[sectionId]),
+      storage: localStorage,
+    });
+
+  const inspectorLayout = persistedInspectorLayout ?? fallbackInspectorLayout;
+
   useEffect(() => {
     return () => {
       if (inputRafRef.current !== null) {
@@ -177,6 +252,26 @@ function PropertiesPanel() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      setCollapsedSections({
+        assignment: assignmentPanelRef.current?.isCollapsed() ?? false,
+        transform: transformPanelRef.current?.isCollapsed() ?? false,
+        look: lookPanelRef.current?.isCollapsed() ?? false,
+        geometryUv: geometryUvPanelRef.current?.isCollapsed() ?? false,
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [inspectorLayout, assignmentPanelRef, transformPanelRef, lookPanelRef, geometryUvPanelRef]);
+
+  useEffect(() => {
+    if (!collapsedSections[activeSection]) return;
+    const fallback = PROPERTIES_SECTIONS.find((sectionId) => !collapsedSections[sectionId]);
+    if (fallback) {
+      setActiveSection(fallback);
+    }
+  }, [activeSection, collapsedSections]);
 
   useEffect(() => {
     if (!selectedLayer) return;
@@ -358,17 +453,19 @@ function PropertiesPanel() {
     });
   };
 
-  const handlePropChange = (key: keyof LayerProperties, value: number) => {
+  const handlePropChange = (key: LookNumericKey, value: number) => {
     void updatePropertiesForSelection((current) => ({ ...current, [key]: value }));
   };
 
-  const handlePropReset = (key: keyof LayerProperties) => {
+  const handlePropReset = (key: LookNumericKey) => {
     const defaults: LayerProperties = {
       brightness: 1.0,
       contrast: 1.0,
       gamma: 1.0,
       opacity: 1.0,
       feather: 0.0,
+      beatReactive: false,
+      beatAmount: 0.0,
     };
     handlePropChange(key, defaults[key]);
   };
@@ -515,7 +612,7 @@ function PropertiesPanel() {
     joystickRafRef.current = requestAnimationFrame(tickJoystick);
   };
 
-  const handleJoystickPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleJoystickPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     beginSliderInteraction();
     joystickPointerIdRef.current = e.pointerId;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -523,12 +620,12 @@ function PropertiesPanel() {
     startJoystick();
   };
 
-  const handleJoystickPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleJoystickPointerMove = (e: PointerEvent<HTMLDivElement>) => {
     if (joystickPointerIdRef.current !== e.pointerId) return;
     setJoystickFromClient(e.clientX, e.clientY);
   };
 
-  const handleJoystickPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleJoystickPointerUp = (e: PointerEvent<HTMLDivElement>) => {
     if (joystickPointerIdRef.current !== e.pointerId) return;
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -536,28 +633,367 @@ function PropertiesPanel() {
     stopJoystick();
   };
 
-  const controls: {
-    key: keyof LayerProperties;
-    label: string;
-    min: number;
-    max: number;
-    step: number;
-  }[] = [
+  const controls: LookControl[] = [
     { key: "brightness", label: "Brightness", min: 0, max: 2, step: 0.01 },
     { key: "contrast", label: "Contrast", min: 0, max: 3, step: 0.01 },
     { key: "gamma", label: "Gamma", min: 0.1, max: 3, step: 0.01 },
     { key: "opacity", label: "Opacity", min: 0, max: 1, step: 0.01 },
     { key: "feather", label: "Feather", min: 0, max: 1, step: 0.01 },
   ];
-  const mixedPropKeys = new Set<keyof LayerProperties>();
+  const mixedPropKeys = new Set<LookNumericKey>();
   for (const { key } of controls) {
     if (selectedLayers.some((layer) => Math.abs(layer.properties[key] - props[key]) > EPS)) {
       mixedPropKeys.add(key);
     }
   }
+  const beatEligible = selectedLayers.every((layer) => layer.source?.protocol === "shader");
+  const beatReactiveMixed = selectedLayers.some(
+    (layer) => layer.properties.beatReactive !== props.beatReactive
+  );
+  const beatAmountMixed = selectedLayers.some(
+    (layer) => Math.abs(layer.properties.beatAmount - props.beatAmount) > EPS
+  );
+
+  const hasMissingSource = selectedLayers.some(
+    (layer) => layer.source && !sources.find((source) => source.id === layer.source?.source_id)
+  );
+
+  const geometrySummaryLines: string[] = [];
+  if (isMulti) {
+    geometrySummaryLines.push(`${selectedCount} layers selected (primary shown below)`);
+  }
+  if (selectedLayer.geometry.type === "Quad") {
+    geometrySummaryLines.push("4-point warp");
+  } else if (selectedLayer.geometry.type === "Triangle") {
+    geometrySummaryLines.push("3-point warp");
+  } else if (selectedLayer.geometry.type === "Mesh") {
+    geometrySummaryLines.push(`Grid ${selectedLayer.geometry.data.cols}×${selectedLayer.geometry.data.rows}`);
+  } else {
+    geometrySummaryLines.push("Ellipse mask");
+  }
+
+  const assignmentStatus = selectedCount > 1
+    ? `${selectedCount} layers selected`
+    : selectedLayer.type;
+  const transformStatus = inputMixed ? "Mixed input values" : "Input + Geometry";
+  const lookStatus = mixedPropKeys.size > 0
+    ? "Mixed values"
+    : beatEligible
+      ? "Color + Beat"
+      : "Color + Opacity";
+  const geometryUvStatus = isMesh
+    ? (isUvMode ? "Mesh UV mode" : "Mesh shape mode")
+    : "Non-mesh layer";
+
+  const getPanelHandle = (sectionId: PropertiesSectionId) => {
+    if (sectionId === "assignment") return assignmentPanelRef.current;
+    if (sectionId === "transform") return transformPanelRef.current;
+    if (sectionId === "look") return lookPanelRef.current;
+    return geometryUvPanelRef.current;
+  };
+
+  const updateSectionCollapsed = (sectionId: PropertiesSectionId, collapsed: boolean) => {
+    setCollapsedSections((prev) => {
+      if (prev[sectionId] === collapsed) return prev;
+      return { ...prev, [sectionId]: collapsed };
+    });
+  };
+
+  const setSectionCollapsed = (sectionId: PropertiesSectionId, collapsed: boolean) => {
+    const handle = getPanelHandle(sectionId);
+    if (!handle) return;
+    if (collapsed) {
+      if (!handle.isCollapsed()) {
+        handle.collapse();
+      }
+      updateSectionCollapsed(sectionId, true);
+      return;
+    }
+    if (handle.isCollapsed()) {
+      handle.expand();
+    }
+    updateSectionCollapsed(sectionId, false);
+  };
+
+  const focusSection = (sectionId: PropertiesSectionId) => {
+    PROPERTIES_SECTIONS.forEach((id) => {
+      setSectionCollapsed(id, id !== sectionId);
+    });
+    setActiveSection(sectionId);
+    requestAnimationFrame(() => {
+      getPanelHandle(sectionId)?.resize("100%");
+    });
+  };
+
+  const handleSectionResize = (sectionId: PropertiesSectionId, panelSize: PanelSize) => {
+    const collapsed = panelSize.inPixels <= PROPERTIES_SECTION_COLLAPSED_PX + 1;
+    updateSectionCollapsed(sectionId, collapsed);
+  };
+
+  const toggleSectionCollapsed = (sectionId: PropertiesSectionId) => {
+    const isCollapsed = collapsedSections[sectionId];
+    setSectionCollapsed(sectionId, !isCollapsed);
+    if (!isCollapsed) {
+      const nextActive = PROPERTIES_SECTIONS.find(
+        (id) => id !== sectionId && !collapsedSections[id]
+      );
+      if (nextActive) {
+        setActiveSection(nextActive);
+      }
+      return;
+    }
+    setActiveSection(sectionId);
+  };
+
+  const handleSectionHeaderClick = (sectionId: PropertiesSectionId) => {
+    if (collapsedSections[sectionId]) {
+      focusSection(sectionId);
+      return;
+    }
+    setActiveSection(sectionId);
+  };
+
+  const handleSourceChange = (sourceId: string) => {
+    if (sourceId === "") {
+      void disconnectSourceForSelection();
+    } else {
+      void connectSourceForSelection(sourceId);
+    }
+  };
+
+  const handleSelectionModeChange = (mode: "shape" | "uv") => {
+    if (mode === "uv" && isMulti) return;
+    setEditorSelectionMode(mode);
+  };
+
+  const handleGeomAbsFocus = (axis: "x" | "y") => {
+    geomAbsEditingRef.current[axis] = true;
+  };
+
+  const handleGeomAbsBlur = (axis: "x" | "y") => {
+    geomAbsEditingRef.current[axis] = false;
+    applyAbsoluteCenter();
+  };
+
+  const handleGeomAbsKeyDown = (
+    _axis: "x" | "y",
+    event: KeyboardEvent<HTMLInputElement>
+  ) => {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "Escape") {
+      setGeomAbsUi({
+        xPx: (geomCenterNorm.x * outputWidth).toFixed(1),
+        yPx: (geomCenterNorm.y * outputHeight).toFixed(1),
+      });
+      event.currentTarget.blur();
+    }
+  };
+
+  const handleGeomAbsChange = (axis: "x" | "y", value: string) => {
+    setGeomAbsUi((prev) => (
+      axis === "x"
+        ? { ...prev, xPx: value }
+        : { ...prev, yPx: value }
+    ));
+  };
+
+  const beginUvInteraction = () => {
+    void beginInteraction();
+  };
+
+  const renderSectionPanel = (sectionId: PropertiesSectionId) => {
+    if (sectionId === "assignment") {
+      return (
+        <Panel
+          id={PROPERTIES_PANEL_IDS.assignment}
+          panelRef={assignmentPanelRef}
+          defaultSize={PROPERTIES_SECTION_DEFAULT_PX.assignment}
+          minSize={PROPERTIES_SECTION_MIN_PX}
+          collapsible
+          collapsedSize={PROPERTIES_SECTION_COLLAPSED_PX}
+          onResize={(panelSize) => handleSectionResize("assignment", panelSize)}
+          className="min-h-0"
+        >
+          <InspectorPane
+            title="Assignment"
+            status={assignmentStatus}
+            active={activeSection === "assignment"}
+            collapsed={collapsedSections.assignment}
+            onHeaderClick={() => handleSectionHeaderClick("assignment")}
+            onToggleCollapsed={() => toggleSectionCollapsed("assignment")}
+          >
+            <div className="px-3 py-3">
+              <AssignmentPane
+                sharedSourceId={sharedSourceId}
+                sourceMixed={sourceMixed}
+                sources={sources}
+                hasMissingSource={hasMissingSource}
+                onSourceChange={handleSourceChange}
+                sharedBlend={sharedBlend}
+                blendMixed={blendMixed}
+                onBlendChange={(blendMode) => void setBlendModeForSelection(blendMode)}
+                selectionMode={selectionMode}
+                isMulti={isMulti}
+                isMesh={isMesh}
+                secondaryModeLabel={secondaryModeLabel}
+                onSelectionModeChange={handleSelectionModeChange}
+              />
+            </div>
+          </InspectorPane>
+        </Panel>
+      );
+    }
+
+    if (sectionId === "transform") {
+      return (
+        <Panel
+          id={PROPERTIES_PANEL_IDS.transform}
+          panelRef={transformPanelRef}
+          defaultSize={PROPERTIES_SECTION_DEFAULT_PX.transform}
+          minSize={PROPERTIES_SECTION_MIN_PX}
+          collapsible
+          collapsedSize={PROPERTIES_SECTION_COLLAPSED_PX}
+          onResize={(panelSize) => handleSectionResize("transform", panelSize)}
+          className="min-h-0"
+        >
+          <InspectorPane
+            title="Transform"
+            status={transformStatus}
+            active={activeSection === "transform"}
+            collapsed={collapsedSections.transform}
+            onHeaderClick={() => handleSectionHeaderClick("transform")}
+            onToggleCollapsed={() => toggleSectionCollapsed("transform")}
+          >
+            <div className="px-3 py-3">
+              <TransformPane
+                inputMixed={inputMixed}
+                inputUi={inputUi}
+                onResetInputTransform={resetInputTransform}
+                onInputPointerDown={handleInputPointerDown}
+                onInputPointerUp={handleInputPointerUp}
+                onInputChange={(next) => setInputUiAndSend(next, false)}
+                geomAbsUi={geomAbsUi}
+                onGeomAbsFocus={handleGeomAbsFocus}
+                onGeomAbsBlur={handleGeomAbsBlur}
+                onGeomAbsKeyDown={handleGeomAbsKeyDown}
+                onGeomAbsChange={handleGeomAbsChange}
+                onApplyAbsoluteCenter={applyAbsoluteCenter}
+                geomCenterNorm={geomCenterNorm}
+                outputWidth={outputWidth}
+                outputHeight={outputHeight}
+                geomUi={geomUi}
+                onGeomUiChange={updateGeomUi}
+                onGeomPointerDown={handleGeomPointerDown}
+                onGeomPointerUp={handleGeomPointerUp}
+                joystickRef={joystickRef}
+                onJoystickPointerDown={handleJoystickPointerDown}
+                onJoystickPointerMove={handleJoystickPointerMove}
+                onJoystickPointerUp={handleJoystickPointerUp}
+                onJoystickLostPointerCapture={stopJoystick}
+              />
+            </div>
+          </InspectorPane>
+        </Panel>
+      );
+    }
+
+    if (sectionId === "look") {
+      return (
+        <Panel
+          id={PROPERTIES_PANEL_IDS.look}
+          panelRef={lookPanelRef}
+          defaultSize={PROPERTIES_SECTION_DEFAULT_PX.look}
+          minSize={PROPERTIES_SECTION_MIN_PX}
+          collapsible
+          collapsedSize={PROPERTIES_SECTION_COLLAPSED_PX}
+          onResize={(panelSize) => handleSectionResize("look", panelSize)}
+          className="min-h-0"
+        >
+          <InspectorPane
+            title="Look"
+            status={lookStatus}
+            active={activeSection === "look"}
+            collapsed={collapsedSections.look}
+            onHeaderClick={() => handleSectionHeaderClick("look")}
+            onToggleCollapsed={() => toggleSectionCollapsed("look")}
+          >
+            <div className="px-3 py-3">
+              <LookPane
+                controls={controls}
+                properties={props}
+                mixedPropKeys={mixedPropKeys}
+                onPropChange={handlePropChange}
+                onPropReset={handlePropReset}
+                beatEligible={beatEligible}
+                beatReactive={props.beatReactive}
+                beatAmount={props.beatAmount}
+                beatReactiveMixed={beatReactiveMixed}
+                beatAmountMixed={beatAmountMixed}
+                onBeatReactiveChange={(value) =>
+                  void updatePropertiesForSelection((current) => ({
+                    ...current,
+                    beatReactive: value,
+                  }))
+                }
+                onBeatAmountChange={(value) =>
+                  void updatePropertiesForSelection((current) => ({
+                    ...current,
+                    beatAmount: value,
+                  }))
+                }
+              />
+            </div>
+          </InspectorPane>
+        </Panel>
+      );
+    }
+
+    return (
+      <Panel
+        id={PROPERTIES_PANEL_IDS.geometryUv}
+        panelRef={geometryUvPanelRef}
+        defaultSize={PROPERTIES_SECTION_DEFAULT_PX.geometryUv}
+        minSize={PROPERTIES_SECTION_MIN_PX}
+        collapsible
+        collapsedSize={PROPERTIES_SECTION_COLLAPSED_PX}
+        onResize={(panelSize) => handleSectionResize("geometryUv", panelSize)}
+        className="min-h-0"
+      >
+        <InspectorPane
+          title="Geometry & UV"
+          status={geometryUvStatus}
+          active={activeSection === "geometryUv"}
+          collapsed={collapsedSections.geometryUv}
+          onHeaderClick={() => handleSectionHeaderClick("geometryUv")}
+          onToggleCollapsed={() => toggleSectionCollapsed("geometryUv")}
+        >
+          <div className="px-3 py-3">
+            <GeometryUvPane
+              geometrySummaryLines={geometrySummaryLines}
+              isMesh={isMesh}
+              meshDims={meshData ? { cols: meshData.cols, rows: meshData.rows } : null}
+              canSubdivide={!isMulti && isMesh && !!meshData}
+              onSubdivide={() => void subdivideMesh(selectedLayer.id)}
+              isUvMode={isUvMode}
+              facesSelected={facesSelected}
+              selectedFaceIndices={selectedFaceIndices}
+              currentUV={currentUV}
+              uvRotDeg={uvRotDeg}
+              onUVReset={handleUVReset}
+              onUVChange={handleUVChange}
+              onBeginInteraction={beginUvInteraction}
+            />
+          </div>
+        </InspectorPane>
+      </Panel>
+    );
+  };
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
+    <div className="flex flex-col h-full min-h-0">
       <div className="px-3 py-2 border-b border-aura-border">
         <span className="text-xs font-semibold uppercase tracking-wider text-aura-text-dim">
           Properties
@@ -575,607 +1011,20 @@ function PropertiesPanel() {
         </div>
       </div>
 
-      <div className="px-3 py-3 border-b border-aura-border">
-        <label className="text-xs text-aura-text-dim block mb-1">Source</label>
-        <select
-          value={sharedSourceId}
-          onChange={(e) => {
-            const val = e.target.value;
-            if (val === "") {
-              void disconnectSourceForSelection();
-            } else {
-              void connectSourceForSelection(val);
-            }
-          }}
-          className="input w-full text-xs"
-        >
-          {sourceMixed && <option value="__mixed__" disabled>Mixed</option>}
-          <option value="">None</option>
-          {sources.map((s) => (
-            <option key={s.id} value={s.id}>
-              [{s.protocol}] {s.name}
-              {s.width && s.height ? ` (${s.width}x${s.height})` : ""}
-            </option>
-          ))}
-        </select>
-        {selectedLayers.some(
-          (layer) => layer.source && !sources.find((s) => s.id === layer.source?.source_id)
-        ) && (
-            <div className="mt-1 text-xs text-aura-warning">
-              One or more selected layers reference missing sources
-            </div>
-        )}
-      </div>
-
-      <div className="px-3 py-3 border-b border-aura-border">
-        <label className="text-xs text-aura-text-dim block mb-1">Blend Mode</label>
-        <select
-          value={sharedBlend}
-          onChange={(e) => void setBlendModeForSelection(e.target.value as BlendMode)}
-          className="input w-full text-xs"
-        >
-          {blendMixed && <option value="__mixed__" disabled>Mixed</option>}
-          {BLEND_MODES.map((bm) => (
-            <option key={bm.value} value={bm.value}>
-              {bm.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="px-3 py-3 border-b border-aura-border space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-aura-text-dim">
-            Input Transform
-            {inputMixed && (
-              <span className="ml-2 text-[11px] normal-case text-amber-300">Mixed</span>
-            )}
-          </span>
-          <button
-            onClick={resetInputTransform}
-            className="text-xs text-aura-text-dim hover:text-aura-text"
-            title="Reset input transform"
-          >
-            ↺ Reset
-          </button>
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-aura-text-dim">Position X</label>
-            <span className="text-xs font-mono text-aura-text w-14 text-right">{inputUi.offset[0].toFixed(3)}</span>
-          </div>
-          <input
-            type="range"
-            min={-1}
-            max={1}
-            step={0.001}
-            value={inputUi.offset[0]}
-            onPointerDown={handleInputPointerDown}
-            onPointerUp={handleInputPointerUp}
-            onPointerCancel={handleInputPointerUp}
-            onChange={(e) => {
-              const next: InputTransform = {
-                ...inputUi,
-                offset: [parseFloat(e.target.value), inputUi.offset[1]],
-              };
-              setInputUiAndSend(next, false);
-            }}
-            className="slider"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-aura-text-dim">Position Y</label>
-            <span className="text-xs font-mono text-aura-text w-14 text-right">{inputUi.offset[1].toFixed(3)}</span>
-          </div>
-          <input
-            type="range"
-            min={-1}
-            max={1}
-            step={0.001}
-            value={inputUi.offset[1]}
-            onPointerDown={handleInputPointerDown}
-            onPointerUp={handleInputPointerUp}
-            onPointerCancel={handleInputPointerUp}
-            onChange={(e) => {
-              const next: InputTransform = {
-                ...inputUi,
-                offset: [inputUi.offset[0], parseFloat(e.target.value)],
-              };
-              setInputUiAndSend(next, false);
-            }}
-            className="slider"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-aura-text-dim">Rotation</label>
-            <span className="text-xs font-mono text-aura-text w-14 text-right">{(inputUi.rotation / TWO_PI * 360).toFixed(1)}°</span>
-          </div>
-          <input
-            type="range"
-            min={-180}
-            max={180}
-            step={0.1}
-            value={(inputUi.rotation / TWO_PI) * 360}
-            onPointerDown={handleInputPointerDown}
-            onPointerUp={handleInputPointerUp}
-            onPointerCancel={handleInputPointerUp}
-            onChange={(e) => {
-              const next: InputTransform = {
-                ...inputUi,
-                rotation: parseFloat(e.target.value) * DEG_TO_RAD,
-              };
-              setInputUiAndSend(next, false);
-            }}
-            className="slider"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-aura-text-dim">Scale X</label>
-            <span className="text-xs font-mono text-aura-text w-14 text-right">{inputUi.scale[0].toFixed(3)}</span>
-          </div>
-          <input
-            type="range"
-            min={0.1}
-            max={3}
-            step={0.001}
-            value={inputUi.scale[0]}
-            onPointerDown={handleInputPointerDown}
-            onPointerUp={handleInputPointerUp}
-            onPointerCancel={handleInputPointerUp}
-            onChange={(e) => {
-              const next: InputTransform = {
-                ...inputUi,
-                scale: [parseFloat(e.target.value), inputUi.scale[1]],
-              };
-              setInputUiAndSend(next, false);
-            }}
-            className="slider"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-aura-text-dim">Scale Y</label>
-            <span className="text-xs font-mono text-aura-text w-14 text-right">{inputUi.scale[1].toFixed(3)}</span>
-          </div>
-          <input
-            type="range"
-            min={0.1}
-            max={3}
-            step={0.001}
-            value={inputUi.scale[1]}
-            onPointerDown={handleInputPointerDown}
-            onPointerUp={handleInputPointerUp}
-            onPointerCancel={handleInputPointerUp}
-            onChange={(e) => {
-              const next: InputTransform = {
-                ...inputUi,
-                scale: [inputUi.scale[0], parseFloat(e.target.value)],
-              };
-              setInputUiAndSend(next, false);
-            }}
-            className="slider"
-          />
-        </div>
-      </div>
-
-      <div className="px-3 py-3 border-b border-aura-border space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-aura-text-dim">Geometry Transform</span>
-          <span className="text-[11px] text-aura-text-dim">Joystick + Absolute</span>
-        </div>
-
-        <div className="rounded-md border border-aura-border/70 p-2 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-aura-text-dim">Absolute Center (canvas px)</span>
-            <button
-              onClick={applyAbsoluteCenter}
-              className="text-xs text-aura-text-dim hover:text-aura-text"
-              title="Apply absolute center position"
-            >
-              Apply
-            </button>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[11px] text-aura-text-dim block mb-1">X</label>
-              <input
-                type="number"
-                step={0.1}
-                value={geomAbsUi.xPx}
-                onFocus={() => {
-                  geomAbsEditingRef.current.x = true;
-                }}
-                onBlur={() => {
-                  geomAbsEditingRef.current.x = false;
-                  applyAbsoluteCenter();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.currentTarget.blur();
-                  } else if (e.key === "Escape") {
-                    setGeomAbsUi({
-                      xPx: (geomCenterNorm.x * outputWidth).toFixed(1),
-                      yPx: (geomCenterNorm.y * outputHeight).toFixed(1),
-                    });
-                    e.currentTarget.blur();
-                  }
-                }}
-                onChange={(e) => setGeomAbsUi((prev) => ({ ...prev, xPx: e.target.value }))}
-                className="input w-full text-xs py-1"
-              />
-            </div>
-            <div>
-              <label className="text-[11px] text-aura-text-dim block mb-1">Y</label>
-              <input
-                type="number"
-                step={0.1}
-                value={geomAbsUi.yPx}
-                onFocus={() => {
-                  geomAbsEditingRef.current.y = true;
-                }}
-                onBlur={() => {
-                  geomAbsEditingRef.current.y = false;
-                  applyAbsoluteCenter();
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.currentTarget.blur();
-                  } else if (e.key === "Escape") {
-                    setGeomAbsUi({
-                      xPx: (geomCenterNorm.x * outputWidth).toFixed(1),
-                      yPx: (geomCenterNorm.y * outputHeight).toFixed(1),
-                    });
-                    e.currentTarget.blur();
-                  }
-                }}
-                onChange={(e) => setGeomAbsUi((prev) => ({ ...prev, yPx: e.target.value }))}
-                className="input w-full text-xs py-1"
-              />
-            </div>
-          </div>
-          <div className="text-[11px] text-aura-text-dim">
-            Canvas {outputWidth}x{outputHeight} | Normalized center {geomCenterNorm.x.toFixed(4)}, {geomCenterNorm.y.toFixed(4)}
-          </div>
-        </div>
-
-        <div className="rounded-md border border-aura-border/70 p-2">
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-xs text-aura-text-dim">Position Joystick</label>
-            <span className="text-xs font-mono text-aura-text">
-              {geomUi.dx.toFixed(2)}, {geomUi.dy.toFixed(2)}
-            </span>
-          </div>
-          <div className="flex justify-center">
-            <div
-              ref={joystickRef}
-              onPointerDown={handleJoystickPointerDown}
-              onPointerMove={handleJoystickPointerMove}
-              onPointerUp={handleJoystickPointerUp}
-              onPointerCancel={handleJoystickPointerUp}
-              onLostPointerCapture={stopJoystick}
-              className="relative w-24 h-24 rounded-full border border-aura-border bg-aura-hover/40 touch-none select-none cursor-grab active:cursor-grabbing"
-            >
-              <div className="absolute inset-1 rounded-full border border-aura-border/50" />
-              <div
-                className="absolute left-1/2 top-1/2 w-8 h-8 -ml-4 -mt-4 rounded-full border border-aura-border bg-aura-surface shadow"
-                style={{
-                  transform: `translate(${geomUi.dx * 28}px, ${geomUi.dy * 28}px)`,
-                }}
-              />
-            </div>
-          </div>
-          <div className="mt-2 text-[11px] text-aura-text-dim text-center">
-            Hold and drag. Release springs back to center.
-          </div>
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-aura-text-dim">Rotation</label>
-            <span className="text-xs font-mono text-aura-text w-14 text-right">{geomUi.rotationDeg.toFixed(1)}°</span>
-          </div>
-          <input
-            type="range"
-            min={-180}
-            max={180}
-            step={0.1}
-            value={geomUi.rotationDeg}
-            onPointerDown={handleGeomPointerDown}
-            onPointerUp={handleGeomPointerUp}
-            onPointerCancel={handleGeomPointerUp}
-            onChange={(e) => updateGeomUi({ rotationDeg: parseFloat(e.target.value) })}
-            className="slider"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-aura-text-dim">Scale X</label>
-            <span className="text-xs font-mono text-aura-text w-14 text-right">{geomUi.sx.toFixed(3)}</span>
-          </div>
-          <input
-            type="range"
-            min={0.1}
-            max={3}
-            step={0.001}
-            value={geomUi.sx}
-            onPointerDown={handleGeomPointerDown}
-            onPointerUp={handleGeomPointerUp}
-            onPointerCancel={handleGeomPointerUp}
-            onChange={(e) => updateGeomUi({ sx: parseFloat(e.target.value) })}
-            className="slider"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="text-xs text-aura-text-dim">Scale Y</label>
-            <span className="text-xs font-mono text-aura-text w-14 text-right">{geomUi.sy.toFixed(3)}</span>
-          </div>
-          <input
-            type="range"
-            min={0.1}
-            max={3}
-            step={0.001}
-            value={geomUi.sy}
-            onPointerDown={handleGeomPointerDown}
-            onPointerUp={handleGeomPointerUp}
-            onPointerCancel={handleGeomPointerUp}
-            onChange={(e) => updateGeomUi({ sy: parseFloat(e.target.value) })}
-            className="slider"
-          />
-        </div>
-      </div>
-
-      <div className="px-3 py-3 space-y-4 border-b border-aura-border">
-        {controls.map(({ key, label, min, max, step }) => (
-          <div key={key}>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-xs text-aura-text-dim">{label}</label>
-              <div className="flex items-center gap-1">
-                <span className="text-xs font-mono text-aura-text w-10 text-right">
-                  {mixedPropKeys.has(key) ? "Mixed" : props[key].toFixed(2)}
-                </span>
-                <button
-                  onClick={() => handlePropReset(key)}
-                  className="text-xs text-aura-text-dim hover:text-aura-text px-1"
-                  title="Reset to default"
-                >
-                  ↺
-                </button>
-              </div>
-            </div>
-            <input
-              type="range"
-              min={min}
-              max={max}
-              step={step}
-              value={props[key]}
-              onChange={(e) => handlePropChange(key, parseFloat(e.target.value))}
-              className="slider"
-            />
-          </div>
-        ))}
-      </div>
-
-      <div className="px-3 py-3 border-b border-aura-border">
-        <span className="text-xs text-aura-text-dim">Geometry</span>
-        <div className="mt-1 text-xs font-mono text-aura-text-dim">
-          {isMulti && `${selectedCount} layers selected (primary shown below)`}
-          {isMulti && <br />}
-          {selectedLayer.geometry.type === "Quad" && "4-point warp"}
-          {selectedLayer.geometry.type === "Triangle" && "3-point warp"}
-          {selectedLayer.geometry.type === "Mesh"
-            && `Grid ${selectedLayer.geometry.data.cols}×${selectedLayer.geometry.data.rows}`}
-          {selectedLayer.geometry.type === "Circle" && "Ellipse mask"}
-        </div>
-      </div>
-
-      <div className="px-3 py-3 border-b border-aura-border">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-semibold uppercase tracking-wider text-aura-text-dim">
-            Selection Mode
-          </span>
-          <span className="text-[11px] text-aura-text-dim">Tab</span>
-        </div>
-        <div className="grid grid-cols-2 gap-1">
-          <button
-            onClick={() => setEditorSelectionMode("shape")}
-            className={`btn text-xs py-1 ${
-              selectionMode === "shape"
-                ? "bg-indigo-600 text-white"
-                : "bg-aura-hover text-aura-text-dim"
-            }`}
-          >
-            Shape
-          </button>
-          <button
-            onClick={() => setEditorSelectionMode("uv")}
-            disabled={isMulti}
-            className={`btn text-xs py-1 ${
-              selectionMode === "uv"
-                ? (isMesh ? "bg-amber-600 text-white" : "bg-cyan-600 text-white")
-                : "bg-aura-hover text-aura-text-dim"
-            } ${isMulti ? "opacity-60 cursor-not-allowed" : ""}`}
-          >
-            {secondaryModeLabel}
-          </button>
-        </div>
-        <div className="mt-2 text-[11px] text-aura-text-dim">
-          {isMulti
-            ? "Multi-selection: Shape mode only"
-            : !isUvMode
-            ? "Point/shape controls active"
-            : isMesh
-              ? "Face selection and UV controls active"
-              : "Input pan mode active (drag layer in preview)"}
-        </div>
-      </div>
-
-      {!isMulti && isMesh && meshData && (
-        <div className="px-3 py-3 border-b border-aura-border">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-aura-text-dim">Subdivide</span>
-            <span className="text-xs font-mono text-aura-text-dim">
-              {meshData.cols}×{meshData.rows} → {meshData.cols * 2}×{meshData.rows * 2}
-            </span>
-          </div>
-          <button
-            onClick={() => void subdivideMesh(selectedLayer.id)}
-            className="btn text-xs mt-2 w-full py-1"
-          >
-            Subdivide Mesh
-          </button>
-        </div>
-      )}
-
-      {isMesh && isUvMode && facesSelected && (
-        <div className="px-3 py-3">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold uppercase tracking-wider text-aura-text-dim">
-              Face UV
-              {selectedFaceIndices.length > 1 && (
-                <span className="ml-1 normal-case font-normal text-aura-text-dim">
-                  ({selectedFaceIndices.length} faces)
-                </span>
-              )}
-            </span>
-            <button
-              onClick={handleUVReset}
-              className="text-xs text-aura-text-dim hover:text-aura-text"
-              title="Reset UV to default"
-            >
-              ↺ Reset
-            </button>
-          </div>
-
-          <div className="space-y-3">
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs text-aura-text-dim">Offset X</label>
-                <span className="text-xs font-mono text-aura-text w-10 text-right">
-                  {currentUV.offset[0].toFixed(2)}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={-1}
-                max={1}
-                step={0.01}
-                value={currentUV.offset[0]}
-                onMouseDown={() => void beginInteraction()}
-                onChange={(e) => handleUVChange({
-                  ...currentUV,
-                  offset: [parseFloat(e.target.value), currentUV.offset[1]],
-                })}
-                className="slider"
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs text-aura-text-dim">Offset Y</label>
-                <span className="text-xs font-mono text-aura-text w-10 text-right">
-                  {currentUV.offset[1].toFixed(2)}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={-1}
-                max={1}
-                step={0.01}
-                value={currentUV.offset[1]}
-                onMouseDown={() => void beginInteraction()}
-                onChange={(e) => handleUVChange({
-                  ...currentUV,
-                  offset: [currentUV.offset[0], parseFloat(e.target.value)],
-                })}
-                className="slider"
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs text-aura-text-dim">Rotation</label>
-                <span className="text-xs font-mono text-aura-text w-10 text-right">
-                  {uvRotDeg.toFixed(0)}°
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={360}
-                step={1}
-                value={uvRotDeg}
-                onMouseDown={() => void beginInteraction()}
-                onChange={(e) => handleUVChange({
-                  ...currentUV,
-                  rotation: (parseFloat(e.target.value) / 360) * TWO_PI,
-                })}
-                className="slider"
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs text-aura-text-dim">Scale X</label>
-                <span className="text-xs font-mono text-aura-text w-10 text-right">
-                  {currentUV.scale[0].toFixed(2)}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0.1}
-                max={3}
-                step={0.01}
-                value={currentUV.scale[0]}
-                onMouseDown={() => void beginInteraction()}
-                onChange={(e) => handleUVChange({
-                  ...currentUV,
-                  scale: [parseFloat(e.target.value), currentUV.scale[1]],
-                })}
-                className="slider"
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs text-aura-text-dim">Scale Y</label>
-                <span className="text-xs font-mono text-aura-text w-10 text-right">
-                  {currentUV.scale[1].toFixed(2)}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0.1}
-                max={3}
-                step={0.01}
-                value={currentUV.scale[1]}
-                onMouseDown={() => void beginInteraction()}
-                onChange={(e) => handleUVChange({
-                  ...currentUV,
-                  scale: [currentUV.scale[0], parseFloat(e.target.value)],
-                })}
-                className="slider"
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isMesh && isUvMode && !facesSelected && (
-        <div className="px-3 py-3 text-xs text-aura-text-dim">
-          Click one or more mesh faces in the canvas to edit UV.
-        </div>
-      )}
+      <Group
+        orientation="vertical"
+        className="properties-inspector-group flex-1 min-h-0"
+        defaultLayout={inspectorLayout}
+        onLayoutChanged={onInspectorLayoutChanged}
+      >
+        {renderSectionPanel("assignment")}
+        <Separator />
+        {renderSectionPanel("transform")}
+        <Separator />
+        {renderSectionPanel("look")}
+        <Separator />
+        {renderSectionPanel("geometryUv")}
+      </Group>
     </div>
   );
 }

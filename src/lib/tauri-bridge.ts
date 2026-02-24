@@ -19,6 +19,15 @@ import type {
   SourceAssignment,
   UvAdjustment,
   InputTransform,
+  InstalledShaderSourceDescriptor,
+  FrameSnapshot,
+  PreviewConsumers,
+  PreviewDelta,
+  ProjectSnapshotWithRevision,
+  ProjectorWindowState,
+  AudioInputDevice,
+  BpmConfig,
+  BpmState,
 } from "../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../types";
 
@@ -50,6 +59,136 @@ let mockProject: ProjectFile = newProject("Untitled Project");
 let mockMainFullscreen = false;
 let mockProjectorOpen = false;
 let mockProjectorFullscreen = false;
+let mockProjectRevision = 1;
+let mockPreviewCursor = 1;
+let mockPreviewConsumers: PreviewConsumers = {
+  editor: false,
+  projector_fallback: false,
+};
+let mockBpmConfig: BpmConfig = {
+  enabled: false,
+  sensitivity: 1.0,
+  gate: 0.28,
+  smoothing: 0.82,
+  attack: 0.85,
+  decay: 0.75,
+  manualBpm: 120,
+};
+let mockBpmState: BpmState = {
+  bpm: 120,
+  beat: 0,
+  level: 0,
+  phase: 0,
+  running: false,
+  selectedDeviceId: null,
+  selectedDeviceName: null,
+  lastBeatMs: 0,
+};
+const mockAudioDevices: AudioInputDevice[] = [
+  {
+    id: "builtin-mic",
+    name: "Built-in Microphone",
+    channels: 1,
+    sampleRate: 48000,
+    isDefault: true,
+  },
+  {
+    id: "usb-interface",
+    name: "USB Audio Interface",
+    channels: 2,
+    sampleRate: 44100,
+    isDefault: false,
+  },
+];
+let mockPreviewLayerIds = new Set<string>();
+const mockPendingRemovedLayerIds = new Set<string>();
+const mockFrameSnapshotCache = new Map<string, FrameSnapshot>();
+
+const MOCK_TEST_SOURCES: SourceInfo[] = [
+  { id: "test:color_bars", name: "Test: Color Bars", protocol: "test", width: 640, height: 480, fps: 30 },
+  { id: "test:gradient", name: "Test: Gradient Sweep", protocol: "test", width: 640, height: 480, fps: 30 },
+  { id: "test:checkerboard", name: "Test: Checkerboard", protocol: "test", width: 640, height: 480, fps: 30 },
+  { id: "test:solid", name: "Test: Solid Color Cycle", protocol: "test", width: 640, height: 480, fps: 30 },
+];
+
+const MOCK_SHADER_SOURCES: SourceInfo[] = [
+  { id: "shader:plasma_flow", name: "Shader: Plasma Flow", protocol: "shader", width: 160, height: 120, fps: 30 },
+  { id: "shader:kaleido_spin", name: "Shader: Kaleido Spin", protocol: "shader", width: 160, height: 120, fps: 30 },
+  { id: "shader:tunnel_pulse", name: "Shader: Tunnel Pulse", protocol: "shader", width: 160, height: 120, fps: 30 },
+];
+
+let mockInstalledShaderSources: SourceInfo[] = [];
+
+function getMockSources(): SourceInfo[] {
+  return [...MOCK_TEST_SOURCES, ...MOCK_SHADER_SOURCES, ...mockInstalledShaderSources];
+}
+
+function createMockFrameSnapshot(sourceId: string): FrameSnapshot {
+  const cached = mockFrameSnapshotCache.get(sourceId);
+  if (cached) return cached;
+
+  const width = 48;
+  const height = 48;
+  const bytes = new Uint8Array(width * height * 4);
+  let hash = 0;
+  for (let i = 0; i < sourceId.length; i++) {
+    hash = ((hash << 5) - hash + sourceId.charCodeAt(i)) | 0;
+  }
+  const hue = ((hash >>> 0) % 360) / 360;
+  const toChannel = (offset: number) => {
+    const v = 0.5 + 0.5 * Math.sin((hue + offset) * Math.PI * 2);
+    return Math.round(v * 255);
+  };
+  const r = toChannel(0);
+  const g = toChannel(1 / 3);
+  const b = toChannel(2 / 3);
+  for (let i = 0; i < bytes.length; i += 4) {
+    bytes[i] = r;
+    bytes[i + 1] = g;
+    bytes[i + 2] = b;
+    bytes[i + 3] = 255;
+  }
+  const binary = String.fromCharCode(...bytes);
+  const snapshot: FrameSnapshot = {
+    width,
+    height,
+    data_b64: btoa(binary),
+  };
+  mockFrameSnapshotCache.set(sourceId, snapshot);
+  return snapshot;
+}
+
+function computeMockPreviewFrames(): Record<string, FrameSnapshot> {
+  const frames: Record<string, FrameSnapshot> = {};
+  for (const layer of mockProject.layers) {
+    const sourceId = layer.source?.source_id;
+    if (!sourceId) continue;
+    frames[layer.id] = createMockFrameSnapshot(sourceId);
+  }
+  return frames;
+}
+
+function markMockPreviewTopologyChanged(): void {
+  const currentLayerIds = new Set(
+    mockProject.layers
+      .filter((layer) => !!layer.source?.source_id)
+      .map((layer) => layer.id)
+  );
+  for (const prevId of mockPreviewLayerIds) {
+    if (!currentLayerIds.has(prevId)) {
+      mockPendingRemovedLayerIds.add(prevId);
+    }
+  }
+  mockPreviewLayerIds = currentLayerIds;
+  mockPreviewCursor += 1;
+}
+
+function touchMockProject(options?: { previewChanged?: boolean }): void {
+  mockProjectRevision += 1;
+  if (options?.previewChanged) {
+    markMockPreviewTopologyChanged();
+  }
+}
 
 function defaultGeometry(type: string, cols?: number, rows?: number): LayerGeometry {
   switch (type) {
@@ -288,15 +427,28 @@ const mockCommands: Record<string, (args: any) => any> = {
       source: null,
       geometry: defaultGeometry(type, cols, rows),
       input_transform: { ...DEFAULT_INPUT_TRANSFORM },
-      properties: { brightness: 1, contrast: 1, gamma: 1, opacity: 1, feather: 0 },
+      properties: {
+        brightness: 1,
+        contrast: 1,
+        gamma: 1,
+        opacity: 1,
+        feather: 0,
+        beatReactive: false,
+        beatAmount: 0,
+      },
       blend_mode: "normal",
     };
     mockProject.layers.push(layer);
+    touchMockProject({ previewChanged: true });
     return layer;
   },
 
   remove_layer: (args: { layerId: string }) => {
+    const before = mockProject.layers.length;
     mockProject.layers = mockProject.layers.filter((l) => l.id !== args.layerId);
+    if (mockProject.layers.length !== before) {
+      touchMockProject({ previewChanged: true });
+    }
     return true;
   },
 
@@ -304,6 +456,9 @@ const mockCommands: Record<string, (args: any) => any> = {
     const idSet = new Set(args.layerIds);
     const before = mockProject.layers.length;
     mockProject.layers = mockProject.layers.filter((l) => !idSet.has(l.id));
+    if (mockProject.layers.length !== before) {
+      touchMockProject({ previewChanged: true });
+    }
     return mockProject.layers.length !== before;
   },
 
@@ -317,6 +472,7 @@ const mockCommands: Record<string, (args: any) => any> = {
       zIndex: nextZIndex++,
     };
     mockProject.layers.push(dup);
+    touchMockProject({ previewChanged: !!dup.source?.source_id });
     return dup;
   },
 
@@ -338,24 +494,38 @@ const mockCommands: Record<string, (args: any) => any> = {
       mockProject.layers.push(dup);
       duplicates.push(dup);
     }
+    if (duplicates.length > 0) {
+      touchMockProject({
+        previewChanged: duplicates.some((layer) => !!layer.source?.source_id),
+      });
+    }
     return duplicates;
   },
 
   rename_layer: (args: { layerId: string; name: string }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) layer.name = args.name;
+    if (layer) {
+      layer.name = args.name;
+      touchMockProject();
+    }
     return !!layer;
   },
 
   set_layer_visibility: (args: { layerId: string; visible: boolean }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) layer.visible = args.visible;
+    if (layer) {
+      layer.visible = args.visible;
+      touchMockProject();
+    }
     return !!layer;
   },
 
   set_layer_locked: (args: { layerId: string; locked: boolean }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) layer.locked = args.locked;
+    if (layer) {
+      layer.locked = args.locked;
+      touchMockProject();
+    }
     return !!layer;
   },
 
@@ -364,6 +534,7 @@ const mockCommands: Record<string, (args: any) => any> = {
       const layer = mockProject.layers.find((l) => l.id === id);
       if (layer) layer.zIndex = idx;
     });
+    touchMockProject();
     return true;
   },
 
@@ -373,25 +544,37 @@ const mockCommands: Record<string, (args: any) => any> = {
 
   update_layer_geometry: (args: { layerId: string; geometry: LayerGeometry }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) layer.geometry = args.geometry;
+    if (layer) {
+      layer.geometry = args.geometry;
+      touchMockProject();
+    }
     return !!layer;
   },
 
   update_layer_properties: (args: { layerId: string; properties: LayerProperties }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) layer.properties = args.properties;
+    if (layer) {
+      layer.properties = args.properties;
+      touchMockProject();
+    }
     return !!layer;
   },
 
   set_layer_source: (args: { layerId: string; source: SourceAssignment | null }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) layer.source = args.source;
+    if (layer) {
+      layer.source = args.source;
+      touchMockProject({ previewChanged: true });
+    }
     return !!layer;
   },
 
   set_layer_input_transform: (args: { layerId: string; inputTransform: InputTransform }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) layer.input_transform = args.inputTransform;
+    if (layer) {
+      layer.input_transform = args.inputTransform;
+      touchMockProject();
+    }
     return !!layer;
   },
 
@@ -413,6 +596,7 @@ const mockCommands: Record<string, (args: any) => any> = {
       args.sx,
       args.sy
     );
+    touchMockProject();
     return layer.geometry;
   },
 
@@ -426,23 +610,28 @@ const mockCommands: Record<string, (args: any) => any> = {
     const next = updateGeometryPoint(layer.geometry, args.pointIndex, args.point);
     if (!next) return null;
     layer.geometry = next;
+    touchMockProject();
     return next;
   },
 
   set_calibration_enabled: (args: { enabled: boolean }) => {
     mockProject.calibration.enabled = args.enabled;
+    touchMockProject();
   },
 
   set_calibration_pattern: (args: { pattern: CalibrationPattern }) => {
     mockProject.calibration.pattern = args.pattern;
+    touchMockProject();
   },
 
   set_output_config: (args: { config: OutputConfig }) => {
     mockProject.output = args.config;
+    touchMockProject();
   },
 
   set_project_ui_state: (args: { uiState: unknown }) => {
     mockProject.uiState = args.uiState;
+    touchMockProject();
   },
 
   set_main_window_fullscreen: (args: { fullscreen: boolean }) => {
@@ -456,60 +645,151 @@ const mockCommands: Record<string, (args: any) => any> = {
     { name: "Projector (HDMI)", width: 1920, height: 1080, x: 2560, y: 0, scale_factor: 1.0 },
   ],
 
-  refresh_sources: (): SourceInfo[] => [
-    { id: "test:color_bars", name: "Test: Color Bars", protocol: "test", width: 640, height: 480, fps: 30 },
-    { id: "test:gradient", name: "Test: Gradient Sweep", protocol: "test", width: 640, height: 480, fps: 30 },
-    { id: "test:checkerboard", name: "Test: Checkerboard", protocol: "test", width: 640, height: 480, fps: 30 },
-    { id: "test:solid", name: "Test: Solid Color Cycle", protocol: "test", width: 640, height: 480, fps: 30 },
-  ],
-  list_sources: (): SourceInfo[] => [
-    { id: "test:color_bars", name: "Test: Color Bars", protocol: "test", width: 640, height: 480, fps: 30 },
-    { id: "test:gradient", name: "Test: Gradient Sweep", protocol: "test", width: 640, height: 480, fps: 30 },
-    { id: "test:checkerboard", name: "Test: Checkerboard", protocol: "test", width: 640, height: 480, fps: 30 },
-    { id: "test:solid", name: "Test: Solid Color Cycle", protocol: "test", width: 640, height: 480, fps: 30 },
-  ],
+  refresh_sources: (): SourceInfo[] => getMockSources(),
+  list_sources: (): SourceInfo[] => getMockSources(),
+  set_installed_shader_sources: (args: { sources: InstalledShaderSourceDescriptor[] }): number => {
+    mockInstalledShaderSources = args.sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      protocol: "shader",
+      width: 160,
+      height: 120,
+      fps: 30,
+    }));
+    markMockPreviewTopologyChanged();
+    return mockInstalledShaderSources.length;
+  },
+
+  list_audio_input_devices: (): AudioInputDevice[] => mockAudioDevices,
+  set_audio_input_device: (args: { deviceId: string }): BpmState => {
+    const device = mockAudioDevices.find((candidate) => candidate.id === args.deviceId) ?? null;
+    mockBpmState.selectedDeviceId = device?.id ?? null;
+    mockBpmState.selectedDeviceName = device?.name ?? null;
+    mockBpmState.running = !!device && mockBpmConfig.enabled;
+    return { ...mockBpmState };
+  },
+  set_bpm_config: (args: { config: BpmConfig }): BpmState => {
+    mockBpmConfig = { ...mockBpmConfig, ...args.config };
+    mockBpmState.bpm = mockBpmConfig.manualBpm > 0 ? mockBpmConfig.manualBpm : mockBpmState.bpm;
+    mockBpmState.running = mockBpmConfig.enabled && !!mockBpmState.selectedDeviceId;
+    return { ...mockBpmState };
+  },
+  get_bpm_state: (): BpmState => {
+    if (!mockBpmConfig.enabled) {
+      mockBpmState.beat = 0;
+      mockBpmState.level = 0;
+      mockBpmState.phase = 0;
+      mockBpmState.running = false;
+      return { ...mockBpmState };
+    }
+    const now = Date.now();
+    const t = now / 1000;
+    const bpm = Math.max(1, mockBpmState.bpm || mockBpmConfig.manualBpm || 120);
+    const phase = ((t * bpm) / 60) % 1;
+    const beat = phase < 0.12 ? 1 : 0;
+    mockBpmState.phase = phase;
+    mockBpmState.beat = beat;
+    mockBpmState.level = beat ? 0.9 : 0.24;
+    mockBpmState.lastBeatMs = beat ? now : mockBpmState.lastBeatMs;
+    mockBpmState.running = !!mockBpmState.selectedDeviceId;
+    return { ...mockBpmState };
+  },
+  tap_tempo: (): BpmState => {
+    mockBpmState.lastBeatMs = Date.now();
+    mockBpmState.beat = 1;
+    mockBpmState.level = 1;
+    return { ...mockBpmState };
+  },
 
   add_media_file: (args: { path: string }): SourceInfo => {
     const name = args.path.split("/").pop() ?? "unknown.png";
     return { id: `media:${name}`, name, protocol: "media", width: 1920, height: 1080, fps: null };
   },
 
-  remove_media_file: (args: { sourceId: string }) => {
-    console.log("[mock] Remove media file:", args.sourceId);
+  remove_media_file: (_args: { sourceId: string }) => {
     return true;
   },
 
   connect_source: (args: { layerId: string; sourceId: string }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
+    const source = getMockSources().find((s) => s.id === args.sourceId);
     if (layer) {
-      layer.source = { protocol: "test", source_id: args.sourceId, display_name: args.sourceId };
+      layer.source = {
+        protocol: source?.protocol ?? "test",
+        source_id: args.sourceId,
+        display_name: source?.name ?? args.sourceId,
+      };
+      touchMockProject({ previewChanged: true });
     }
     return true;
   },
 
   disconnect_source: (args: { layerId: string }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) layer.source = null;
+    if (layer) {
+      layer.source = null;
+      touchMockProject({ previewChanged: true });
+    }
     return true;
   },
 
   set_layer_blend_mode: (args: { layerId: string; blendMode: string }) => {
     const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (layer) (layer as Layer).blend_mode = args.blendMode as Layer["blend_mode"];
+    if (layer) {
+      (layer as Layer).blend_mode = args.blendMode as Layer["blend_mode"];
+      touchMockProject();
+    }
     return !!layer;
   },
 
   poll_layer_frame: () => null,
-  poll_all_frames: () => ({}),
+  poll_all_frames: () => computeMockPreviewFrames(),
+  poll_all_frames_delta: (args: { cursor: number }): PreviewDelta => {
+    if ((args.cursor ?? 0) >= mockPreviewCursor) {
+      return {
+        cursor: mockPreviewCursor,
+        removed_layer_ids: [],
+        changed: {},
+      };
+    }
+    const removed_layer_ids = Array.from(mockPendingRemovedLayerIds);
+    mockPendingRemovedLayerIds.clear();
+    return {
+      cursor: mockPreviewCursor,
+      removed_layer_ids,
+      changed: computeMockPreviewFrames(),
+    };
+  },
+  set_preview_consumers: (args: {
+    editor?: boolean;
+    projector_fallback?: boolean;
+    projectorFallback?: boolean;
+  }): PreviewConsumers => {
+    if (typeof args.editor === "boolean") {
+      mockPreviewConsumers.editor = args.editor;
+    }
+    const projectorFlag = typeof args.projector_fallback === "boolean"
+      ? args.projector_fallback
+      : args.projectorFallback;
+    if (typeof projectorFlag === "boolean") {
+      mockPreviewConsumers.projector_fallback = projectorFlag;
+    }
+    return { ...mockPreviewConsumers };
+  },
+  get_project_if_changed: (args: { revision: number }): ProjectSnapshotWithRevision | null => {
+    if ((args.revision ?? 0) >= mockProjectRevision) return null;
+    return {
+      revision: mockProjectRevision,
+      project: mockProject,
+    };
+  },
 
   open_projector_window: () => {
     mockProjectorOpen = true;
-    console.log("[mock] Projector window opened");
   },
   close_projector_window: () => {
     mockProjectorOpen = false;
     mockProjectorFullscreen = false;
-    console.log("[mock] Projector window closed");
   },
   set_projector_fullscreen: (args: { fullscreen: boolean }) => {
     if (mockProjectorOpen) {
@@ -517,19 +797,25 @@ const mockCommands: Record<string, (args: any) => any> = {
     }
   },
   get_projector_fullscreen: () => (mockProjectorOpen ? mockProjectorFullscreen : false),
+  get_projector_window_state: (): ProjectorWindowState => ({
+    open: mockProjectorOpen,
+    gpu_native: false,
+  }),
   retarget_projector: () => {},
 
   save_project: (args: { path?: string }) => {
-    const path = args.path ?? "mock://project.flexmap";
-    console.log("[mock] Project saved to", path);
-    return path;
+    return args.path ?? "mock://project.flexmap";
   },
 
-  load_project: () => mockProject,
+  load_project: () => {
+    touchMockProject({ previewChanged: true });
+    return mockProject;
+  },
 
   new_project: () => {
     mockProject = newProject("Untitled Project");
     nextZIndex = 0;
+    touchMockProject({ previewChanged: true });
     return mockProject;
   },
 
@@ -546,8 +832,15 @@ const mockCommands: Record<string, (args: any) => any> = {
     buffer_cache_hits: 1200, buffer_cache_misses: 4,
   }),
   get_source_diagnostics: () => [
-    { source_id: "test:color_bars", name: "Test: Color Bars", protocol: "test", width: 640, height: 480, fps: 30, layers_using: [] },
-    { source_id: "test:gradient", name: "Test: Gradient Sweep", protocol: "test", width: 640, height: 480, fps: 30, layers_using: [] },
+    ...getMockSources().map((source) => ({
+      source_id: source.id,
+      name: source.name,
+      protocol: source.protocol,
+      width: source.width,
+      height: source.height,
+      fps: source.fps,
+      layers_using: [] as string[],
+    })),
   ],
   set_frame_pacing: () => {},
   get_projector_stats: () => ({ gpu_native: false, fps: 0, frametime_ms: 0 }),
@@ -569,6 +862,7 @@ const mockCommands: Record<string, (args: any) => any> = {
     } else {
       data.masked_faces = data.masked_faces.filter((f) => !args.faceIndices.includes(f));
     }
+    touchMockProject();
     return true;
   },
 
@@ -578,6 +872,7 @@ const mockCommands: Record<string, (args: any) => any> = {
     const data = layer.geometry.data as { face_groups?: { name: string; face_indices: number[]; color: string }[] };
     data.face_groups = data.face_groups ?? [];
     data.face_groups.push({ name: args.name, face_indices: args.faceIndices, color: args.color });
+    touchMockProject();
     return true;
   },
 
@@ -588,6 +883,7 @@ const mockCommands: Record<string, (args: any) => any> = {
     data.face_groups = data.face_groups ?? [];
     if (args.groupIndex < data.face_groups.length) {
       data.face_groups.splice(args.groupIndex, 1);
+      touchMockProject();
       return true;
     }
     return false;
@@ -600,6 +896,7 @@ const mockCommands: Record<string, (args: any) => any> = {
     data.face_groups = data.face_groups ?? [];
     if (args.groupIndex < data.face_groups.length) {
       data.face_groups[args.groupIndex].name = args.name;
+      touchMockProject();
       return true;
     }
     return false;
@@ -607,6 +904,7 @@ const mockCommands: Record<string, (args: any) => any> = {
 
   set_calibration_target: (args: { target: CalibrationTarget | null }) => {
     mockProject.calibration.target_layer = args.target;
+    touchMockProject();
   },
 
   set_face_uv_override: (args: { layerId: string; faceIndex: number; adjustment: UvAdjustment }) => {
@@ -615,6 +913,7 @@ const mockCommands: Record<string, (args: any) => any> = {
     const data = layer.geometry.data as { uv_overrides?: Record<number, UvAdjustment> };
     data.uv_overrides = data.uv_overrides ?? {};
     data.uv_overrides[args.faceIndex] = args.adjustment;
+    touchMockProject();
     return true;
   },
 
@@ -624,6 +923,7 @@ const mockCommands: Record<string, (args: any) => any> = {
     const data = layer.geometry.data as { uv_overrides?: Record<number, UvAdjustment> };
     if (data.uv_overrides && args.faceIndex in data.uv_overrides) {
       delete data.uv_overrides[args.faceIndex];
+      touchMockProject();
       return true;
     }
     return false;
@@ -651,6 +951,7 @@ const mockCommands: Record<string, (args: any) => any> = {
     }
     const newGeometry: LayerGeometry = { type: "Mesh", data: { cols: newCols, rows: newRows, points: newPoints, face_groups: [], masked_faces: [], uv_overrides: {} } };
     layer.geometry = newGeometry;
+    touchMockProject();
     return newGeometry;
   },
 

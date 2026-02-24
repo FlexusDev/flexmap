@@ -1,18 +1,25 @@
 {
   "name": "flexmap",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:portable:win": "npm run build && tauri build --no-bundle",
+    "build:portable:mac": "npm run build && tauri build --bundles app",
+    "build:win:mac": "npm run build && tauri build --no-bundle --runner cargo-xwin --target x86_64-pc-windows-msvc",
+    "build:win:mac:nsis": "npm run build && tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis",
+    "release:mac": "npm run build:portable:mac && ./scripts/release-mac.sh",
+    "build:both": "npm run build && tauri build --bundles app && tauri build --no-bundle --runner cargo-xwin --target x86_64-pc-windows-msvc"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",
+    "@tauri-apps/plugin-log": "^2.8.0",
     "gl-matrix": "^3.4.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -128,7 +128,7 @@ function ProjectorBadge() {
   const [hovered, setHovered] = useState(false);
   const [stats, setStats] = useState<ProjectorStats | null>(null);
 
-  // Poll GPU projector stats every 500ms while projector is open
+  // Poll GPU projector stats every 1000ms while projector is open
   useEffect(() => {
     let running = true;
     const poll = async () => {
@@ -139,7 +139,7 @@ function ProjectorBadge() {
         } catch {
           // ignore
         }
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 1000));
       }
     };
     poll();
