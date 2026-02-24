@@ -1,10 +1,10 @@
 import type { InstalledShaderSourceDescriptor, ShaderLibraryEntry } from "../types";
 
 const ISF_LIBRARY_CONTENTS_URL = "https://api.github.com/repos/Vidvox/ISF-Files/contents/ISF";
-const ONLINE_CACHE_KEY = "auramap:isf_catalog_v1";
-const METADATA_CACHE_KEY = "auramap:isf_metadata_v1";
-const INSTALLED_LIBRARY_KEY = "auramap:isf_installed_library_v1";
-const SOURCE_CACHE_KEY = "auramap:isf_source_cache_v1";
+const ONLINE_CACHE_KEY = "flexmap:isf_catalog_v1";
+const METADATA_CACHE_KEY = "flexmap:isf_metadata_v1";
+const INSTALLED_LIBRARY_KEY = "flexmap:isf_installed_library_v1";
+const SOURCE_CACHE_KEY = "flexmap:isf_source_cache_v1";
 const ONLINE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const PREVIEW_PLASMA_FLOW = `

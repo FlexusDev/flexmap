@@ -13,6 +13,7 @@ import type {
 } from "../../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
+import { PERFORMANCE_PROFILE_KEY } from "../../store/useAppStore";
 
 /** Fast base64→Uint8ClampedArray decode using fetch + data URI (avoids byte-by-byte loop) */
 async function decodeBase64Fast(b64: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
@@ -31,7 +32,7 @@ async function decodeBase64Fast(b64: string): Promise<Uint8ClampedArray<ArrayBuf
 
 function readPerformanceProfile(): PerformanceProfile {
   if (typeof window === "undefined") return "max_fps";
-  const raw = window.localStorage.getItem("auramap:performance_profile");
+  const raw = window.localStorage.getItem(PERFORMANCE_PROFILE_KEY);
   return raw === "balanced" ? "balanced" : "max_fps";
 }
 

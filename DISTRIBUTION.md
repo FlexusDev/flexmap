@@ -10,7 +10,7 @@ To build and publish the current version to GitHub Releases:
 npm run release:mac
 ```
 
-This builds the portable `.app`, zips it, and creates/updates the GitHub release (e.g. `v0.1.0`) with the asset. Requires `gh` CLI and a Mac with Rust/Tauri toolchain.
+This builds the portable `.app`, zips it, and creates/updates the GitHub release (e.g. `v0.2.0`) with the asset. Requires `gh` CLI and a Mac with Rust/Tauri toolchain.
 
 ## Releasing via GitHub Actions
 

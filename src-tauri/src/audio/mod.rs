@@ -245,7 +245,7 @@ impl WorkerState {
             let name = device.name().unwrap_or_else(|_| format!("Input {}", index + 1));
             let cfg = device.default_input_config().ok();
             out.push(AudioInputDevice {
-                id: device_id(index, &name),
+                id: device_id(&name),
                 name: name.clone(),
                 channels: cfg.as_ref().map(|c| c.channels()).unwrap_or(0),
                 sample_rate: cfg.as_ref().map(|c| c.sample_rate().0).unwrap_or(0),
@@ -345,7 +345,7 @@ impl WorkerState {
 
         for (index, device) in devices.enumerate() {
             let name = device.name().unwrap_or_else(|_| format!("Input {}", index + 1));
-            let id = device_id(index, &name);
+            let id = device_id(&name);
             if id == wanted_id {
                 return Ok((device, name));
             }
@@ -555,9 +555,10 @@ impl WorkerState {
     }
 }
 
-fn device_id(_index: usize, name: &str) -> String {
-    // Use only the normalized device name for a stable ID that survives
-    // device enumeration order changes (e.g. unplug/replug).
+/// Stable device ID derived from the device name only.
+/// Enumeration index is intentionally excluded so IDs survive
+/// device list order changes (e.g. unplug/replug).
+fn device_id(name: &str) -> String {
     name.to_ascii_lowercase()
         .replace(|c: char| !c.is_ascii_alphanumeric(), "-")
 }
