@@ -13,6 +13,7 @@ import {
   readInstalledLibraryEntries,
   readCachedIsfMetadata,
   readCachedOnlineIsfCatalog,
+  RateLimitError,
   uninstallInstalledIsfEntry,
   writeCachedIsfMetadata,
 } from "../../lib/shader-library";
@@ -50,10 +51,12 @@ function ShaderLibraryModal({
   const [metadataLoading, setMetadataLoading] = useState(false);
   const [bundledThumbsHydrated, setBundledThumbsHydrated] = useState(false);
   const [sourceById, setSourceById] = useState<Record<string, string>>({});
+  const [hoveredGridId, setHoveredGridId] = useState<string | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const metadataReqRef = useRef<AbortController | null>(null);
   const sourceReqRef = useRef<AbortController | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const fetchingRef = useRef(false);
 
   const allEntries = useMemo(() => {
     const combined = new Map<string, ShaderLibraryEntry>();
@@ -124,6 +127,11 @@ function ShaderLibraryModal({
     setSelectedId(selectedEntry.id);
   }, [selectedEntry, selectedId]);
 
+  // Clear grid hover when entry list changes
+  useEffect(() => {
+    setHoveredGridId(null);
+  }, [scopeEntries]);
+
   useEffect(() => {
     if (!open) return;
     const onVisibilityChange = () => setTabVisible(document.visibilityState !== "hidden");
@@ -146,6 +154,7 @@ function ShaderLibraryModal({
     requestRef.current = null;
     metadataReqRef.current = null;
     sourceReqRef.current = null;
+    fetchingRef.current = false;
     setIsFetching(false);
     setIsInstalling(false);
     setMetadataLoading(false);
@@ -218,19 +227,21 @@ function ShaderLibraryModal({
 
   useEffect(() => {
     if (!open) return;
-    const next: Record<string, string> = {};
-    for (const entry of allEntries) {
-      if (thumbnailOverrides[entry.id]) continue;
-      const sourceCode = sourceById[entry.id] ?? entry.sourceCode;
-      if (!sourceCode?.trim()) continue;
-      const rendered = renderIsfSourceThumbnail(sourceCode, { width: 320, height: 180 });
-      if (rendered) {
-        next[entry.id] = rendered;
+    setThumbnailOverrides((current) => {
+      const additions: Record<string, string> = {};
+      for (const entry of allEntries) {
+        if (current[entry.id]) continue;
+        const sourceCode = sourceById[entry.id] ?? entry.sourceCode;
+        if (!sourceCode?.trim()) continue;
+        const rendered = renderIsfSourceThumbnail(sourceCode, { width: 320, height: 180 });
+        if (rendered) {
+          additions[entry.id] = rendered;
+        }
       }
-    }
-    if (Object.keys(next).length === 0) return;
-    setThumbnailOverrides((current) => ({ ...current, ...next }));
-  }, [open, allEntries, sourceById, thumbnailOverrides]);
+      if (Object.keys(additions).length === 0) return current;
+      return { ...current, ...additions };
+    });
+  }, [open, allEntries, sourceById]);
 
   useEffect(() => {
     if (!open || !selectedEntry || selectedEntry.isBundled || selectedEntry.isInstalled) {
@@ -302,7 +313,8 @@ function ShaderLibraryModal({
   }, [open, projectorWindowOpen, selectedEntry, sourceById]);
 
   const handleFetchOnline = async (force = true) => {
-    if (isFetching) return;
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
 
     requestRef.current?.abort();
     const controller = new AbortController();
@@ -321,18 +333,32 @@ function ShaderLibraryModal({
       );
     } catch (error) {
       if (controller.signal.aborted) return;
-      console.error("Failed to fetch online ISF catalog:", error);
+      console.error("[ISF-diag] handleFetchOnline: failed:", error);
+
+      const isRateLimit = error instanceof RateLimitError;
+      if (isRateLimit) {
+        const rle = error as RateLimitError;
+        const resetLabel = rle.resetAt ? ` Resets at ${rle.resetAt.toLocaleTimeString()}.` : "";
+        addToast(
+          `GitHub API rate limit reached.${resetLabel} Add a GitHub token in Settings to increase the limit.`,
+          "error"
+        );
+      }
+
       const cached = readCachedOnlineIsfCatalog();
       if (cached.length > 0) {
         setOnlineEntries(cached);
-        addToast("Could not reach ISF online catalog. Showing cached entries.", "warning");
-      } else {
+        if (!isRateLimit) {
+          addToast("Could not reach ISF online catalog. Showing cached entries.", "warning");
+        }
+      } else if (!isRateLimit) {
         addToast("Could not reach ISF online catalog. Showing bundled shaders only.", "warning");
       }
     } finally {
       if (requestRef.current === controller) {
         requestRef.current = null;
       }
+      fetchingRef.current = false;
       setIsFetching(false);
     }
   };
@@ -525,23 +551,38 @@ function ShaderLibraryModal({
                 {scopeEntries.map((entry) => {
                   const selected = selectedEntry?.id === entry.id;
                   const thumbnail = thumbnailOverrides[entry.id] ?? entry.thumbnailUrl;
+                  const isHovered = hoveredGridId === entry.id;
                   return (
                     <button
                       key={entry.id}
                       type="button"
                       onClick={() => setSelectedId(entry.id)}
+                      onMouseEnter={() => setHoveredGridId(entry.id)}
+                      onMouseLeave={() => setHoveredGridId((current) => current === entry.id ? null : current)}
                       className={`text-left border rounded-md overflow-hidden transition-colors ${
                         selected
                           ? "border-aura-success bg-aura-success/10"
                           : "border-aura-border hover:border-aura-text-dim"
                       }`}
                     >
-                      <img
-                        src={thumbnail}
-                        alt={`${entry.name} thumbnail`}
-                        className="w-full aspect-video object-cover bg-aura-bg/50"
-                        loading="lazy"
-                      />
+                      <div className="relative">
+                        <img
+                          src={thumbnail}
+                          alt={`${entry.name} thumbnail`}
+                          className="w-full aspect-video object-cover bg-aura-bg/50"
+                          loading="lazy"
+                        />
+                        {isHovered && previewEnabled && (sourceById[entry.id] || entry.sourceCode || entry.previewFragment) && (
+                          <div className="absolute inset-0 overflow-hidden rounded-t-md">
+                            <ShaderPreviewCanvas
+                              entry={entry}
+                              enabled
+                              sourceCode={sourceById[entry.id] ?? entry.sourceCode}
+                              compact
+                            />
+                          </div>
+                        )}
+                      </div>
                       <div className="p-2">
                         <div className="text-xs font-medium text-aura-text truncate">{entry.name}</div>
                         <div className="text-[10px] text-aura-text-dim truncate">{entry.author}</div>
@@ -604,11 +645,24 @@ function ShaderLibraryModal({
                         Realtime preview is paused while the app is not visible.
                       </div>
                     )}
-                    <ShaderPreviewCanvas
-                      entry={selectedEntry}
-                      enabled={previewEnabled}
-                      sourceCode={sourceById[selectedEntry.id] ?? selectedEntry.sourceCode}
-                    />
+                    {(sourceById[selectedEntry.id] || selectedEntry.sourceCode || selectedEntry.previewFragment) ? (
+                      <ShaderPreviewCanvas
+                        entry={selectedEntry}
+                        enabled={previewEnabled}
+                        sourceCode={sourceById[selectedEntry.id] ?? selectedEntry.sourceCode}
+                      />
+                    ) : (
+                      <div className="relative">
+                        <img
+                          src={thumbnailOverrides[selectedEntry.id] ?? selectedEntry.thumbnailUrl}
+                          alt={`${selectedEntry.name} thumbnail`}
+                          className="w-full h-48 border border-aura-border rounded-md object-cover bg-aura-bg/50"
+                        />
+                        <div className="absolute bottom-2 right-2 text-[10px] text-aura-text-dim/60 bg-black/40 px-1.5 py-0.5 rounded">
+                          Loading preview...
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 

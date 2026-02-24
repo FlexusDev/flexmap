@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ShaderLibraryEntry } from "../../types";
 
 const VERTEX_SHADER_SOURCE = `
@@ -27,18 +27,34 @@ interface PreviewSourceConfig {
   fragmentSource: string;
   kind: PreviewKind;
   inputSpecs: IsfInputSpec[];
+  passTargets: string[];
+  vertexSource?: string;
 }
 
 interface ShaderPreviewCanvasProps {
   entry: ShaderLibraryEntry | null;
   enabled: boolean;
   sourceCode?: string;
+  /** Compact mode for grid thumbnails — no status text, canvas fills container */
+  compact?: boolean;
 }
 
-function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvasProps) {
+function ShaderPreviewCanvas({ entry, enabled, sourceCode, compact }: ShaderPreviewCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [compileError, setCompileError] = useState<string | null>(null);
   const [reinitCounter, setReinitCounter] = useState(0);
+  const [fps, setFps] = useState(0);
+  const [isRunning, setIsRunning] = useState(false);
+  const fpsRef = useRef({ frames: 0, lastSample: 0 });
+
+  const reportFps = useCallback((now: number) => {
+    fpsRef.current.frames++;
+    if (now - fpsRef.current.lastSample >= 1000) {
+      setFps(fpsRef.current.frames);
+      fpsRef.current.frames = 0;
+      fpsRef.current.lastSample = now;
+    }
+  }, []);
 
   const previewConfig = useMemo<PreviewSourceConfig | null>(() => {
     if (!entry) return null;
@@ -50,12 +66,14 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
         fragmentSource: buildFragmentShader(entry.previewFragment),
         kind: "fragment",
         inputSpecs: [],
+        passTargets: [],
       };
     }
     return {
       fragmentSource: buildFragmentShader(buildFallbackPreviewFragment(entry)),
       kind: "fallback",
       inputSpecs: [],
+      passTargets: [],
     };
   }, [entry, sourceCode]);
 
@@ -66,13 +84,17 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
       return;
     }
 
+    console.info("[ShaderPreview] Init: entry=%s kind=%s enabled=%s", entry.id, previewConfig.kind, enabled);
+
     const { gl, contextLabel } = createGlContext(canvas);
     if (!gl) {
+      console.warn("[ShaderPreview] No WebGL context available (contextLabel=none) for entry=%s", entry.id);
       setCompileError("WebGL is unavailable in this environment.");
       return;
     }
 
-    const vertexShaderResult = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SOURCE, "vertex", entry.id);
+    const vertexSource = previewConfig.vertexSource ?? VERTEX_SHADER_SOURCE;
+    const vertexShaderResult = compileShader(gl, gl.VERTEX_SHADER, vertexSource, "vertex", entry.id);
     const fragmentShaderResult = compileShader(
       gl,
       gl.FRAGMENT_SHADER,
@@ -91,6 +113,7 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
 
     const program = gl.createProgram();
     if (!program) {
+      console.warn("[ShaderPreview] createProgram returned null, gl.getError()=%d entry=%s", gl.getError(), entry.id);
       setCompileError("Could not allocate preview program.");
       gl.deleteShader(vertexShader);
       gl.deleteShader(fragmentShader);
@@ -166,12 +189,21 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
         imageUniformLocations.push(location);
       }
     }
+    // Resolve lastFrame and pass-target sampler uniforms so they get bound to the dummy texture
+    const lastFrameLoc = gl.getUniformLocation(program, "lastFrame");
+    if (lastFrameLoc) imageUniformLocations.push(lastFrameLoc);
+    for (const t of previewConfig.passTargets) {
+      const loc = gl.getUniformLocation(program, t);
+      if (loc) imageUniformLocations.push(loc);
+    }
 
     let raf = 0;
     let stopped = false;
     let startTime = performance.now();
     let lastFrameMs = 0;
     const frameIntervalMs = 1000 / PREVIEW_FPS;
+    fpsRef.current = { frames: 0, lastSample: performance.now() };
+    setIsRunning(true);
 
     const draw = (now: number) => {
       if (stopped) return;
@@ -181,6 +213,7 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
       }
 
       lastFrameMs = now;
+      reportFps(now);
       const { width, height } = syncCanvasSize(gl, canvas);
       gl.viewport(0, 0, width, height);
 
@@ -212,11 +245,13 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
 
     const handleContextLost = (event: Event) => {
       event.preventDefault();
+      console.warn("[ShaderPreview] Context lost for entry=%s", entry.id);
       stopped = true;
       cancelAnimationFrame(raf);
       setCompileError("WebGL context lost. Close/reopen the library to resume preview.");
     };
     const handleContextRestored = () => {
+      console.info("[ShaderPreview] Context restored for entry=%s", entry.id);
       setCompileError(null);
       setReinitCounter((c) => c + 1);
     };
@@ -224,20 +259,49 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
     canvas.addEventListener("webglcontextrestored", handleContextRestored, false);
 
     setCompileError(null);
+    console.info("[ShaderPreview] Ready: entry=%s context=%s kind=%s", entry.id, contextLabel, previewConfig.kind);
     raf = requestAnimationFrame(draw);
 
     return () => {
+      console.info("[ShaderPreview] Cleanup: entry=%s", entry.id);
       stopped = true;
       cancelAnimationFrame(raf);
       canvas.removeEventListener("webglcontextlost", handleContextLost, false);
       canvas.removeEventListener("webglcontextrestored", handleContextRestored, false);
-      gl.deleteTexture(dummyTex);
+      if (dummyTex) gl.deleteTexture(dummyTex);
       gl.deleteBuffer(positionBuffer);
       gl.deleteProgram(program);
       startTime = 0;
       lastFrameMs = 0;
+      setIsRunning(false);
+      setFps(0);
     };
-  }, [enabled, entry, previewConfig, reinitCounter]);
+  }, [enabled, entry, previewConfig, reinitCounter, reportFps]);
+
+  const waiting = enabled && !isRunning && !compileError;
+
+  if (compact) {
+    return (
+      <div className="w-full h-full relative">
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full bg-black"
+        />
+        {compileError && entry && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+            <div className="text-[10px] text-red-300/80 px-2 text-center leading-tight">
+              Preview unavailable
+            </div>
+          </div>
+        )}
+        {waiting && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+            <div className="w-4 h-4 border-2 border-aura-text-dim/30 border-t-aura-text-dim rounded-full animate-spin" />
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="w-full">
@@ -247,26 +311,41 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
           className="w-full h-48 border border-aura-border rounded-md bg-black"
         />
         {compileError && entry && (
-          <img
-            src={entry.thumbnailUrl}
-            alt={`${entry.name} thumbnail fallback`}
-            className="absolute inset-0 w-full h-48 border border-aura-border rounded-md object-cover bg-aura-bg/50"
-          />
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-aura-bg/80 border border-red-500/20 rounded-md">
+            <svg className="w-6 h-6 text-red-400/60 mb-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 15.75h.007v.008H12v-.008z" />
+            </svg>
+            <div className="text-[11px] text-red-300/80 text-center px-4 leading-tight">
+              Shader compile failed
+            </div>
+          </div>
+        )}
+        {waiting && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 rounded-md">
+            <div className="w-5 h-5 border-2 border-aura-text-dim/30 border-t-aura-text-dim rounded-full animate-spin mb-1.5" />
+            <div className="text-[10px] text-aura-text-dim/60">Initializing preview...</div>
+          </div>
+        )}
+        {isRunning && !compileError && (
+          <div className="absolute top-1.5 right-1.5 text-[10px] text-aura-text-dim/50 bg-black/40 px-1.5 py-0.5 rounded font-mono tabular-nums">
+            {fps} fps
+          </div>
         )}
       </div>
       {!compileError && previewConfig?.kind === "source" && (
         <div className="mt-2 text-[11px] text-aura-text-dim">
-          Realtime preview uses this shader source.
+          Realtime preview from shader source.
         </div>
       )}
       {!compileError && previewConfig?.kind === "fallback" && (
         <div className="mt-2 text-[11px] text-aura-text-dim">
-          Preview is an animated proxy for this entry.
+          Animated proxy — source unavailable for live preview.
         </div>
       )}
       {compileError && (
         <div className="mt-2 text-[11px] text-red-300">
-          Preview error: {compileError}. Showing thumbnail fallback.
+          {compileError}
         </div>
       )}
     </div>
@@ -290,8 +369,9 @@ void main() {
 }
 
 function buildSourceBasedPreview(entry: ShaderLibraryEntry, sourceCode: string): PreviewSourceConfig {
-  const { body, inputs } = extractIsfSource(sourceCode);
+  const { body, inputs, passTargets } = extractIsfSource(sourceCode);
   const uniformDecl = inputs.map((input) => toUniformDeclaration(input)).filter(Boolean).join("\n");
+  const bufferDecl = passTargets.map((t) => `uniform sampler2D ${t};`).join("\n");
   const sanitized = sanitizeIsfBody(body);
   const fragmentSource = `
 precision mediump float;
@@ -299,16 +379,21 @@ varying vec2 v_uv;
 uniform vec2 RENDERSIZE;
 uniform float TIME;
 uniform int PASSINDEX;
+uniform int FRAMEINDEX;
 uniform float u_bpm;
 uniform float u_beat;
 uniform float u_level;
 uniform float u_phase;
+uniform sampler2D lastFrame;
 ${uniformDecl}
+${bufferDecl}
 
 #define isf_FragNormCoord v_uv
 vec4 IMG_NORM_PIXEL(sampler2D img, vec2 loc) { return texture2D(img, loc); }
 vec4 IMG_PIXEL(sampler2D img, vec2 loc) { return texture2D(img, loc / max(RENDERSIZE, vec2(1.0, 1.0))); }
 vec2 IMG_SIZE(sampler2D img) { return vec2(1.0, 1.0); }
+vec4 IMG_THIS_PIXEL(sampler2D img) { return texture2D(img, v_uv); }
+vec4 IMG_THIS_NORM_PIXEL(sampler2D img) { return texture2D(img, v_uv); }
 
 ${sanitized}
 `;
@@ -318,6 +403,7 @@ ${sanitized}
       fragmentSource: buildFragmentShader(buildFallbackPreviewFragment(entry)),
       kind: "fallback",
       inputSpecs: [],
+      passTargets: [],
     };
   }
 
@@ -325,6 +411,8 @@ ${sanitized}
     fragmentSource,
     kind: "source",
     inputSpecs: inputs,
+    passTargets,
+    vertexSource: buildIsfVertexShader(sanitized),
   };
 }
 
@@ -335,28 +423,43 @@ function sanitizeIsfBody(source: string): string {
     .trim();
 }
 
-function extractIsfSource(source: string): { body: string; inputs: IsfInputSpec[] } {
+function extractIsfSource(source: string): { body: string; inputs: IsfInputSpec[]; passTargets: string[] } {
   const commentMatch = source.match(/\/\*([\s\S]*?)\*\//);
   if (!commentMatch) {
-    return { body: source, inputs: [] };
+    return { body: source, inputs: [], passTargets: [] };
   }
 
   const comment = commentMatch[1];
   const jsonStart = comment.indexOf("{");
   const jsonEnd = comment.lastIndexOf("}");
   let inputs: IsfInputSpec[] = [];
+  let passTargets: string[] = [];
   if (jsonStart >= 0 && jsonEnd > jsonStart) {
     const jsonRaw = comment.slice(jsonStart, jsonEnd + 1);
     try {
-      const parsed = JSON.parse(jsonRaw) as { INPUTS?: Array<Record<string, unknown>> };
+      const parsed = JSON.parse(jsonRaw) as {
+        INPUTS?: Array<Record<string, unknown>>;
+        PASSES?: Array<Record<string, unknown>>;
+      };
       inputs = parseInputSpecs(parsed.INPUTS ?? []);
+      passTargets = parsePassTargets(parsed.PASSES ?? []);
     } catch {
       inputs = [];
+      passTargets = [];
     }
   }
 
   const body = source.replace(commentMatch[0], "");
-  return { body, inputs };
+  return { body, inputs, passTargets };
+}
+
+function parsePassTargets(passes: Array<Record<string, unknown>>): string[] {
+  const targets: string[] = [];
+  for (const pass of passes) {
+    const target = typeof pass.TARGET === "string" ? pass.TARGET.trim() : "";
+    if (target) targets.push(target);
+  }
+  return targets;
 }
 
 function parseInputSpecs(rawInputs: Array<Record<string, unknown>>): IsfInputSpec[] {
@@ -465,6 +568,71 @@ function toNumberArray(value: unknown, size: number, fallback: number[]): number
   return fallback.slice(0, size);
 }
 
+/**
+ * Scan ISF fragment source for `varying` declarations and build a matching
+ * vertex shader that outputs them.  Returns `undefined` when no extra varyings
+ * are found (the caller should use the default simple vertex shader).
+ */
+function buildIsfVertexShader(fragmentSource: string): string | undefined {
+  const varyingRe = /^\s*varying\s+(vec[234]|float|mat[234])\s+(\w+)(\[\d+\])?/gm;
+  const varyings: { type: string; name: string; arraySuffix: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = varyingRe.exec(fragmentSource)) !== null) {
+    if (m[2] === "v_uv") continue;
+    varyings.push({ type: m[1], name: m[2], arraySuffix: m[3] ?? "" });
+  }
+  if (varyings.length === 0) return undefined;
+
+  const knownOffsets: Record<string, string> = {
+    left_coord: "v_uv - vec2(1.0/RENDERSIZE.x, 0.0)",
+    right_coord: "v_uv + vec2(1.0/RENDERSIZE.x, 0.0)",
+    above_coord: "v_uv + vec2(0.0, 1.0/RENDERSIZE.y)",
+    below_coord: "v_uv - vec2(0.0, 1.0/RENDERSIZE.y)",
+    above_left_coord: "v_uv + vec2(-1.0/RENDERSIZE.x, 1.0/RENDERSIZE.y)",
+    above_right_coord: "v_uv + vec2(1.0/RENDERSIZE.x, 1.0/RENDERSIZE.y)",
+    below_left_coord: "v_uv + vec2(-1.0/RENDERSIZE.x, -1.0/RENDERSIZE.y)",
+    below_right_coord: "v_uv + vec2(1.0/RENDERSIZE.x, -1.0/RENDERSIZE.y)",
+  };
+
+  const declarations: string[] = [];
+  const assignments: string[] = [];
+  for (const v of varyings) {
+    declarations.push(`varying ${v.type} ${v.name}${v.arraySuffix};`);
+
+    if (v.arraySuffix) {
+      const countMatch = v.arraySuffix.match(/\[(\d+)\]/);
+      const count = countMatch ? parseInt(countMatch[1], 10) : 0;
+      const val = v.type.startsWith("vec") ? "v_uv" : "0.0";
+      for (let i = 0; i < count; i++) {
+        assignments.push(`  ${v.name}[${i}] = ${val};`);
+      }
+    } else if (knownOffsets[v.name] && v.type === "vec2") {
+      assignments.push(`  ${v.name} = ${knownOffsets[v.name]};`);
+    } else if (v.type === "vec2") {
+      assignments.push(`  ${v.name} = v_uv;`);
+    } else if (v.type === "float") {
+      assignments.push(`  ${v.name} = 0.0;`);
+    } else if (v.type === "vec3") {
+      assignments.push(`  ${v.name} = vec3(v_uv, 0.0);`);
+    } else if (v.type === "vec4") {
+      assignments.push(`  ${v.name} = vec4(v_uv, 0.0, 1.0);`);
+    }
+  }
+
+  return `
+attribute vec2 a_position;
+varying vec2 v_uv;
+uniform vec2 RENDERSIZE;
+${declarations.join("\n")}
+
+void main() {
+  v_uv = a_position * 0.5 + 0.5;
+  gl_Position = vec4(a_position, 0.0, 1.0);
+${assignments.join("\n")}
+}
+`;
+}
+
 function createDummyTexture(gl: WebGLRenderingContext): WebGLTexture | null {
   const texture = gl.createTexture();
   if (!texture) return null;
@@ -518,7 +686,10 @@ function compileShader(
   entryId: string
 ): { shader: WebGLShader | null; error: string | null } {
   const shader = gl.createShader(type);
-  if (!shader) return { shader: null, error: "Could not allocate shader object." };
+  if (!shader) {
+    console.warn("[ShaderPreview] createShader(%s) returned null, gl.getError()=%d entry=%s", stageLabel, gl.getError(), entryId);
+    return { shader: null, error: "Could not allocate shader object." };
+  }
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
