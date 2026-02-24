@@ -23,7 +23,9 @@
       "Bash(npx tsc:*)",
       "Bash(git reset:*)",
       "mcp__MCP_DOCKER__sequentialthinking",
-      "WebFetch(domain:semisignal.com)"
+      "WebFetch(domain:semisignal.com)",
+      "Bash(cd:*)",
+      "WebFetch(domain:docs.rs)"
     ]
   }
 }

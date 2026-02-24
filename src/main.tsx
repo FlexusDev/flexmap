@@ -13,10 +13,33 @@ import ProjectorView from "./components/output/ProjectorView";
 import { isTauri } from "./lib/tauri-bridge";
 import "./styles/globals.css";
 
+// Replacer that extracts Error properties buried in objects (non-enumerable by default)
+function errorReplacer(_key: string, value: unknown): unknown {
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack };
+  }
+  return value;
+}
+
 // Format console args for the log plugin (single string)
 function formatLogArgs(...args: unknown[]): string {
   return args
-    .map((a) => (typeof a === "object" && a !== null ? JSON.stringify(a) : String(a)))
+    .map((a) => {
+      if (a instanceof Error) {
+        return a.stack ?? `${a.name}: ${a.message}`;
+      }
+      if (typeof a === "bigint") return `${a}n`;
+      if (typeof a === "symbol") return a.toString();
+      if (typeof a === "function") return `[Function: ${a.name || "anonymous"}]`;
+      if (typeof a === "object" && a !== null) {
+        try {
+          return JSON.stringify(a, errorReplacer);
+        } catch {
+          return String(a);
+        }
+      }
+      return String(a);
+    })
     .join(" ");
 }
 

@@ -383,7 +383,7 @@ export function importIsfSourceFromFile(
     downloadUrl: undefined,
     isBundled: false,
     isInstalled: true,
-    license: "MIT",
+    license: "Unknown",
     sourceUrl: `local://isf/${slugify(shaderName)}`,
   };
 

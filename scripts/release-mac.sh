@@ -2,7 +2,7 @@
 set -e
 cd "$(dirname "$0")/.."
 VERSION=$(node -p "require('./package.json').version")
-APP=src-tauri/target/release/bundle/macOS/FlexMap.app
+APP=src-tauri/target/release/bundle/macos/FlexMap.app
 ZIP=FlexMap-macOS-${VERSION}.zip
 
 if [[ ! -d "$APP" ]]; then
