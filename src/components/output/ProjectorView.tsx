@@ -62,7 +62,7 @@ function ProjectorView() {
     height: window.innerHeight,
     dpr: window.devicePixelRatio || 1,
   }));
-  const framePollIntervalMs = readPerformanceProfile() === "max_fps" ? 66 : 50;
+  const framePollIntervalMs = readPerformanceProfile() === "max_fps" ? 50 : 66;
   // Cache of decoded ImageData per layer
   const frameCache = useRef<Map<string, ImageData>>(new Map());
   // Per-layer offscreen canvases (prevents cross-contamination between layers)

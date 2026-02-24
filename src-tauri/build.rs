@@ -3,11 +3,13 @@ fn main() {
 
     // Build Syphon.framework BEFORE tauri_build::build() — Tauri validates
     // the framework path from tauri.conf.json and will fail if it doesn't exist.
-    #[cfg(all(target_os = "macos", feature = "input-syphon"))]
-    {
-        if target_os == "macos" {
-            build_syphon_framework();
-        }
+    //
+    // Note: #[cfg(feature)] checks the feature at compile time (works in build.rs),
+    // but target_os checks the *host* OS in build.rs. We use CARGO_CFG_TARGET_OS
+    // (the env var) to correctly gate on the *target* OS for cross-compilation.
+    #[cfg(feature = "input-syphon")]
+    if target_os == "macos" {
+        build_syphon_framework();
     }
 
     tauri_build::build();
@@ -18,22 +20,20 @@ fn main() {
     // so it ALWAYS compiles — no framework needed at build time.
     // build_syphon_framework() above ensures the framework binary exists
     // so that dlopen() succeeds on first launch.
-    #[cfg(all(target_os = "macos", feature = "input-syphon"))]
-    {
-        if target_os == "macos" {
-            cc::Build::new()
-                .file("src/input/syphon/bridge.m")
-                .include("src/input/syphon") // find bridge.h
-                .flag("-fobjc-arc")          // use ARC
-                .compile("syphon_bridge");
+    #[cfg(feature = "input-syphon")]
+    if target_os == "macos" {
+        cc::Build::new()
+            .file("src/input/syphon/bridge.m")
+            .include("src/input/syphon") // find bridge.h
+            .flag("-fobjc-arc")          // use ARC
+            .compile("syphon_bridge");
 
-            // Link system frameworks (Metal + Foundation are always available)
-            println!("cargo:rustc-link-lib=framework=Metal");
-            println!("cargo:rustc-link-lib=framework=Foundation");
+        // Link system frameworks (Metal + Foundation are always available)
+        println!("cargo:rustc-link-lib=framework=Metal");
+        println!("cargo:rustc-link-lib=framework=Foundation");
 
-            println!("cargo:rerun-if-changed=src/input/syphon/bridge.m");
-            println!("cargo:rerun-if-changed=src/input/syphon/bridge.h");
-        }
+        println!("cargo:rerun-if-changed=src/input/syphon/bridge.m");
+        println!("cargo:rerun-if-changed=src/input/syphon/bridge.h");
     }
 }
 

@@ -213,7 +213,7 @@ function EditorCanvas() {
     setLayerInputTransform, toggleEditorSelectionMode,
     performanceProfile,
   } = useAppStore();
-  const editorPreviewIntervalMs = performanceProfile === "max_fps" ? 100 : 66;
+  const editorPreviewIntervalMs = performanceProfile === "max_fps" ? 66 : 100;
   const effectiveSelectedIds = selectedLayerIds.length > 0
     ? selectedLayerIds
     : selectedLayerId
@@ -303,6 +303,7 @@ function EditorCanvas() {
   const geometryInFlightRef = useRef(false);
   const geometryRafRef = useRef<number | null>(null);
   const deltaFallbackWarnedRef = useRef(false);
+  const previewCursorRef = useRef(0);
 
   // Poll source frames at ~15fps for editor preview (delta transport + consumer gating)
   useEffect(() => {
@@ -313,15 +314,11 @@ function EditorCanvas() {
     let lastDecodeMs = 0;
     let lastFrameCount = 0;
     let lastTotalBytes = 0;
-    let previewCursor = 0;
+
+    // Register as a consumer immediately on mount (not deferred into poll())
+    void tauriInvoke<void>("set_preview_consumers", { editor: true }).catch(() => undefined);
 
     const poll = async () => {
-      try {
-        await tauriInvoke<void>("set_preview_consumers", { editor: true });
-      } catch {
-        // ignore (older backends / browser mocks)
-      }
-
       while (running) {
         const t0 = performance.now();
         try {
@@ -334,12 +331,12 @@ function EditorCanvas() {
           try {
             const delta = await tauriInvoke<PreviewDelta>(
               "poll_all_frames_delta",
-              { cursor: previewCursor }
+              { cursor: previewCursorRef.current }
             );
             tPoll = performance.now();
             if (!running) break;
 
-            previewCursor = delta.cursor ?? previewCursor;
+            previewCursorRef.current = delta.cursor ?? previewCursorRef.current;
 
             if (delta.removed_layer_ids?.length) {
               for (const layerId of delta.removed_layer_ids) {
@@ -439,12 +436,6 @@ function EditorCanvas() {
         }
 
         await new Promise((r) => setTimeout(r, editorPreviewIntervalMs));
-      }
-
-      try {
-        await tauriInvoke<void>("set_preview_consumers", { editor: false });
-      } catch {
-        // ignore
       }
     };
 

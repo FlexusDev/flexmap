@@ -513,7 +513,10 @@ impl WorkerState {
             self.state.beat = (self.state.beat * (1.0 - attack) + attack).clamp(0.0, 1.0);
             self.beat_decay = 1.0;
         } else {
-            self.beat_decay *= decay.powf((dt * 60.0).max(1.0));
+            // Frame-rate-independent decay: raise decay-per-tick (tuned for 60Hz)
+            // to a dt-proportional exponent so behaviour is consistent regardless
+            // of actual tick rate.  At 60Hz dt≈0.0167 → exponent≈1.0.
+            self.beat_decay *= decay.powf(dt * 60.0);
             self.state.beat = self.beat_decay.clamp(0.0, 1.0);
         }
 
@@ -552,11 +555,11 @@ impl WorkerState {
     }
 }
 
-fn device_id(index: usize, name: &str) -> String {
-    let normalized = name
-        .to_ascii_lowercase()
-        .replace(|c: char| !c.is_ascii_alphanumeric(), "-");
-    format!("{}-{}", index, normalized)
+fn device_id(_index: usize, name: &str) -> String {
+    // Use only the normalized device name for a stable ID that survives
+    // device enumeration order changes (e.g. unplug/replug).
+    name.to_ascii_lowercase()
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "-")
 }
 
 fn normalize_bpm_config(mut config: BpmConfig) -> BpmConfig {
