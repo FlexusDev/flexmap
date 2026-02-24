@@ -40,6 +40,56 @@ pub struct SourceInfo {
     pub fps: Option<f64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledShaderSource {
+    pub id: String,
+    pub name: String,
+    pub seed: u32,
+    #[serde(default)]
+    pub source_hash: Option<String>,
+    #[serde(default)]
+    pub installed_at: Option<String>,
+    #[serde(default)]
+    pub source_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BpmRuntimeSnapshot {
+    pub bpm: f32,
+    pub beat: f32,
+    pub level: f32,
+    pub phase: f32,
+}
+
+impl Default for BpmRuntimeSnapshot {
+    fn default() -> Self {
+        Self {
+            bpm: 120.0,
+            beat: 0.0,
+            level: 0.0,
+            phase: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerBeatModulation {
+    pub beat_reactive: bool,
+    pub beat_amount: f32,
+}
+
+impl Default for LayerBeatModulation {
+    fn default() -> Self {
+        Self {
+            beat_reactive: false,
+            beat_amount: 0.0,
+        }
+    }
+}
+
 /// Source connection state
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +192,20 @@ pub trait InputBackend: Send + Sync {
     fn remove_source(&mut self, _source_id: &str) -> bool {
         false
     }
+
+    /// Replace currently installed shader sources for backends that support it.
+    /// Default: no-op.
+    fn set_installed_sources(&mut self, _sources: Vec<InstalledShaderSource>) {}
+
+    /// Push per-source modulation values (beat/bpm driven).
+    /// Default: no-op.
+    fn set_frame_modulation(
+        &mut self,
+        _source_id: &str,
+        _bpm: BpmRuntimeSnapshot,
+        _layer: LayerBeatModulation,
+    ) {
+    }
 }
 
 /// Manages all available input backends and active connections.
@@ -152,6 +216,8 @@ pub struct InputManager {
     backends: Vec<Box<dyn InputBackend>>,
     /// Maps layer_id -> source_id
     layer_bindings: HashMap<String, String>,
+    layer_modulation: HashMap<String, LayerBeatModulation>,
+    bpm_snapshot: BpmRuntimeSnapshot,
 }
 
 impl InputManager {
@@ -162,11 +228,15 @@ impl InputManager {
         backends.push(Box::new(super::test_pattern::TestPatternBackend::new()));
         log::info!("Test pattern input backend registered");
 
+        // Built-in shader backend (procedural effects)
+        backends.push(Box::new(super::shader::ShaderPatternBackend::new()));
+        log::info!("Shader input backend registered");
+
         // Media file backend is always available (loads images as sources)
         backends.push(Box::new(super::media::MediaFileBackend::new()));
         log::info!("Media file input backend registered");
 
-        #[cfg(feature = "input-syphon")]
+        #[cfg(all(feature = "input-syphon", target_os = "macos"))]
         {
             let syphon = super::syphon::SyphonBackend::new();
             backends.push(Box::new(syphon));
@@ -183,6 +253,8 @@ impl InputManager {
         Self {
             backends,
             layer_bindings: HashMap::new(),
+            layer_modulation: HashMap::new(),
+            bpm_snapshot: BpmRuntimeSnapshot::default(),
         }
     }
 
@@ -282,15 +354,22 @@ impl InputManager {
                 }
             }
         }
+        self.layer_modulation.remove(layer_id);
     }
 
     /// Poll a frame for a specific layer (based on its binding).
     /// Returns None if the layer has no source or no new frame.
     pub fn poll_frame_for_layer(&mut self, layer_id: &str) -> Option<FramePacket> {
         let source_id = self.layer_bindings.get(layer_id)?.clone();
+        let modulation = self
+            .layer_modulation
+            .get(layer_id)
+            .copied()
+            .unwrap_or_default();
 
         for backend in &mut self.backends {
             if backend.is_source_active(&source_id) {
+                backend.set_frame_modulation(&source_id, self.bpm_snapshot, modulation);
                 return backend.poll_frame_for_source(&source_id);
             }
         }
@@ -335,6 +414,7 @@ impl InputManager {
 
         for layer_id in affected_layers {
             self.layer_bindings.remove(&layer_id);
+            self.layer_modulation.remove(&layer_id);
             log::info!("Auto-unbound layer {} from removed source {}", layer_id, source_id);
         }
 
@@ -344,6 +424,40 @@ impl InputManager {
             }
         }
         false
+    }
+
+    /// Sync installed shader source list into the shader backend.
+    pub fn set_installed_shaders(&mut self, sources: Vec<InstalledShaderSource>) -> usize {
+        let count = sources.len();
+        log::info!("Shader backend sync: {} installed source(s)", count);
+        for backend in &mut self.backends {
+            if backend.protocol_name() == "shader" {
+                backend.set_installed_sources(sources.clone());
+            }
+        }
+
+        // Drop bindings to sources that no longer exist.
+        let available: std::collections::HashSet<String> = self
+            .backends
+            .iter()
+            .flat_map(|b| b.list_sources())
+            .map(|s| s.id)
+            .collect();
+        self.layer_bindings
+            .retain(|_, source_id| available.contains(source_id));
+        self.layer_modulation
+            .retain(|layer_id, _| self.layer_bindings.contains_key(layer_id));
+
+        count
+    }
+
+    pub fn set_bpm_snapshot(&mut self, snapshot: BpmRuntimeSnapshot) {
+        self.bpm_snapshot = snapshot;
+    }
+
+    pub fn set_layer_modulation(&mut self, layer_id: &str, modulation: LayerBeatModulation) {
+        self.layer_modulation
+            .insert(layer_id.to_string(), modulation);
     }
 
     /// Check if any layer bindings point to sources that are not currently active.

@@ -71,6 +71,10 @@ Every mutation command in `commands.rs` must:
 - `npm run dev` for frontend-only testing with mock backend
 - Always verify `cargo build` passes before asking user to test
 
+### Logging
+- Backend: noisier modules (adapter, syphon, test_pattern, shader, projector, commands) default to `warn`; high-frequency lines (frame pump, check_syphon_status, GPU fps) use `debug!`. Use `RUST_LOG=debug` to restore full verbosity (Syphon scans, FPS, bind/unbind, etc.) when debugging.
+- Frontend: `tauri-plugin-log` with `attachConsole()` in main.tsx pipes `console` (log/warn/error) to the same terminal as the Rust process when running in Tauri.
+
 ## PRD Milestones Status
 
 - **A: Core Shell** — Done (Tauri scaffolding, dual windows, persistence, autosave)

@@ -5,6 +5,7 @@ import type {
   Point2D,
   LayerGeometry,
   FrameSnapshot,
+  PreviewDelta,
   BlendMode,
   InputTransform,
   UvAdjustment,
@@ -210,7 +211,9 @@ function EditorCanvas() {
     updateLayerPoint, applyGeometryTransformDelta,
     beginInteraction, setEditorPerf, snapEnabled, editorSelectionMode,
     setLayerInputTransform, toggleEditorSelectionMode,
+    performanceProfile,
   } = useAppStore();
+  const editorPreviewIntervalMs = performanceProfile === "max_fps" ? 100 : 66;
   const effectiveSelectedIds = selectedLayerIds.length > 0
     ? selectedLayerIds
     : selectedLayerId
@@ -299,8 +302,9 @@ function EditorCanvas() {
   } | null>(null);
   const geometryInFlightRef = useRef(false);
   const geometryRafRef = useRef<number | null>(null);
+  const deltaFallbackWarnedRef = useRef(false);
 
-  // Poll source frames at ~15fps for editor preview (non-overlapping)
+  // Poll source frames at ~15fps for editor preview (delta transport + consumer gating)
   useEffect(() => {
     let running = true;
     let fpsFrames = 0;
@@ -309,40 +313,106 @@ function EditorCanvas() {
     let lastDecodeMs = 0;
     let lastFrameCount = 0;
     let lastTotalBytes = 0;
+    let previewCursor = 0;
 
     const poll = async () => {
+      try {
+        await tauriInvoke<void>("set_preview_consumers", { editor: true });
+      } catch {
+        // ignore (older backends / browser mocks)
+      }
+
       while (running) {
         const t0 = performance.now();
         try {
-          const frames = await tauriInvoke<Record<string, FrameSnapshot>>(
-            "poll_all_frames"
-          );
-          const tPoll = performance.now();
-          if (!running) break;
+          const cache = frameCache.current;
+          let tPoll = 0;
+          let bytes = 0;
+          let changed = false;
+          let frameCount = 0;
 
-          if (frames && Object.keys(frames).length > 0) {
-            const cache = frameCache.current;
-            let bytes = 0;
-            const entries = Object.entries(frames);
-            const decoded = await Promise.all(
-              entries.map(async ([, snapshot]) => {
-                const arr = await decodeBase64Fast(snapshot.data_b64);
-                return arr;
-              })
+          try {
+            const delta = await tauriInvoke<PreviewDelta>(
+              "poll_all_frames_delta",
+              { cursor: previewCursor }
             );
-            for (let i = 0; i < entries.length; i++) {
-              const [layerId, snapshot] = entries[i];
-              const arr = decoded[i];
-              bytes += arr.length;
-              cache.set(layerId, new ImageData(arr, snapshot.width, snapshot.height));
+            tPoll = performance.now();
+            if (!running) break;
+
+            previewCursor = delta.cursor ?? previewCursor;
+
+            if (delta.removed_layer_ids?.length) {
+              for (const layerId of delta.removed_layer_ids) {
+                cache.delete(layerId);
+                tmpCanvasMap.current.delete(layerId);
+                lastFrameGenMap.current.delete(layerId);
+                warpCacheMap.current.delete(layerId);
+              }
+              changed = true;
             }
-            const tDecode = performance.now();
 
-            lastPollMs = tPoll - t0;
-            lastDecodeMs = tDecode - tPoll;
-            lastFrameCount = Object.keys(frames).length;
-            lastTotalBytes = bytes;
+            const entries = Object.entries(delta.changed ?? {});
+            frameCount = entries.length;
+            if (entries.length > 0) {
+              const decoded = await Promise.all(
+                entries.map(async ([, snapshot]) => decodeBase64Fast(snapshot.data_b64))
+              );
+              for (let i = 0; i < entries.length; i++) {
+                const [layerId, snapshot] = entries[i];
+                const arr = decoded[i];
+                bytes += arr.length;
+                cache.set(layerId, new ImageData(arr, snapshot.width, snapshot.height));
+              }
+              changed = true;
+            }
+          } catch (deltaError) {
+            if (!deltaFallbackWarnedRef.current) {
+              deltaFallbackWarnedRef.current = true;
+              console.warn(
+                "[Preview] poll_all_frames_delta failed; falling back to poll_all_frames",
+                deltaError
+              );
+            }
 
+            const frames = await tauriInvoke<Record<string, FrameSnapshot>>("poll_all_frames");
+            tPoll = performance.now();
+            if (!running) break;
+
+            const entries = Object.entries(frames ?? {});
+            frameCount = entries.length;
+            const nextLayerIdSet = new Set(entries.map(([layerId]) => layerId));
+            const staleLayerIds = [...cache.keys()].filter((layerId) => !nextLayerIdSet.has(layerId));
+            if (staleLayerIds.length > 0) {
+              for (const layerId of staleLayerIds) {
+                cache.delete(layerId);
+                tmpCanvasMap.current.delete(layerId);
+                lastFrameGenMap.current.delete(layerId);
+                warpCacheMap.current.delete(layerId);
+              }
+              changed = true;
+            }
+
+            if (entries.length > 0) {
+              const decoded = await Promise.all(
+                entries.map(async ([, snapshot]) => decodeBase64Fast(snapshot.data_b64))
+              );
+              for (let i = 0; i < entries.length; i++) {
+                const [layerId, snapshot] = entries[i];
+                const arr = decoded[i];
+                bytes += arr.length;
+                cache.set(layerId, new ImageData(arr, snapshot.width, snapshot.height));
+              }
+              changed = true;
+            }
+          }
+
+          const tDecode = performance.now();
+          lastPollMs = tPoll - t0;
+          lastDecodeMs = tDecode - tPoll;
+          lastFrameCount = frameCount;
+          lastTotalBytes = bytes;
+
+          if (changed) {
             frameTick.current += 1;
             setFrameTickState((t) => t + 1);
           }
@@ -368,13 +438,28 @@ function EditorCanvas() {
           fpsLastTime = performance.now();
         }
 
-        await new Promise((r) => setTimeout(r, 33));
+        await new Promise((r) => setTimeout(r, editorPreviewIntervalMs));
+      }
+
+      try {
+        await tauriInvoke<void>("set_preview_consumers", { editor: false });
+      } catch {
+        // ignore
       }
     };
 
     poll();
-    return () => { running = false; };
-  }, [setEditorPerf]);
+    return () => {
+      running = false;
+      frameCache.current.clear();
+      tmpCanvasMap.current.clear();
+      lastFrameGenMap.current.clear();
+      warpCacheMap.current.clear();
+      void tauriInvoke<void>("set_preview_consumers", { editor: false }).catch(
+        () => undefined
+      );
+    };
+  }, [setEditorPerf, editorPreviewIntervalMs]);
 
   useEffect(() => {
     return () => {

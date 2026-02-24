@@ -4,9 +4,12 @@ import type {
   CalibrationConfig,
   Layer,
   FrameSnapshot,
+  PreviewDelta,
+  ProjectSnapshotWithRevision,
   BlendMode,
   InputTransform,
   OutputConfig,
+  PerformanceProfile,
 } from "../../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
@@ -26,10 +29,16 @@ async function decodeBase64Fast(b64: string): Promise<Uint8ClampedArray<ArrayBuf
   }
 }
 
+function readPerformanceProfile(): PerformanceProfile {
+  if (typeof window === "undefined") return "max_fps";
+  const raw = window.localStorage.getItem("auramap:performance_profile");
+  return raw === "balanced" ? "balanced" : "max_fps";
+}
+
 /**
  * ProjectorView — rendered in the projector output window.
  *
- * Polls the scene state + source frames at ~30fps and composites
+ * Polls project revisions + frame deltas and composites
  * layers onto a Canvas 2D surface. Layers with connected sources
  * show the actual source pixels; layers without sources show white.
  */
@@ -48,12 +57,20 @@ function ProjectorView() {
     monitor_preference: null,
   });
   const [uiState, setUiState] = useState<unknown>(null);
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+    dpr: window.devicePixelRatio || 1,
+  }));
+  const framePollIntervalMs = readPerformanceProfile() === "max_fps" ? 66 : 50;
   // Cache of decoded ImageData per layer
   const frameCache = useRef<Map<string, ImageData>>(new Map());
   // Per-layer offscreen canvases (prevents cross-contamination between layers)
   const tmpCanvasMap = useRef<Map<string, HTMLCanvasElement>>(new Map());
   // Tick counter to force re-render when frames update
   const [frameTick, setFrameTick] = useState(0);
+  const previewCursorRef = useRef(0);
+  const projectRevisionRef = useRef(0);
 
   useEffect(() => {
     document.body.style.cursor = "none";
@@ -63,6 +80,37 @@ function ProjectorView() {
       document.body.style.cursor = "";
     };
   }, []);
+
+  useEffect(() => {
+    const onResize = () => {
+      const next = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        dpr: window.devicePixelRatio || 1,
+      };
+      setViewport((prev) => (
+        prev.width === next.width
+          && prev.height === next.height
+          && prev.dpr === next.dpr
+      )
+        ? prev
+        : next);
+    };
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const pixelWidth = Math.max(1, Math.floor(viewport.width * viewport.dpr));
+    const pixelHeight = Math.max(1, Math.floor(viewport.height * viewport.dpr));
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+    canvas.style.width = `${viewport.width}px`;
+    canvas.style.height = `${viewport.height}px`;
+  }, [viewport]);
 
   // Decode base64 RGBA to ImageData (async, uses fast path)
   const decodeFrame = useCallback(
@@ -85,7 +133,49 @@ function ProjectorView() {
     }
   }, []);
 
-  // Poll scene + frames at ~30fps (non-overlapping: waits for each cycle to finish)
+  useEffect(() => {
+    void tauriInvoke<void>("set_preview_consumers", { projector_fallback: true }).catch(
+      () => undefined
+    );
+    return () => {
+      void tauriInvoke<void>("set_preview_consumers", { projector_fallback: false }).catch(
+        () => undefined
+      );
+    };
+  }, []);
+
+  // Poll project state at 4Hz (revision-gated).
+  useEffect(() => {
+    let running = true;
+    const pollProject = async () => {
+      while (running) {
+        try {
+          const next = await tauriInvoke<ProjectSnapshotWithRevision | null>(
+            "get_project_if_changed",
+            { revision: projectRevisionRef.current }
+          );
+          if (!running) break;
+          if (next) {
+            projectRevisionRef.current = next.revision;
+            setLayers(next.project.layers);
+            setCalibration(next.project.calibration);
+            setOutput(next.project.output);
+            setUiState(next.project.uiState ?? null);
+            setSceneReady(true);
+          }
+        } catch {
+          // ignore
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    };
+    pollProject();
+    return () => {
+      running = false;
+    };
+  }, []);
+
+  // Poll frame deltas at 20fps (non-overlapping: waits for each cycle to finish)
   useEffect(() => {
     let running = true;
     let fpsFrames = 0;
@@ -95,39 +185,34 @@ function ProjectorView() {
     let lastFrameCount = 0;
     let lastTotalBytes = 0;
 
-    const poll = async () => {
+    const pollFrames = async () => {
       while (running) {
         const t0 = performance.now();
         try {
-          // Fetch project state and frames in parallel
-          const [project, frames] = await Promise.all([
-            tauriInvoke<{
-              layers: Layer[];
-              calibration: CalibrationConfig;
-              output: OutputConfig;
-              uiState: unknown;
-            }>("get_project"),
-            tauriInvoke<Record<string, FrameSnapshot>>("poll_all_frames"),
-          ]);
+          const delta = await tauriInvoke<PreviewDelta>(
+            "poll_all_frames_delta",
+            { cursor: previewCursorRef.current }
+          );
           const tPoll = performance.now();
-
           if (!running) break;
 
-          if (project) {
-            setLayers(project.layers);
-            setCalibration(project.calibration);
-            setOutput(project.output);
-            setUiState(project.uiState ?? null);
-            if (!sceneReady) setSceneReady(true);
+          previewCursorRef.current = delta.cursor ?? previewCursorRef.current;
+          const cache = frameCache.current;
+          let bytes = 0;
+          let changed = false;
+
+          if (delta.removed_layer_ids?.length) {
+            for (const layerId of delta.removed_layer_ids) {
+              cache.delete(layerId);
+              tmpCanvasMap.current.delete(layerId);
+            }
+            changed = true;
           }
 
-          if (frames && Object.keys(frames).length > 0) {
-            const cache = frameCache.current;
-            let bytes = 0;
-            const entries = Object.entries(frames);
-            // Decode all frames in parallel using the fast path
+          const entries = Object.entries(delta.changed ?? {});
+          if (entries.length > 0) {
             const decoded = await Promise.all(
-              entries.map(([, snapshot]) => decodeFrame(snapshot))
+              entries.map(async ([, snapshot]) => decodeFrame(snapshot))
             );
             for (let i = 0; i < entries.length; i++) {
               const [layerId] = entries[i];
@@ -135,18 +220,21 @@ function ProjectorView() {
               bytes += img.data.length;
               cache.set(layerId, img);
             }
-            const tDecode = performance.now();
-            lastPollMs = tPoll - t0;
-            lastDecodeMs = tDecode - tPoll;
-            lastFrameCount = Object.keys(frames).length;
-            lastTotalBytes = bytes;
+            changed = true;
+          }
+
+          const tDecode = performance.now();
+          lastPollMs = tPoll - t0;
+          lastDecodeMs = tDecode - tPoll;
+          lastFrameCount = entries.length;
+          lastTotalBytes = bytes;
+          if (changed) {
             setFrameTick((t) => t + 1);
           }
         } catch {
-          // Ignore polling errors
+          // ignore
         }
 
-        // Update perf stats every second, emit to main window
         const frametime = performance.now() - t0;
         fpsFrames++;
         const elapsed = performance.now() - fpsLastTime;
@@ -164,15 +252,17 @@ function ProjectorView() {
           fpsLastTime = performance.now();
         }
 
-        await new Promise((r) => setTimeout(r, 33));
+        await new Promise((r) => setTimeout(r, framePollIntervalMs));
       }
     };
 
-    poll();
+    pollFrames();
     return () => {
       running = false;
+      frameCache.current.clear();
+      tmpCanvasMap.current.clear();
     };
-  }, [decodeFrame, sceneReady, emitPerf]);
+  }, [decodeFrame, emitPerf, framePollIntervalMs]);
 
   // Draw
   useEffect(() => {
@@ -181,14 +271,9 @@ function ProjectorView() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
-    ctx.scale(dpr, dpr);
+    const w = viewport.width;
+    const h = viewport.height;
+    ctx.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
 
     const aspectState = resolveAspectRatioUiState(uiState, output);
     const viewRect = fitAspectViewport(
@@ -211,8 +296,6 @@ function ProjectorView() {
       ctx.arc(w / 2, h / 2, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1;
-      // Request another paint for the animation
-      requestAnimationFrame(() => setLayers((l) => [...l]));
     } else {
       ctx.save();
       ctx.beginPath();
@@ -226,7 +309,7 @@ function ProjectorView() {
       }
       ctx.restore();
     }
-  }, [layers, calibration, sceneReady, frameTick, output, uiState]);
+  }, [layers, calibration, sceneReady, frameTick, output, uiState, viewport]);
 
   return (
     <canvas

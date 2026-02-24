@@ -1,16 +1,17 @@
 //! Tauri IPC commands — control actions from the React UI to Rust backend
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::scene::layer::*;
 use crate::scene::project::*;
 use crate::scene::state::SceneState;
+use crate::audio::{AudioInputDevice, BpmConfig, BpmState, BpmEngine};
 use crate::persistence;
-use crate::input::adapter::SourceInfo;
+use crate::input::adapter::{InstalledShaderSource, SourceInfo};
 use crate::renderer::engine::RenderState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{Manager, State, Size, PhysicalSize, WebviewUrl, webview::WebviewWindowBuilder};
+use tauri::{Emitter, Manager, State, Size, PhysicalSize, WebviewUrl, webview::WebviewWindowBuilder};
 use tauri::window::WindowBuilder;
 use crate::renderer::projector::GpuProjector;
 
@@ -22,6 +23,31 @@ fn sync_render_state(scene: &SceneState, render: &Arc<RenderState>) {
 }
 
 static PROJECTOR_RESIZE_ADJUSTING: AtomicBool = AtomicBool::new(false);
+
+#[derive(Serialize, Clone, Copy)]
+pub struct ProjectorWindowState {
+    pub open: bool,
+    pub gpu_native: bool,
+}
+
+fn current_projector_window_state(app: &tauri::AppHandle) -> ProjectorWindowState {
+    let native_open = app.get_window("projector").is_some();
+    let webview_open = app.get_webview_window("projector").is_some();
+    let gpu_running = app
+        .try_state::<Arc<parking_lot::Mutex<GpuProjector>>>()
+        .map(|projector| projector.lock().is_running())
+        .unwrap_or(false);
+
+    ProjectorWindowState {
+        open: native_open || webview_open || gpu_running,
+        gpu_native: gpu_running && native_open,
+    }
+}
+
+fn emit_projector_window_state(app: &tauri::AppHandle) {
+    let state = current_projector_window_state(app);
+    let _ = app.emit("projector-window-state", state);
+}
 
 const COMMON_ASPECT_RATIOS: [(&str, u32, u32); 11] = [
     ("1:1", 1, 1),
@@ -201,6 +227,7 @@ pub async fn open_projector_window(
         if projector_running {
             let _ = win.show();
             let _ = win.set_focus();
+            emit_projector_window_state(&app);
             log::info!("GPU projector already running");
             return Ok(());
         }
@@ -230,6 +257,7 @@ pub async fn open_projector_window(
     if let Some(win) = app.get_webview_window("projector") {
         win.show().map_err(|e| e.to_string())?;
         win.set_focus().map_err(|e| e.to_string())?;
+        emit_projector_window_state(&app);
         return Ok(());
     }
 
@@ -328,16 +356,19 @@ pub async fn open_projector_window(
                         tauri::WindowEvent::CloseRequested { .. } => {
                             let p = resize_app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
                             p.lock().stop();
+                            emit_projector_window_state(&resize_app);
                             log::info!("GPU projector stopped via window close");
                         }
                         tauri::WindowEvent::Destroyed => {
                             let p = resize_app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
                             p.lock().stop();
+                            emit_projector_window_state(&resize_app);
                         }
                         _ => {}
                     }
                 });
 
+                emit_projector_window_state(&app_handle);
                 log::info!("GPU-native projector window opened ({}x{})", width, height);
                 Ok(())
             })();
@@ -375,6 +406,7 @@ pub async fn open_projector_window(
     let _ = ensure_main_window_resizable(&app);
     let _ = apply_projector_aspect_lock(&app, &state);
 
+    emit_projector_window_state(&app);
     log::info!("Webview projector window opened (GPU fallback)");
     Ok(())
 }
@@ -394,7 +426,14 @@ pub async fn close_projector_window(app: tauri::AppHandle) -> Result<(), String>
     } else if let Some(win) = app.get_webview_window("projector") {
         win.close().map_err(|e| e.to_string())?;
     }
+
+    emit_projector_window_state(&app);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_projector_window_state(app: tauri::AppHandle) -> Result<ProjectorWindowState, String> {
+    Ok(current_projector_window_state(&app))
 }
 
 #[tauri::command]
@@ -893,6 +932,52 @@ pub async fn refresh_sources(
     Ok(input.write().refresh_all_sources())
 }
 
+/// Sync installed shader descriptors (from local library) into the shader backend.
+#[tauri::command]
+pub async fn set_installed_shader_sources(
+    sources: Vec<InstalledShaderSource>,
+    input: State<'_, Arc<parking_lot::RwLock<crate::input::adapter::InputManager>>>,
+) -> Result<usize, String> {
+    Ok(input.write().set_installed_shaders(sources))
+}
+
+#[tauri::command]
+pub async fn list_audio_input_devices(
+    bpm: State<'_, Arc<parking_lot::Mutex<BpmEngine>>>,
+) -> Result<Vec<AudioInputDevice>, String> {
+    Ok(bpm.lock().list_input_devices())
+}
+
+#[tauri::command]
+pub async fn set_audio_input_device(
+    device_id: String,
+    bpm: State<'_, Arc<parking_lot::Mutex<BpmEngine>>>,
+) -> Result<BpmState, String> {
+    bpm.lock().set_audio_input_device(&device_id)
+}
+
+#[tauri::command]
+pub async fn set_bpm_config(
+    config: BpmConfig,
+    bpm: State<'_, Arc<parking_lot::Mutex<BpmEngine>>>,
+) -> Result<BpmState, String> {
+    bpm.lock().set_bpm_config(config)
+}
+
+#[tauri::command]
+pub async fn get_bpm_state(
+    bpm: State<'_, Arc<parking_lot::Mutex<BpmEngine>>>,
+) -> Result<BpmState, String> {
+    Ok(bpm.lock().get_bpm_state())
+}
+
+#[tauri::command]
+pub async fn tap_tempo(
+    bpm: State<'_, Arc<parking_lot::Mutex<BpmEngine>>>,
+) -> Result<BpmState, String> {
+    Ok(bpm.lock().tap_tempo())
+}
+
 /// Register a media file (image) as an available source.
 /// The frontend calls this after the user picks a file via the native file dialog.
 #[tauri::command]
@@ -1007,7 +1092,7 @@ pub async fn check_syphon_status() -> Result<SyphonStatus, String> {
                 .to_string()
         };
 
-        log::info!(
+        log::debug!(
             "check_syphon_status: compiled={} available={} paths={:?}",
             bridge_compiled,
             bridge_available,
@@ -1130,7 +1215,7 @@ pub async fn sync_main_window_aspect(
 
 /// Max preview dimension — frames are downscaled to this before base64 encoding.
 /// Keeps IPC payload small (~40KB instead of ~1.2MB per frame).
-pub(crate) const PREVIEW_MAX_DIM: u32 = 160;
+pub(crate) const PREVIEW_MAX_DIM: u32 = 96;
 
 /// Response carrying a frame snapshot for the frontend to paint
 #[derive(Serialize, Clone)]
@@ -1141,19 +1226,54 @@ pub struct FrameSnapshot {
     pub data_b64: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PreviewConsumers {
+    pub editor: bool,
+    pub projector_fallback: bool,
+}
+
+impl Default for PreviewConsumers {
+    fn default() -> Self {
+        Self {
+            editor: false,
+            projector_fallback: false,
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+pub struct PreviewDelta {
+    pub cursor: u64,
+    pub removed_layer_ids: Vec<String>,
+    pub changed: std::collections::HashMap<String, Arc<FrameSnapshot>>,
+}
+
 /// Shared preview frame cache — populated by the frame pump thread,
 /// read by poll_all_frames. Uses Arc<FrameSnapshot> so cloning the map
 /// for IPC is a refcount bump (~16 bytes) instead of deep-cloning ~76KB
 /// base64 strings per source.
 pub struct PreviewCache {
     pub frames: parking_lot::RwLock<std::collections::HashMap<String, Arc<FrameSnapshot>>>,
+    pub frame_versions: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    pub removed_versions: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    pub cursor: AtomicU64,
+    pub consumers: parking_lot::RwLock<PreviewConsumers>,
 }
 
 impl PreviewCache {
     pub fn new() -> Self {
         Self {
             frames: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            frame_versions: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            removed_versions: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            cursor: AtomicU64::new(1),
+            consumers: parking_lot::RwLock::new(PreviewConsumers::default()),
         }
+    }
+
+    pub fn has_consumers(&self) -> bool {
+        let consumers = self.consumers.read();
+        consumers.editor || consumers.projector_fallback
     }
 }
 
@@ -1253,6 +1373,86 @@ pub async fn poll_all_frames(
 ) -> Result<std::collections::HashMap<String, Arc<FrameSnapshot>>, String> {
     let frames = cache.frames.read();
     Ok(frames.clone())
+}
+
+#[tauri::command]
+pub async fn poll_all_frames_delta(
+    cursor: u64,
+    cache: State<'_, Arc<PreviewCache>>,
+) -> Result<PreviewDelta, String> {
+    let current_cursor = cache.cursor.load(Ordering::Acquire);
+    let frames = cache.frames.read();
+    let frame_versions = cache.frame_versions.read();
+    let removed_versions = cache.removed_versions.read();
+
+    let mut changed = std::collections::HashMap::new();
+    for (layer_id, version) in frame_versions.iter() {
+        if *version > cursor {
+            if let Some(snapshot) = frames.get(layer_id) {
+                changed.insert(layer_id.clone(), snapshot.clone());
+            }
+        }
+    }
+
+    let removed_layer_ids = removed_versions
+        .iter()
+        .filter_map(|(layer_id, version)| {
+            if *version > cursor {
+                Some(layer_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(PreviewDelta {
+        cursor: current_cursor,
+        removed_layer_ids,
+        changed,
+    })
+}
+
+#[tauri::command]
+pub async fn set_preview_consumers(
+    editor: Option<bool>,
+    projector_fallback: Option<bool>,
+    cache: State<'_, Arc<PreviewCache>>,
+) -> Result<PreviewConsumers, String> {
+    {
+        let mut consumers = cache.consumers.write();
+        if let Some(v) = editor {
+            consumers.editor = v;
+        }
+        if let Some(v) = projector_fallback {
+            consumers.projector_fallback = v;
+        }
+    }
+
+    // Keep frame/versions cache warm when consumers toggle off.
+    // Stale entry cleanup is handled by the frame pump using current layer bindings.
+    Ok(*cache.consumers.read())
+}
+
+#[derive(Serialize, Clone)]
+pub struct ProjectSnapshotWithRevision {
+    pub revision: u64,
+    pub project: ProjectFile,
+}
+
+#[tauri::command]
+pub async fn get_project_if_changed(
+    revision: u64,
+    state: State<'_, SceneState>,
+) -> Result<Option<ProjectSnapshotWithRevision>, String> {
+    let current = state.revision();
+    if current <= revision {
+        return Ok(None);
+    }
+
+    Ok(Some(ProjectSnapshotWithRevision {
+        revision: current,
+        project: state.get_project_snapshot(),
+    }))
 }
 
 // =============================================================================

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { tauriInvoke } from "../lib/tauri-bridge";
+import { getInstalledShaderDescriptors } from "../lib/shader-library";
 import type {
   Layer,
   LayerGeometry,
@@ -18,6 +19,12 @@ import type {
   InputTransform,
   Point2D,
   EditorSelectionMode,
+  InstalledShaderSourceDescriptor,
+  PerformanceProfile,
+  ProjectorWindowState,
+  AudioInputDevice,
+  BpmConfig,
+  BpmState,
 } from "../types";
 
 export interface Toast {
@@ -28,6 +35,92 @@ export interface Toast {
 }
 
 let toastCounter = 0;
+let installedShaderSyncFingerprint = "";
+const PERFORMANCE_PROFILE_KEY = "auramap:performance_profile";
+const BPM_CONFIG_KEY = "auramap:bpm_config";
+const BPM_DEVICE_KEY = "auramap:bpm_device";
+
+const DEFAULT_BPM_CONFIG: BpmConfig = {
+  enabled: false,
+  sensitivity: 1.0,
+  gate: 0.28,
+  smoothing: 0.82,
+  attack: 0.85,
+  decay: 0.75,
+  manualBpm: 120,
+};
+
+const DEFAULT_BPM_STATE: BpmState = {
+  bpm: 120,
+  beat: 0,
+  level: 0,
+  phase: 0,
+  running: false,
+  selectedDeviceId: null,
+  selectedDeviceName: null,
+  lastBeatMs: 0,
+};
+
+function readPerformanceProfile(): PerformanceProfile {
+  if (typeof window === "undefined") return "max_fps";
+  const raw = window.localStorage.getItem(PERFORMANCE_PROFILE_KEY);
+  return raw === "balanced" ? "balanced" : "max_fps";
+}
+
+function persistPerformanceProfile(profile: PerformanceProfile): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PERFORMANCE_PROFILE_KEY, profile);
+  } catch {
+    // ignore persistence errors
+  }
+}
+
+function readBpmConfig(): BpmConfig {
+  if (typeof window === "undefined") return { ...DEFAULT_BPM_CONFIG };
+  try {
+    const raw = window.localStorage.getItem(BPM_CONFIG_KEY);
+    if (!raw) return { ...DEFAULT_BPM_CONFIG };
+    const parsed = JSON.parse(raw) as Partial<BpmConfig>;
+    return { ...DEFAULT_BPM_CONFIG, ...parsed };
+  } catch {
+    return { ...DEFAULT_BPM_CONFIG };
+  }
+}
+
+function persistBpmConfig(config: BpmConfig): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(BPM_CONFIG_KEY, JSON.stringify(config));
+  } catch {
+    // ignore persistence errors
+  }
+}
+
+function readSelectedAudioDeviceId(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(BPM_DEVICE_KEY);
+}
+
+function persistSelectedAudioDeviceId(deviceId: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (!deviceId) {
+      window.localStorage.removeItem(BPM_DEVICE_KEY);
+    } else {
+      window.localStorage.setItem(BPM_DEVICE_KEY, deviceId);
+    }
+  } catch {
+    // ignore persistence errors
+  }
+}
+
+function fingerprintInstalledShaders(sources: InstalledShaderSourceDescriptor[]): string {
+  return sources
+    .map((source) => `${source.id}:${source.seed}:${source.sourceHash ?? ""}`)
+    .sort()
+    .join("|");
+}
 
 export interface PerfStats {
   fps: number;
@@ -120,8 +213,13 @@ interface AppState {
 
   // UI state
   projectorWindowOpen: boolean;
+  projectorGpuNative: boolean;
   canUndo: boolean;
   canRedo: boolean;
+  audioInputDevices: AudioInputDevice[];
+  selectedAudioInputId: string | null;
+  bpmConfig: BpmConfig;
+  bpmState: BpmState;
 
   // Toasts
   toasts: Toast[];
@@ -231,6 +329,19 @@ interface AppState {
   // Frame pacing
   framePacingMode: FramePacingMode;
   setFramePacing: (mode: FramePacingMode) => Promise<void>;
+  performanceProfile: PerformanceProfile;
+  setPerformanceProfile: (profile: PerformanceProfile) => void;
+
+  // Projector state sync
+  applyProjectorWindowState: (state: ProjectorWindowState) => void;
+  syncProjectorWindowState: () => Promise<void>;
+
+  // Audio / BPM
+  refreshAudioInputs: () => Promise<void>;
+  setAudioInputDevice: (deviceId: string | null) => Promise<void>;
+  setBpmConfig: (patch: Partial<BpmConfig>) => Promise<void>;
+  refreshBpmState: () => Promise<void>;
+  tapTempo: () => Promise<void>;
 
   // Performance panel
   performancePanelOpen: boolean;
@@ -252,8 +363,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   _sourcesRefreshing: false,
   monitors: [],
   projectorWindowOpen: false,
+  projectorGpuNative: false,
   canUndo: false,
   canRedo: false,
+  audioInputDevices: [],
+  selectedAudioInputId: readSelectedAudioDeviceId(),
+  bpmConfig: readBpmConfig(),
+  bpmState: { ...DEFAULT_BPM_STATE },
 
   toasts: [],
   addToast: (message, type) => {
@@ -275,6 +391,95 @@ export const useAppStore = create<AppState>((set, get) => ({
   projectorPerf: { ...EMPTY_PERF },
   setEditorPerf: (stats) => set({ editorPerf: stats }),
   setProjectorPerf: (stats) => set({ projectorPerf: stats }),
+  performanceProfile: readPerformanceProfile(),
+  setPerformanceProfile: (profile) => {
+    persistPerformanceProfile(profile);
+    set({ performanceProfile: profile });
+  },
+  applyProjectorWindowState: (state) => {
+    set({
+      projectorWindowOpen: state.open,
+      projectorGpuNative: state.gpu_native,
+    });
+  },
+  syncProjectorWindowState: async () => {
+    try {
+      const state = await tauriInvoke<ProjectorWindowState>("get_projector_window_state");
+      get().applyProjectorWindowState(state);
+    } catch {
+      // Keep local state when command unavailable (older backends/browser)
+    }
+  },
+  refreshAudioInputs: async () => {
+    try {
+      const devices = await tauriInvoke<AudioInputDevice[]>("list_audio_input_devices");
+      set({ audioInputDevices: devices });
+
+      const selectedId = get().selectedAudioInputId;
+      const hasSelected = selectedId && devices.some((device) => device.id === selectedId);
+      const fallbackId = devices.find((device) => device.isDefault)?.id ?? devices[0]?.id ?? null;
+      const nextSelectedId = hasSelected ? selectedId : fallbackId;
+
+      if (nextSelectedId && nextSelectedId !== selectedId) {
+        await get().setAudioInputDevice(nextSelectedId);
+      }
+    } catch (e) {
+      console.error("Failed to list audio input devices:", e);
+    }
+  },
+  setAudioInputDevice: async (deviceId) => {
+    if (!deviceId) {
+      set({ selectedAudioInputId: null });
+      persistSelectedAudioDeviceId(null);
+      return;
+    }
+
+    try {
+      const bpmState = await tauriInvoke<BpmState>("set_audio_input_device", { deviceId });
+      set({
+        selectedAudioInputId: deviceId,
+        bpmState,
+      });
+      persistSelectedAudioDeviceId(deviceId);
+    } catch (e) {
+      console.error("Failed to set audio input device:", e);
+      get().addToast("Failed to switch audio input", "error");
+    }
+  },
+  setBpmConfig: async (patch) => {
+    const nextConfig: BpmConfig = { ...get().bpmConfig, ...patch };
+    try {
+      const bpmState = await tauriInvoke<BpmState>("set_bpm_config", { config: nextConfig });
+      set({
+        bpmConfig: nextConfig,
+        bpmState,
+      });
+      persistBpmConfig(nextConfig);
+    } catch (e) {
+      console.error("Failed to set BPM config:", e);
+      get().addToast("Failed to apply BPM settings", "error");
+    }
+  },
+  refreshBpmState: async () => {
+    try {
+      const bpmState = await tauriInvoke<BpmState>("get_bpm_state");
+      set({ bpmState });
+    } catch (e) {
+      console.error("Failed to fetch BPM state:", e);
+    }
+  },
+  tapTempo: async () => {
+    try {
+      const bpmState = await tauriInvoke<BpmState>("tap_tempo");
+      set((s) => ({
+        bpmState,
+        bpmConfig: { ...s.bpmConfig, manualBpm: bpmState.bpm },
+      }));
+      persistBpmConfig({ ...get().bpmConfig, manualBpm: bpmState.bpm });
+    } catch (e) {
+      console.error("Failed to tap tempo:", e);
+    }
+  },
 
   loadProject: async () => {
     try {
@@ -781,12 +986,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   openProjector: async () => {
     try {
       await tauriInvoke<void>("open_projector_window");
-      set({ projectorWindowOpen: true });
+      await get().syncProjectorWindowState();
     } catch (e) {
       const msg = String(e);
       if (msg.includes("already exists")) {
         // Treat duplicate-label errors as non-fatal; projector is effectively open.
-        set({ projectorWindowOpen: true });
+        await get().syncProjectorWindowState();
         return;
       }
       console.error("Failed to open projector:", e);
@@ -797,9 +1002,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeProjector: async () => {
     try {
       await tauriInvoke<void>("close_projector_window");
-      set({ projectorWindowOpen: false });
+      await get().syncProjectorWindowState();
     } catch (e) {
       console.error("Failed to close projector:", e);
+      // Best effort fallback
+      set({ projectorWindowOpen: false, projectorGpuNative: false });
     }
   },
 
@@ -816,6 +1023,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get()._sourcesRefreshing) return;
     set({ _sourcesRefreshing: true });
     try {
+      const installedShaderSources = getInstalledShaderDescriptors();
+      const nextFingerprint = fingerprintInstalledShaders(installedShaderSources);
+      if (nextFingerprint !== installedShaderSyncFingerprint) {
+        try {
+          await tauriInvoke<number>("set_installed_shader_sources", {
+            sources: installedShaderSources,
+          });
+          installedShaderSyncFingerprint = nextFingerprint;
+        } catch (syncErr) {
+          console.error("Failed to sync installed shader sources:", syncErr);
+        }
+      }
       const sources = await tauriInvoke<SourceInfo[]>("refresh_sources");
       set({ sources });
     } catch (e) {
@@ -851,10 +1070,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   connectSource: async (layerId: string, sourceId: string) => {
     try {
+      console.info("[Sources] connect_source request", { layerId, sourceId });
       await tauriInvoke<boolean>("connect_source", { layerId, sourceId });
-      // Refresh the layer list to pick up the source assignment
-      const sources = await tauriInvoke<SourceInfo[]>("list_sources");
-      const source = sources.find((s) => s.id === sourceId);
+      const source = get().sources.find((s) => s.id === sourceId);
       set((s) => ({
         layers: s.layers.map((l) =>
           l.id === layerId
@@ -869,8 +1087,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         isDirty: true,
         canUndo: true,
       }));
+      if (!source) {
+        void get().refreshSources();
+      }
     } catch (e) {
-      console.error("Failed to connect source:", e);
+      console.error("Failed to connect source:", { layerId, sourceId, error: e });
       get().addToast("Failed to connect source", "error");
     }
   },

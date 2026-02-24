@@ -335,6 +335,18 @@ pub struct LayerProperties {
     pub gamma: f64,
     pub opacity: f64,
     pub feather: f64,
+    #[serde(default, rename = "beatReactive", alias = "beat_reactive")]
+    pub beat_reactive: bool,
+    #[serde(
+        default = "default_beat_amount",
+        rename = "beatAmount",
+        alias = "beat_amount"
+    )]
+    pub beat_amount: f64,
+}
+
+fn default_beat_amount() -> f64 {
+    0.0
 }
 
 impl Default for LayerProperties {
@@ -345,6 +357,8 @@ impl Default for LayerProperties {
             gamma: 1.0,
             opacity: 1.0,
             feather: 0.0,
+            beat_reactive: false,
+            beat_amount: 0.0,
         }
     }
 }

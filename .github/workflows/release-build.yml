@@ -1,0 +1,113 @@
+name: Build Portable Releases
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build macOS portable app
+        run: npm run build:portable:mac
+
+      - name: Package macOS portable zip
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          APP="src-tauri/target/release/bundle/macos/FlexMap.app"
+          ZIP="FlexMap-macOS-${VERSION}-portable.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          echo "asset_path=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-portable
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows portable exe
+        run: npm run build:portable:win
+
+      - name: Package Windows portable zip
+        id: package
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          $releaseDir = "src-tauri/target/release"
+          $zip = "FlexMap-Windows-$version-portable.zip"
+          Push-Location $releaseDir
+          $files = @("flexmap.exe")
+          $dlls = Get-ChildItem -Filter *.dll -File -ErrorAction SilentlyContinue
+          foreach ($dll in $dlls) { $files += $dll.Name }
+          Compress-Archive -Path $files -DestinationPath (Join-Path $env:GITHUB_WORKSPACE $zip) -Force
+          Pop-Location
+          "asset_path=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: ${{ steps.package.outputs.asset_path }}
+          if-no-files-found: error
+
+  publish-release-assets:
+    if: github.event_name == 'release'
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            release-assets/**/*.zip
+          fail_on_unmatched_files: true
