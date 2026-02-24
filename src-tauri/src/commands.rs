@@ -426,6 +426,16 @@ pub async fn close_projector_window(app: tauri::AppHandle) -> Result<(), String>
         win.close().map_err(|e| e.to_string())?;
     }
 
+    // Wait briefly for the window to actually close before emitting state,
+    // otherwise get_webview_window("projector") still returns Some and
+    // the frontend receives a stale "open: true" event.
+    for _ in 0..20 {
+        if app.get_window("projector").is_none() && app.get_webview_window("projector").is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
     emit_projector_window_state(&app);
     Ok(())
 }

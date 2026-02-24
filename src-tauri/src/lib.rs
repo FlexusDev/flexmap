@@ -695,10 +695,11 @@ pub fn run() {
                         let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
 
                         // PHASE 4: Generate preview snapshots for the editor.
-                        // Writes when source changed OR a layer is missing cache entry.
+                        // Always keep the cache warm when there are bound sources so frames
+                        // are immediately available when a consumer registers.
                         let t_preview = std::time::Instant::now();
                         let preview_cache = app_handle_pump.state::<Arc<PreviewCache>>();
-                        if preview_cache.has_consumers() {
+                        if !all_polled_source_frames.is_empty() {
                             let mut frames = preview_cache.frames.write();
                             let mut versions = preview_cache.frame_versions.write();
                             let mut removed_versions = preview_cache.removed_versions.write();

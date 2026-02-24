@@ -417,11 +417,20 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const selectedId = get().selectedAudioInputId;
       const hasSelected = selectedId && devices.some((device) => device.id === selectedId);
-      const fallbackId = devices.find((device) => device.isDefault)?.id ?? devices[0]?.id ?? null;
-      const nextSelectedId = hasSelected ? selectedId : fallbackId;
 
-      if (nextSelectedId && nextSelectedId !== selectedId) {
-        await get().setAudioInputDevice(nextSelectedId);
+      if (hasSelected) {
+        // Restore previously-chosen device
+        return;
+      }
+
+      // Only auto-select a device if there was a stored preference that
+      // has become stale (device unplugged); never auto-activate on first
+      // launch when no preference was stored.
+      if (selectedId) {
+        const fallbackId = devices.find((device) => device.isDefault)?.id ?? devices[0]?.id ?? null;
+        if (fallbackId) {
+          await get().setAudioInputDevice(fallbackId);
+        }
       }
     } catch (e) {
       console.error("Failed to list audio input devices:", e);
