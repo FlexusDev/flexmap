@@ -108,6 +108,78 @@ mod webkit_console {
     }
 }
 
+/// Windows: hooks WebView2 console events via Chrome DevTools Protocol so native
+/// engine warnings (e.g. "too many WebGL contexts") appear in the cargo tauri dev terminal.
+#[cfg(windows)]
+mod webview2_cdp {
+    use webview2_com::{
+        CallDevToolsProtocolMethodCompletedHandler,
+        DevToolsProtocolEventReceivedEventHandler,
+        Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    };
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::System::Com::CoTaskMemFree;
+
+    /// Subscribe to one CDP event, forwarding output to the log.
+    unsafe fn subscribe(webview: &ICoreWebView2, event_name: &str) {
+        let ev: Vec<u16> = event_name.encode_utf16().chain(Some(0)).collect();
+        let receiver = match webview.GetDevToolsProtocolEventReceiver(PCWSTR::from_raw(ev.as_ptr())) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[webview_native] CDP receiver failed for {event_name}: {e:?}");
+                return;
+            }
+        };
+
+        let en = event_name.to_string();
+        let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(
+            move |_sender, args| {
+                if let Some(args) = args {
+                    unsafe {
+                        let mut json = PWSTR::null();
+                        args.ParameterObjectAsJson(&mut json)?;
+                        if !json.is_null() {
+                            if let Ok(s) = json.to_string() {
+                                log::warn!(target: "webview_native", "[cdp/{en}] {s}");
+                            }
+                            CoTaskMemFree(Some(json.as_ptr() as *const _));
+                        }
+                    }
+                }
+                Ok(())
+            },
+        ));
+
+        let mut token: i64 = 0;
+        if let Err(e) = receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) {
+            log::warn!("[webview_native] CDP subscribe failed for {event_name}: {e:?}");
+        }
+    }
+
+    /// Enable CDP domains and subscribe to all console-related events.
+    pub unsafe fn install(webview: &ICoreWebView2) {
+        // Enable Runtime and Log CDP domains (fire-and-forget no-op completion)
+        for domain in ["Runtime.enable", "Log.enable"] {
+            let m: Vec<u16> = domain.encode_utf16().chain(Some(0)).collect();
+            let p: Vec<u16> = "{}".encode_utf16().chain(Some(0)).collect();
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(
+                Box::new(|_result, _json| Ok(())),
+            );
+            let _ = webview.CallDevToolsProtocolMethod(
+                PCWSTR::from_raw(m.as_ptr()),
+                PCWSTR::from_raw(p.as_ptr()),
+                &handler,
+            );
+        }
+
+        subscribe(webview, "Runtime.consoleAPICalled");
+        subscribe(webview, "Log.entryAdded");
+        subscribe(webview, "Runtime.exceptionThrown");
+
+        log::info!("[webview_native] WebView2 CDP console hooks installed");
+    }
+}
+
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use scene::state::SceneState;
@@ -395,13 +467,23 @@ pub fn run() {
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = main_window.set_resizable(true);
 
-                // Install WebKit native console hook so engine-level messages
+                // Install native webview console hooks so engine-level messages
                 // (e.g. "too many WebGL contexts") reach the cargo tauri dev terminal.
                 #[cfg(target_os = "macos")]
                 {
                     let _ = main_window.with_webview(|wv| {
                         unsafe {
                             webkit_console::install(wv.inner() as *mut _ as webkit_console::Id);
+                        }
+                    });
+                }
+                #[cfg(windows)]
+                {
+                    let _ = main_window.with_webview(|wv| {
+                        unsafe {
+                            if let Ok(webview) = wv.controller().CoreWebView2() {
+                                webview2_cdp::install(&webview);
+                            }
                         }
                     });
                 }
