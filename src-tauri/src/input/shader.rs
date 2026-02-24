@@ -789,7 +789,7 @@ fn to_u8(v: f32) -> u8 {
 
 fn pseudo_noise(x: f32, y: f32, t: f32) -> f32 {
     let n = (x * 127.1 + y * 311.7 + t * 74.7).sin() * 43758.5453;
-    n.fract() * 2.0 - 1.0
+    (n - n.floor()) * 2.0 - 1.0
 }
 
 #[inline]

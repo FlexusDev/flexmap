@@ -43,7 +43,7 @@ fn main() {
 /// and creates a proper macOS framework bundle. Skips if already built.
 /// Also copies to ~/Library/Frameworks/ for dev mode (cargo tauri dev runs
 /// a bare binary, not inside an .app bundle).
-#[cfg(all(target_os = "macos", feature = "input-syphon"))]
+#[cfg(feature = "input-syphon")]
 fn build_syphon_framework() {
     use std::path::PathBuf;
     use std::process::Command;
@@ -240,14 +240,14 @@ fn build_syphon_framework() {
 }
 
 /// Collect .m and .c source files, excluding tests/examples.
-#[cfg(all(target_os = "macos", feature = "input-syphon"))]
+#[cfg(feature = "input-syphon")]
 fn collect_source_files(repo_dir: &std::path::Path) -> Vec<String> {
     let mut files = Vec::new();
     collect_sources_recursive(repo_dir, &mut files);
     files
 }
 
-#[cfg(all(target_os = "macos", feature = "input-syphon"))]
+#[cfg(feature = "input-syphon")]
 fn collect_sources_recursive(dir: &std::path::Path, files: &mut Vec<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -277,12 +277,12 @@ fn collect_sources_recursive(dir: &std::path::Path, files: &mut Vec<String>) {
 }
 
 /// Copy public headers from the repo into the framework Headers dir.
-#[cfg(all(target_os = "macos", feature = "input-syphon"))]
+#[cfg(feature = "input-syphon")]
 fn copy_headers(repo_dir: &std::path::Path, fw_headers: &std::path::Path) {
     copy_headers_recursive(repo_dir, fw_headers);
 }
 
-#[cfg(all(target_os = "macos", feature = "input-syphon"))]
+#[cfg(feature = "input-syphon")]
 fn copy_headers_recursive(dir: &std::path::Path, fw_headers: &std::path::Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -310,7 +310,7 @@ fn copy_headers_recursive(dir: &std::path::Path, fw_headers: &std::path::Path) {
 /// Copy framework to ~/Library/Frameworks/ for dev mode.
 /// In dev mode (`cargo tauri dev`), the binary runs outside an .app bundle
 /// so it can't find the bundled framework. This ensures dlopen() finds it.
-#[cfg(all(target_os = "macos", feature = "input-syphon"))]
+#[cfg(feature = "input-syphon")]
 fn copy_to_user_frameworks(fw_dir: &std::path::Path) {
     if let Ok(home) = std::env::var("HOME") {
         let user_fw = format!("{}/Library/Frameworks", home);
