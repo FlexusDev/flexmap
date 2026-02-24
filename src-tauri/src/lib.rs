@@ -1,8 +1,185 @@
 pub mod commands;
+pub mod audio;
 pub mod input;
 pub mod persistence;
 pub mod renderer;
 pub mod scene;
+
+/// macOS-only: hooks WebKit's private console delegate method so native engine
+/// warnings (e.g. "too many WebGL contexts") appear in the cargo tauri dev terminal.
+/// Uses raw ObjC runtime FFI — no extra crate deps required on macOS.
+#[cfg(target_os = "macos")]
+mod webkit_console {
+    use std::ffi::{c_char, c_void, CStr};
+
+    pub type Id = *mut c_void;
+    type Sel = *const c_void;
+    type Class = *mut c_void;
+
+    extern "C" {
+        fn sel_registerName(str: *const c_char) -> Sel;
+        fn object_getClass(obj: Id) -> Class;
+        fn class_addMethod(
+            cls: Class,
+            name: Sel,
+            imp: unsafe extern "C" fn(),
+            types: *const c_char,
+        ) -> bool;
+        fn objc_msgSend(recv: Id, sel: Sel, ...) -> Id;
+    }
+
+    /// Send a message that returns an `id` (pointer).
+    #[inline]
+    unsafe fn msg_id(recv: Id, sel: Sel) -> Id {
+        let f: unsafe extern "C" fn(Id, Sel) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
+        f(recv, sel)
+    }
+
+    /// Send a message that returns a C string (e.g. `UTF8String`).
+    #[inline]
+    unsafe fn msg_cstr(recv: Id, sel: Sel) -> *const c_char {
+        let f: unsafe extern "C" fn(Id, Sel) -> *const c_char =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(recv, sel)
+    }
+
+    /// Send a message that returns a `usize` (e.g. `NSUInteger` level).
+    #[inline]
+    unsafe fn msg_usize(recv: Id, sel: Sel) -> usize {
+        let f: unsafe extern "C" fn(Id, Sel) -> usize =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(recv, sel)
+    }
+
+    /// Method implementation added to the WKWebView UI delegate.
+    /// WebKit calls `-_webView:didReceiveConsoleLogForTesting:` for every console message.
+    /// (Private Apple SPI — the "ForTesting" suffix is the actual selector name, not test-only.)
+    unsafe extern "C" fn console_log_imp(
+        _self: Id,
+        _cmd: Sel,
+        _webview: Id,
+        message: Id, // WKConsoleMessage *
+    ) {
+        let sel_message = sel_registerName(c"message".as_ptr());
+        let sel_level = sel_registerName(c"level".as_ptr());
+        let sel_utf8 = sel_registerName(c"UTF8String".as_ptr());
+
+        let ns_string = msg_id(message, sel_message);
+        let level: usize = msg_usize(message, sel_level);
+        let utf8_ptr = msg_cstr(ns_string, sel_utf8);
+
+        if !utf8_ptr.is_null() {
+            let s = CStr::from_ptr(utf8_ptr).to_string_lossy();
+            // WKConsoleMessageLevel: Log=0, Warning=1, Error=2, Debug=3, Info=4
+            match level {
+                2 => log::error!(target: "webview_native", "[console] {s}"),
+                1 => log::warn!(target: "webview_native", "[console] {s}"),
+                _ => log::info!(target: "webview_native", "[console] {s}"),
+            }
+        }
+    }
+
+    /// Install the console hook onto the WKWebView's UIDelegate class.
+    /// `webview_id` must be a valid `WKWebView *`.
+    pub unsafe fn install(webview_id: Id) {
+        let sel_ui_delegate = sel_registerName(c"UIDelegate".as_ptr());
+        let delegate = msg_id(webview_id, sel_ui_delegate);
+        if delegate.is_null() {
+            log::warn!("[webview_native] UIDelegate is nil — console hook not installed");
+            return;
+        }
+
+        let cls = object_getClass(delegate);
+        let sel = sel_registerName(c"_webView:didReceiveConsoleLogForTesting:".as_ptr());
+        let added = class_addMethod(
+            cls,
+            sel,
+            std::mem::transmute::<
+                unsafe extern "C" fn(Id, Sel, Id, Id),
+                unsafe extern "C" fn(),
+            >(console_log_imp),
+            c"v@:@@".as_ptr(),
+        );
+
+        if added {
+            log::info!("[webview_native] WebKit console hook installed");
+        } else {
+            log::warn!("[webview_native] WebKit console hook: method already registered or failed");
+        }
+    }
+}
+
+/// Windows: hooks WebView2 console events via Chrome DevTools Protocol so native
+/// engine warnings (e.g. "too many WebGL contexts") appear in the cargo tauri dev terminal.
+#[cfg(windows)]
+mod webview2_cdp {
+    use webview2_com::{
+        CallDevToolsProtocolMethodCompletedHandler,
+        DevToolsProtocolEventReceivedEventHandler,
+        Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    };
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::System::Com::CoTaskMemFree;
+
+    /// Subscribe to one CDP event, forwarding output to the log.
+    unsafe fn subscribe(webview: &ICoreWebView2, event_name: &str) {
+        let ev: Vec<u16> = event_name.encode_utf16().chain(Some(0)).collect();
+        let receiver = match webview.GetDevToolsProtocolEventReceiver(PCWSTR::from_raw(ev.as_ptr())) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[webview_native] CDP receiver failed for {event_name}: {e:?}");
+                return;
+            }
+        };
+
+        let en = event_name.to_string();
+        let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(
+            move |_sender, args| {
+                if let Some(args) = args {
+                    unsafe {
+                        let mut json = PWSTR::null();
+                        args.ParameterObjectAsJson(&mut json)?;
+                        if !json.is_null() {
+                            if let Ok(s) = json.to_string() {
+                                log::warn!(target: "webview_native", "[cdp/{en}] {s}");
+                            }
+                            CoTaskMemFree(Some(json.as_ptr() as *const _));
+                        }
+                    }
+                }
+                Ok(())
+            },
+        ));
+
+        let mut token: i64 = 0;
+        if let Err(e) = receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) {
+            log::warn!("[webview_native] CDP subscribe failed for {event_name}: {e:?}");
+        }
+    }
+
+    /// Enable CDP domains and subscribe to all console-related events.
+    pub unsafe fn install(webview: &ICoreWebView2) {
+        // Enable Runtime and Log CDP domains (fire-and-forget no-op completion)
+        for domain in ["Runtime.enable", "Log.enable"] {
+            let m: Vec<u16> = domain.encode_utf16().chain(Some(0)).collect();
+            let p: Vec<u16> = "{}".encode_utf16().chain(Some(0)).collect();
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(
+                Box::new(|_result, _json| Ok(())),
+            );
+            let _ = webview.CallDevToolsProtocolMethod(
+                PCWSTR::from_raw(m.as_ptr()),
+                PCWSTR::from_raw(p.as_ptr()),
+                &handler,
+            );
+        }
+
+        subscribe(webview, "Runtime.consoleAPICalled");
+        subscribe(webview, "Log.entryAdded");
+        subscribe(webview, "Runtime.exceptionThrown");
+
+        log::info!("[webview_native] WebView2 CDP console hooks installed");
+    }
+}
 
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
@@ -10,6 +187,7 @@ use scene::state::SceneState;
 use renderer::engine::RenderState;
 use renderer::projector::GpuProjector;
 use input::adapter::InputManager;
+use audio::BpmEngine;
 use commands::PreviewCache;
 
 fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
@@ -119,10 +297,6 @@ fn menu_shortcut_action(id: &str) -> Option<&'static str> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .init();
-
     log::info!("FlexMap starting...");
 
     let scene_state = SceneState::new();
@@ -130,6 +304,32 @@ pub fn run() {
     let input_manager = Arc::new(parking_lot::RwLock::new(InputManager::new()));
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                // Clear default targets (Stdout + LogDir) to avoid duplicate lines
+                // in the terminal — we add only Stderr explicitly below.
+                .clear_targets()
+                // Write all logs (backend + frontend-forwarded) to stderr so they
+                // appear in the `cargo tauri dev` terminal.
+                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stderr))
+                // Forward Rust backend logs to the browser devtools via log://log
+                // events. The filter excludes frontend-originated records (target
+                // starts with "webview:") so they don't echo back to the browser.
+                .target(
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview)
+                        .filter(|metadata| {
+                            !metadata.target().starts_with(tauri_plugin_log::WEBVIEW_TARGET)
+                        }),
+                )
+                .level(log::LevelFilter::Info)
+                .level_for("flexmap_lib::input::adapter", log::LevelFilter::Warn)
+                .level_for("flexmap_lib::input::syphon", log::LevelFilter::Warn)
+                .level_for("flexmap_lib::input::test_pattern", log::LevelFilter::Warn)
+                .level_for("flexmap_lib::input::shader", log::LevelFilter::Warn)
+                .level_for("flexmap_lib::renderer::projector", log::LevelFilter::Warn)
+                .level_for("flexmap_lib::commands", log::LevelFilter::Warn)
+                .build()
+        )
         .menu(|app| build_app_menu(app))
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
@@ -169,6 +369,7 @@ pub fn run() {
         .manage(scene_state)
         .manage(render_state)
         .manage(input_manager)
+        .manage(Arc::new(parking_lot::Mutex::new(BpmEngine::new())))
         .manage(Arc::new(PreviewCache::new()))
         .manage(Arc::new(parking_lot::Mutex::new(sysinfo::System::new_all())))
         .manage(Arc::new(parking_lot::Mutex::new(GpuProjector::new())))
@@ -178,6 +379,7 @@ pub fn run() {
             commands::close_projector_window,
             commands::set_projector_fullscreen,
             commands::get_projector_fullscreen,
+            commands::get_projector_window_state,
             commands::retarget_projector,
             commands::list_monitors,
             // Layers
@@ -207,6 +409,7 @@ pub fn run() {
             commands::load_project,
             commands::new_project,
             commands::get_project,
+            commands::get_project_if_changed,
             commands::is_dirty,
             commands::has_recovery,
             commands::load_recovery,
@@ -216,12 +419,20 @@ pub fn run() {
             // Sources
             commands::list_sources,
             commands::refresh_sources,
+            commands::set_installed_shader_sources,
+            commands::list_audio_input_devices,
+            commands::set_audio_input_device,
+            commands::set_bpm_config,
+            commands::get_bpm_state,
+            commands::tap_tempo,
             commands::add_media_file,
             commands::remove_media_file,
             commands::connect_source,
             commands::disconnect_source,
             commands::poll_layer_frame,
             commands::poll_all_frames,
+            commands::poll_all_frames_delta,
+            commands::set_preview_consumers,
             // Output
             commands::set_output_config,
             commands::set_project_ui_state,
@@ -256,6 +467,27 @@ pub fn run() {
             // Main editor window is always resizable; aspect lock applies only to projector + preview.
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = main_window.set_resizable(true);
+
+                // Install native webview console hooks so engine-level messages
+                // (e.g. "too many WebGL contexts") reach the cargo tauri dev terminal.
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = main_window.with_webview(|wv| {
+                        unsafe {
+                            webkit_console::install(wv.inner() as *mut _ as webkit_console::Id);
+                        }
+                    });
+                }
+                #[cfg(windows)]
+                {
+                    let _ = main_window.with_webview(|wv| {
+                        unsafe {
+                            if let Ok(webview) = wv.controller().CoreWebView2() {
+                                webview2_cdp::install(&webview);
+                            }
+                        }
+                    });
+                }
             }
 
             // Initialize GPU context on a background thread
@@ -286,7 +518,6 @@ pub fn run() {
             });
 
             // Check for crash recovery
-            let _state = app.state::<SceneState>();
             if persistence::has_recovery(None) {
                 log::info!("Autosave recovery file detected");
             }
@@ -323,40 +554,61 @@ pub fn run() {
                     let input_mgr = app_handle_pump.state::<Arc<parking_lot::RwLock<InputManager>>>();
                     let render_state = app_handle_pump.state::<Arc<RenderState>>();
                     let bound_ids = input_mgr.read().bound_layer_ids();
+                    let layer_snapshot = app_handle_pump
+                        .state::<SceneState>()
+                        .get_layers_snapshot();
+                    let bpm_snapshot = {
+                        let bpm_engine = app_handle_pump.state::<Arc<parking_lot::Mutex<BpmEngine>>>();
+                        let s = bpm_engine.lock().runtime_snapshot();
+                        s
+                    };
 
-                    if !bound_ids.is_empty() {
-                        let engine_state = app_handle_pump
-                            .try_state::<Arc<parking_lot::RwLock<renderer::engine::RenderEngine>>>();
+                    let engine_state = app_handle_pump
+                        .try_state::<Arc<parking_lot::RwLock<renderer::engine::RenderEngine>>>();
 
-                        if let Some(engine_lock) = engine_state {
-                            // PHASE 1: Collect source bindings and deduplicate by source_id.
-                            // Multiple layers sharing the same source only need 1 poll + 1 upload.
-                            let mut source_to_layers: std::collections::HashMap<String, Vec<String>> =
-                                std::collections::HashMap::new();
-                            {
-                                let input = input_mgr.read();
-                                for layer_id in &bound_ids {
-                                    if let Some(source_id) = input.get_binding(layer_id) {
-                                        source_to_layers
-                                            .entry(source_id.to_string())
-                                            .or_default()
-                                            .push(layer_id.clone());
-                                    }
+                    if let Some(engine_lock) = engine_state {
+                        // PHASE 1: Collect source bindings and deduplicate by source_id.
+                        // Multiple layers sharing the same source only need 1 poll per tick.
+                        let mut source_to_layers: std::collections::HashMap<String, Vec<String>> =
+                            std::collections::HashMap::new();
+                        if !bound_ids.is_empty() {
+                            let input = input_mgr.read();
+                            for layer_id in &bound_ids {
+                                if let Some(source_id) = input.get_binding(layer_id) {
+                                    source_to_layers
+                                        .entry(source_id.to_string())
+                                        .or_default()
+                                        .push(layer_id.clone());
                                 }
                             }
+                        }
 
-                            // PHASE 2: Poll frames from unique sources (hold input lock only).
-                            // Each unique source is polled once via any layer bound to it.
-                            // Uses try_write() to avoid blocking behind auto-reconnect —
-                            // if the lock is held, we skip this cycle and use cached frames.
-                            let t_poll = std::time::Instant::now();
-                            let mut polled_source_frames: Vec<(String, Vec<String>, crate::input::adapter::FramePacket)> = Vec::new();
-                            {
+                        // PHASE 2: Poll frames from unique sources (hold input lock only).
+                        // Keep all polled frames for binding/cache sync; track changed sequences
+                        // separately for GPU upload optimization.
+                        let t_poll = std::time::Instant::now();
+                        let mut all_polled_source_frames: Vec<(
+                            String,
+                            Vec<String>,
+                            crate::input::adapter::FramePacket,
+                        )> = Vec::new();
+                        {
+                            if !source_to_layers.is_empty() {
                                 if let Some(mut input) = input_mgr.try_write() {
+                                    input.set_bpm_snapshot(bpm_snapshot);
+                                    for layer in &layer_snapshot {
+                                        input.set_layer_modulation(
+                                            &layer.id,
+                                            crate::input::adapter::LayerBeatModulation {
+                                                beat_reactive: layer.properties.beat_reactive,
+                                                beat_amount: layer.properties.beat_amount as f32,
+                                            },
+                                        );
+                                    }
                                     for (source_id, layer_ids) in &source_to_layers {
                                         if let Some(first_layer) = layer_ids.first() {
                                             if let Some(frame) = input.poll_frame_for_layer(first_layer) {
-                                                polled_source_frames.push((
+                                                all_polled_source_frames.push((
                                                     source_id.clone(),
                                                     layer_ids.clone(),
                                                     frame,
@@ -365,88 +617,144 @@ pub fn run() {
                                         }
                                     }
                                 }
-                                // Input lock released here (or was never taken)
                             }
-                            let poll_ms = t_poll.elapsed().as_secs_f64() * 1000.0;
+                            // Input lock released here (or was never taken)
+                        }
+                        let poll_ms = t_poll.elapsed().as_secs_f64() * 1000.0;
 
-                            // Filter out frames with unchanged sequence numbers.
-                            // At 30fps pump with ~10fps Syphon, ~20 ticks return cached frames
-                            // with the same sequence — skip the 8MB GPU upload + preview encode.
-                            polled_source_frames.retain(|(source_id, _, frame)| {
-                                let seq = frame.sequence.unwrap_or(0);
-                                if seq == 0 {
-                                    return true; // No sequence tracking — always upload
-                                }
-                                let prev = last_uploaded_sequence.get(source_id).copied().unwrap_or(0);
-                                if seq == prev {
-                                    return false; // Same frame — skip
-                                }
+                        let mut changed_source_ids: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        for (source_id, _, frame) in &all_polled_source_frames {
+                            let seq = frame.sequence.unwrap_or(0);
+                            if seq == 0 {
+                                changed_source_ids.insert(source_id.clone());
+                                continue;
+                            }
+                            let prev = last_uploaded_sequence.get(source_id).copied().unwrap_or(0);
+                            if seq != prev {
                                 last_uploaded_sequence.insert(source_id.clone(), seq);
-                                true
-                            });
+                                changed_source_ids.insert(source_id.clone());
+                            }
+                        }
 
-                            // PHASE 3: Upload each unique source frame once and sync layer bindings.
-                            let t_upload = std::time::Instant::now();
-                            if !polled_source_frames.is_empty() {
-                                let mut engine = engine_lock.write();
+                        // PHASE 3: Sync layer/source bindings for all polled sources.
+                        // Upload only sequence-changed frames.
+                        let t_upload = std::time::Instant::now();
+                        let mut binding_changed = false;
+                        {
+                            let mut engine = engine_lock.write();
 
-                                let renderer::engine::RenderEngine {
-                                    ref gpu,
-                                    ref mut texture_manager,
-                                    ..
-                                } = *engine;
+                            let renderer::engine::RenderEngine {
+                                ref gpu,
+                                ref mut texture_manager,
+                                ..
+                            } = *engine;
 
-                                for (source_id, layer_ids, frame) in &polled_source_frames {
-                                    // Upload once per source
+                            // Cleanup bindings for layers that are no longer source-bound.
+                            let bound_id_set: std::collections::HashSet<&str> =
+                                bound_ids.iter().map(|id| id.as_str()).collect();
+                            for layer in &layer_snapshot {
+                                if !bound_id_set.contains(layer.id.as_str())
+                                    && texture_manager.get_source_for_layer(&layer.id).is_some()
+                                {
+                                    texture_manager.unbind_layer(&layer.id);
+                                    binding_changed = true;
+                                }
+                            }
+
+                            for (source_id, layer_ids, frame) in &all_polled_source_frames {
+                                if changed_source_ids.contains(source_id) {
                                     texture_manager.upload_frame_for_source(
                                         &gpu.device,
                                         &gpu.queue,
                                         source_id,
                                         frame,
                                     );
-                                    // Ensure all layers are bound to this source
-                                    for layer_id in layer_ids {
+                                }
+
+                                for layer_id in layer_ids {
+                                    let already_bound = texture_manager
+                                        .get_source_for_layer(layer_id)
+                                        .map(|current| current == source_id.as_str())
+                                        .unwrap_or(false);
+                                    if !already_bound {
                                         texture_manager.bind_layer_to_source(layer_id, source_id);
-                                    }
-                                }
-                                // Engine lock released here
-
-                                render_state.request_redraw();
-                            }
-                            let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
-
-                            // PHASE 4: Generate preview snapshots for the editor.
-                            // This runs on the frame pump thread so poll_all_frames (IPC)
-                            // reads from cache instead of triggering a second Metal readback.
-                            let t_preview = std::time::Instant::now();
-                            if !polled_source_frames.is_empty() {
-                                let preview_cache = app_handle_pump.state::<Arc<PreviewCache>>();
-                                let mut cache = preview_cache.frames.write();
-                                // Remove stale entries for layers no longer bound
-                                cache.retain(|lid, _| bound_ids.contains(lid));
-                                for (_source_id, layer_ids, frame) in &polled_source_frames {
-                                    let snapshot = Arc::new(commands::encode_frame(frame));
-                                    for layer_id in layer_ids {
-                                        cache.insert(layer_id.clone(), snapshot.clone());
+                                        binding_changed = true;
                                     }
                                 }
                             }
-                            let preview_ms = t_preview.elapsed().as_secs_f64() * 1000.0;
 
-                            // Debounced logging: every ~5 seconds (150 ticks at 30fps)
-                            log_counter += 1;
-                            if log_counter % 150 == 0 {
-                                let total_ms = start.elapsed().as_secs_f64() * 1000.0;
-                                log::info!(
-                                    "Frame pump: {} layers, {} sources, poll={:.1}ms upload={:.1}ms preview={:.1}ms total={:.1}ms",
-                                    bound_ids.len(),
-                                    source_to_layers.len(),
-                                    poll_ms,
-                                    upload_ms,
-                                    preview_ms,
-                                    total_ms
-                                );
+                            if binding_changed {
+                                texture_manager.remove_unused_sources();
                             }
+                        }
+
+                        if !changed_source_ids.is_empty() || binding_changed {
+                            render_state.request_redraw();
+                        }
+                        let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
+
+                        // PHASE 4: Generate preview snapshots for the editor.
+                        // Always keep the cache warm when there are bound sources so frames
+                        // are immediately available when a consumer registers.
+                        let t_preview = std::time::Instant::now();
+                        let preview_cache = app_handle_pump.state::<Arc<PreviewCache>>();
+                        if !all_polled_source_frames.is_empty() {
+                            let mut frames = preview_cache.frames.write();
+                            let mut versions = preview_cache.frame_versions.write();
+                            let mut removed_versions = preview_cache.removed_versions.write();
+
+                            // Remove stale entries for layers no longer bound
+                            let stale_ids: Vec<String> = frames
+                                .keys()
+                                .filter(|lid| !bound_ids.contains(lid))
+                                .cloned()
+                                .collect();
+                            for layer_id in stale_ids {
+                                frames.remove(&layer_id);
+                                versions.remove(&layer_id);
+                                let next = preview_cache
+                                    .cursor
+                                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                                    + 1;
+                                removed_versions.insert(layer_id, next);
+                            }
+
+                            for (source_id, layer_ids, frame) in &all_polled_source_frames {
+                                let source_changed = changed_source_ids.contains(source_id);
+                                let has_missing_layer =
+                                    layer_ids.iter().any(|layer_id| !frames.contains_key(layer_id));
+                                if !source_changed && !has_missing_layer {
+                                    continue;
+                                }
+
+                                let snapshot = Arc::new(commands::encode_frame(frame));
+                                for layer_id in layer_ids {
+                                    let next = preview_cache
+                                        .cursor
+                                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                                        + 1;
+                                    frames.insert(layer_id.clone(), snapshot.clone());
+                                    versions.insert(layer_id.clone(), next);
+                                    removed_versions.remove(layer_id);
+                                }
+                            }
+                        }
+                        let preview_ms = t_preview.elapsed().as_secs_f64() * 1000.0;
+
+                        // Debounced logging: every ~5 seconds (150 ticks at 30fps)
+                        log_counter += 1;
+                        if log_counter % 150 == 0 {
+                            let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+                            log::debug!(
+                                "Frame pump: {} layers, {} sources, poll={:.1}ms upload={:.1}ms preview={:.1}ms total={:.1}ms",
+                                bound_ids.len(),
+                                source_to_layers.len(),
+                                poll_ms,
+                                upload_ms,
+                                preview_ms,
+                                total_ms
+                            );
                         }
                     }
 

@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAppStore } from "../../store/useAppStore";
 import { isTauri, tauriInvoke } from "../../lib/tauri-bridge";
+import ShaderLibraryModal from "./ShaderLibraryModal";
 
 interface SyphonStatus {
   bridge_compiled: boolean;
@@ -22,11 +23,35 @@ function SourcePanel() {
   } = useAppStore();
 
   const [syphonStatus, setSyphonStatus] = useState<SyphonStatus | null>(null);
+  const [shaderLibraryOpen, setShaderLibraryOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
   // Check Syphon status on mount
   useEffect(() => {
     tauriInvoke<SyphonStatus>("check_syphon_status").then(setSyphonStatus);
   }, []);
+
+  useEffect(() => {
+    void refreshSources();
+  }, [refreshSources]);
+
+  // Discovery timer only while the Sources panel is mounted/visible.
+  useEffect(() => {
+    const isPanelVisible = () => {
+      const panel = panelRef.current;
+      return !!panel
+        && panel.offsetParent !== null
+        && panel.clientWidth > 0
+        // Left panel collapsed size is ~40px; treat that as hidden for discovery polling.
+        && panel.clientHeight > 80;
+    };
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible" && isPanelVisible()) {
+        void refreshSources();
+      }
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, [refreshSources]);
 
   const handleAddMedia = async () => {
     let path: string | null = null;
@@ -81,27 +106,29 @@ function SourcePanel() {
     : null;
 
   return (
-    <div className="h-full border-t border-aura-border flex flex-col">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-aura-border">
-        <span className="text-xs font-semibold uppercase tracking-wider text-aura-text-dim">
-          Sources
-        </span>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={handleAddMedia}
-            className="btn-ghost text-xs px-2 py-0.5"
-            title="Add media file (image)"
-          >
-            + Media
-          </button>
-          <button
-            onClick={refreshSources}
-            className="btn-ghost text-xs px-2 py-0.5"
-            title="Refresh sources"
-          >
-            ↻
-          </button>
-        </div>
+    <div ref={panelRef} className="h-full flex flex-col min-h-0">
+      <div className="flex items-center justify-end gap-1 px-3 py-1.5 border-b border-aura-border/50">
+        <button
+          onClick={() => setShaderLibraryOpen(true)}
+          className="btn-ghost text-xs px-2 py-0.5"
+          title="Browse bundled and online shader library"
+        >
+          Shader Library
+        </button>
+        <button
+          onClick={handleAddMedia}
+          className="btn-ghost text-xs px-2 py-0.5"
+          title="Add media file (image)"
+        >
+          + Media
+        </button>
+        <button
+          onClick={refreshSources}
+          className="btn-ghost text-xs px-2 py-0.5"
+          title="Refresh sources"
+        >
+          ↻
+        </button>
       </div>
 
       {/* Current assignment info */}
@@ -233,6 +260,16 @@ function SourcePanel() {
           Select one or more layers to assign a source
         </div>
       )}
+
+      <ShaderLibraryModal
+        open={shaderLibraryOpen}
+        onClose={() => setShaderLibraryOpen(false)}
+        hasSelection={hasSelection}
+        onApplySource={async (sourceId) => {
+          if (!hasSelection) return;
+          await connectSourceForSelection(sourceId);
+        }}
+      />
     </div>
   );
 }

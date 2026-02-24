@@ -81,6 +81,16 @@ impl GpuContext {
             .await
             .map_err(|e| format!("Failed to create GPU device: {}", e))?;
 
+        // Forward uncaptured GPU errors to log instead of panicking
+        device.on_uncaptured_error(Box::new(|error| {
+            log::error!("[wgpu] {error}");
+        }));
+
+        // Log device-lost events (GPU hang, driver crash, hardware removal)
+        device.set_device_lost_callback(|reason, message| {
+            log::error!("[wgpu] Device lost ({reason:?}): {message}");
+        });
+
         Ok(Self {
             instance,
             adapter,

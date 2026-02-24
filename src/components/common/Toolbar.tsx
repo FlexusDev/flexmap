@@ -1,9 +1,12 @@
+import { useState } from "react";
 import { useAppStore } from "../../store/useAppStore";
 import { tauriOpenDialog, tauriSaveDialog } from "../../lib/tauri-bridge";
 import OutputConfigPanel from "../output/OutputConfigPanel";
+import SettingsModal from "./SettingsModal";
 import pkg from "../../../package.json";
 
 function Toolbar() {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const {
     isDirty,
     projectPath,
@@ -105,6 +108,14 @@ function Toolbar() {
         {projectorWindowOpen ? "Projector ON" : "Open Projector"}
       </button>
 
+      <button
+        onClick={() => setSettingsOpen(true)}
+        className="btn-ghost text-xs"
+        title="Audio/BPM settings"
+      >
+        Settings
+      </button>
+
       {/* Output config */}
       <OutputConfigPanel />
 
@@ -118,6 +129,8 @@ function Toolbar() {
       <span className="text-xs text-aura-text-dim/80 font-mono ml-2">
         v{pkg.version} · Alpha 1
       </span>
+
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

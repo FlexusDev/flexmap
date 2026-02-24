@@ -1,5 +1,6 @@
 use parking_lot::RwLock;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use super::history::History;
 use super::layer::*;
 use super::project::*;
@@ -135,6 +136,7 @@ pub struct SceneState {
     pub project_path: RwLock<Option<String>>,
     pub autosave_path: RwLock<Option<String>>,
     pub history: History,
+    pub revision: AtomicU64,
 }
 
 impl SceneState {
@@ -145,12 +147,14 @@ impl SceneState {
             project_path: RwLock::new(None),
             autosave_path: RwLock::new(None),
             history: History::new(),
+            revision: AtomicU64::new(1),
         }
     }
 
     pub fn mark_dirty(&self) {
         *self.dirty.write() = true;
         self.project.write().touch();
+        self.revision.fetch_add(1, Ordering::Release);
     }
 
     pub fn mark_clean(&self) {
@@ -159,6 +163,10 @@ impl SceneState {
 
     pub fn is_dirty(&self) -> bool {
         *self.dirty.read()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
     }
 
     /// Push current layer state to undo stack before mutating
@@ -813,6 +821,7 @@ impl SceneState {
         *self.project_path.write() = path;
         self.history.clear();
         self.mark_clean();
+        self.revision.fetch_add(1, Ordering::Release);
     }
 
     pub fn new_project(&self, name: &str) {
@@ -820,6 +829,7 @@ impl SceneState {
         *self.project_path.write() = None;
         self.history.clear();
         self.mark_clean();
+        self.revision.fetch_add(1, Ordering::Release);
     }
 }
 
