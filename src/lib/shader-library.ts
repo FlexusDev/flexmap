@@ -5,7 +5,48 @@ const ONLINE_CACHE_KEY = "flexmap:isf_catalog_v1";
 const METADATA_CACHE_KEY = "flexmap:isf_metadata_v1";
 const INSTALLED_LIBRARY_KEY = "flexmap:isf_installed_library_v1";
 const SOURCE_CACHE_KEY = "flexmap:isf_source_cache_v1";
+const GITHUB_TOKEN_KEY = "flexmap:github_token_v1";
 const ONLINE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+export class RateLimitError extends Error {
+  public readonly remaining: number;
+  public readonly resetAt: Date | null;
+
+  constructor(status: number, remaining: number, resetTimestamp: string | null) {
+    const resetAt = resetTimestamp ? new Date(Number(resetTimestamp) * 1000) : null;
+    const resetLabel = resetAt ? ` Resets at ${resetAt.toLocaleTimeString()}.` : "";
+    super(
+      `GitHub API rate limit hit (HTTP ${status}). Remaining: ${remaining}.${resetLabel} Add a GitHub token in Settings to raise the limit to 5,000 req/hr.`
+    );
+    this.name = "RateLimitError";
+    this.remaining = remaining;
+    this.resetAt = resetAt;
+  }
+}
+
+export function getGitHubToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(GITHUB_TOKEN_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setGitHubToken(token: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (token && token.trim().length > 0) {
+      window.localStorage.setItem(GITHUB_TOKEN_KEY, token.trim());
+      console.info(`[ISF-diag] GitHub token saved (${token.trim().length} chars)`);
+    } else {
+      window.localStorage.removeItem(GITHUB_TOKEN_KEY);
+      console.info("[ISF-diag] GitHub token cleared");
+    }
+  } catch {
+    // ignore localStorage errors
+  }
+}
 
 const PREVIEW_PLASMA_FLOW = `
 vec4 auraColor(vec2 uv, float t) {
@@ -178,17 +219,41 @@ export async function fetchOnlineIsfCatalog(
   if (!force) {
     const cached = readCachedOnlineIsfCatalog();
     if (cached.length > 0) {
+      console.info(`[ISF-diag] fetchOnlineIsfCatalog: returning ${cached.length} cached entries (force=false)`);
       return { entries: cached, fromCache: true };
     }
+    console.info("[ISF-diag] fetchOnlineIsfCatalog: cache empty or expired, fetching from GitHub");
+  } else {
+    console.info("[ISF-diag] fetchOnlineIsfCatalog: force refresh requested");
+  }
+
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+  };
+  const token = getGitHubToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+    console.info("[ISF-diag] fetchOnlineIsfCatalog: using GitHub token for authenticated request");
+  } else {
+    console.info("[ISF-diag] fetchOnlineIsfCatalog: no GitHub token — unauthenticated (60 req/hr limit)");
   }
 
   const response = await fetch(ISF_LIBRARY_CONTENTS_URL, {
     method: "GET",
     signal,
-    headers: {
-      Accept: "application/vnd.github+json",
-    },
+    headers,
   });
+
+  const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
+  const rateLimitReset = response.headers.get("x-ratelimit-reset");
+  const rateLimitLimit = response.headers.get("x-ratelimit-limit");
+  console.info(
+    `[ISF-diag] fetchOnlineIsfCatalog: GitHub response status=${response.status}, rate-limit ${rateLimitRemaining ?? "?"}/${rateLimitLimit ?? "?"} (resets ${rateLimitReset ? new Date(Number(rateLimitReset) * 1000).toLocaleTimeString() : "?"})`
+  );
+
+  if (response.status === 403 || response.status === 429) {
+    throw new RateLimitError(response.status, Number(rateLimitRemaining ?? "0"), rateLimitReset);
+  }
 
   if (!response.ok) {
     throw new Error(`ISF catalog request failed (${response.status})`);
@@ -196,6 +261,7 @@ export async function fetchOnlineIsfCatalog(
 
   const payload = await response.json() as IsfGitHubContentItem[];
   if (!Array.isArray(payload)) {
+    console.warn(`[ISF-diag] fetchOnlineIsfCatalog: response is not an array, got ${typeof payload}`);
     throw new Error("ISF catalog response shape was invalid");
   }
 
@@ -206,6 +272,7 @@ export async function fetchOnlineIsfCatalog(
 
   const normalized = normalizeCatalogEntries(entries);
   writeCachePayload({ cachedAt: Date.now(), entries: normalized });
+  console.info(`[ISF-diag] fetchOnlineIsfCatalog: fetched ${normalized.length} .fs entries from ${payload.length} items total`);
   return { entries: normalized, fromCache: false };
 }
 
@@ -270,7 +337,7 @@ export function writeInstalledIsfLibrary(records: Record<string, InstalledIsfSha
 
 export function getInstalledShaderDescriptors(): InstalledShaderSourceDescriptor[] {
   const records = readInstalledIsfLibrary();
-  return Object.values(records).map((record) => ({
+  const descriptors = Object.values(records).map((record) => ({
     id: record.entry.id,
     name: record.entry.name,
     seed: record.seed,
@@ -278,6 +345,14 @@ export function getInstalledShaderDescriptors(): InstalledShaderSourceDescriptor
     installedAt: record.installedAt,
     sourceCode: record.sourceCode,
   }));
+  const withCode = descriptors.filter((d) => d.sourceCode && d.sourceCode.length > 0);
+  console.info(
+    `[ISF-diag] getInstalledShaderDescriptors: ${descriptors.length} descriptors (${withCode.length} with source code, ${descriptors.length - withCode.length} without)`
+  );
+  if (descriptors.length > 0 && withCode.length === 0) {
+    console.warn("[ISF-diag] getInstalledShaderDescriptors: ALL descriptors are missing source code — shaders will fall back to Noise");
+  }
+  return descriptors;
 }
 
 export function getInstalledIsfSource(entryId: string): string | null {
@@ -304,11 +379,18 @@ export async function getIsfSourceForEntry(
   const downloadUrl = resolveDownloadUrl(entry);
   if (!downloadUrl) return entry.sourceCode ?? null;
 
+  const sourceHeaders: Record<string, string> = {};
+  const token = getGitHubToken();
+  if (token && downloadUrl.includes("githubusercontent.com")) {
+    sourceHeaders["Authorization"] = `Bearer ${token}`;
+  }
   const response = await fetch(downloadUrl, {
     method: "GET",
     signal: opts.signal,
+    headers: sourceHeaders,
   });
   if (!response.ok) {
+    console.warn(`[ISF-diag] getIsfSourceForEntry: source fetch failed for ${entry.id} (HTTP ${response.status})`);
     throw new Error(`ISF source request failed (${response.status})`);
   }
 
@@ -336,11 +418,19 @@ export async function installOnlineIsfEntry(
     throw new Error("Entry does not provide a downloadable ISF file");
   }
 
+  const installHeaders: Record<string, string> = {};
+  const token = getGitHubToken();
+  if (token && entry.downloadUrl.includes("githubusercontent.com")) {
+    installHeaders["Authorization"] = `Bearer ${token}`;
+  }
+  console.info(`[ISF-diag] installOnlineIsfEntry: downloading ${entry.id} from ${entry.downloadUrl}`);
   const response = await fetch(entry.downloadUrl, {
     method: "GET",
     signal: opts.signal,
+    headers: installHeaders,
   });
   if (!response.ok) {
+    console.warn(`[ISF-diag] installOnlineIsfEntry: download failed for ${entry.id} (HTTP ${response.status})`);
     throw new Error(`ISF install request failed (${response.status})`);
   }
   const sourceCode = await response.text();

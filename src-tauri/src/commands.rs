@@ -947,7 +947,22 @@ pub async fn set_installed_shader_sources(
     sources: Vec<InstalledShaderSource>,
     input: State<'_, Arc<parking_lot::RwLock<crate::input::adapter::InputManager>>>,
 ) -> Result<usize, String> {
-    Ok(input.write().set_installed_shaders(sources))
+    let count = sources.len();
+    let with_code = sources.iter().filter(|s| s.source_code.is_some()).count();
+    log::info!(
+        "[ISF-diag] set_installed_shader_sources IPC: {} source(s) ({} with code, {} without)",
+        count, with_code, count - with_code
+    );
+    for source in &sources {
+        log::info!(
+            "[ISF-diag]   shader id={} name={} seed={} hash={:?} has_code={}",
+            source.id, source.name, source.seed, source.source_hash,
+            source.source_code.is_some()
+        );
+    }
+    let result = input.write().set_installed_shaders(sources);
+    log::info!("[ISF-diag] set_installed_shader_sources: backend reports {} installed", result);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1020,27 +1035,45 @@ pub async fn connect_source(
     state: State<'_, SceneState>,
     render: State<'_, Arc<RenderState>>,
 ) -> Result<bool, String> {
+    log::info!(
+        "[ISF-diag] connect_source: layer_id={} source_id={}",
+        layer_id, source_id
+    );
+
     // Connect in input manager
     input
         .write()
         .connect_source(&layer_id, &source_id)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::warn!(
+                "[ISF-diag] connect_source: InputManager.connect_source FAILED for {}: {}",
+                source_id, e
+            );
+            e.to_string()
+        })?;
 
     // Set the source assignment on the layer
-    let source_info = input
-        .read()
-        .list_all_sources()
-        .into_iter()
-        .find(|s| s.id == source_id);
+    let all_sources = input.read().list_all_sources();
+    let source_info = all_sources.iter().find(|s| s.id == source_id);
 
     if let Some(info) = source_info {
+        log::info!(
+            "[ISF-diag] connect_source: found source info protocol={} name={}",
+            info.protocol, info.name
+        );
         let assignment = SourceAssignment {
-            source_id: info.id,
-            protocol: info.protocol,
-            display_name: info.name,
+            source_id: info.id.clone(),
+            protocol: info.protocol.clone(),
+            display_name: info.name.clone(),
         };
         state.set_layer_source(&layer_id, Some(assignment));
         sync_render_state(&state, &render);
+    } else {
+        log::warn!(
+            "[ISF-diag] connect_source: source_info is None for source_id={} — layer assignment NOT set. Available sources: [{}]",
+            source_id,
+            all_sources.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join(", ")
+        );
     }
 
     Ok(true)
