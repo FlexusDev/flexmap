@@ -25,7 +25,9 @@
       "mcp__MCP_DOCKER__sequentialthinking",
       "WebFetch(domain:semisignal.com)",
       "Bash(cd:*)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "Bash(cd src-tauri && cargo xwin build --target x86_64-pc-windows-msvc 2>&1)",
+      "Bash(grep:*)"
     ]
   }
 }
