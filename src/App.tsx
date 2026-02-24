@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { useAppStore } from "./store/useAppStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { tauriInvoke } from "./lib/tauri-bridge";
+import { isTauri, tauriInvoke } from "./lib/tauri-bridge";
+import type { ProjectorWindowState } from "./types";
 import Toolbar from "./components/common/Toolbar";
-import LayerPanel from "./components/layers/LayerPanel";
+import LeftPanel from "./components/left/LeftPanel";
 import PropertiesPanel from "./components/properties/PropertiesPanel";
 import EditorCanvas from "./components/editor/EditorCanvas";
 import CalibrationBar from "./components/calibration/CalibrationBar";
-import SourcePanel from "./components/common/SourcePanel";
 import StatusBar from "./components/common/StatusBar";
 import KeyboardOverlay from "./components/common/KeyboardOverlay";
 import ToastContainer from "./components/common/ToastContainer";
@@ -35,20 +35,29 @@ function RecoveryDialog({ onRecover, onDismiss }: { onRecover: () => void; onDis
 }
 
 function App() {
-  const { loadProject, refreshMonitors, refreshSources } = useAppStore();
+  const {
+    loadProject,
+    refreshMonitors,
+    refreshSources,
+    refreshAudioInputs,
+    setBpmConfig,
+    syncProjectorWindowState,
+    applyProjectorWindowState,
+  } = useAppStore();
   const [showRecovery, setShowRecovery] = useState(false);
 
   useKeyboardShortcuts();
 
   const { defaultLayout: mainLayout, onLayoutChanged: onMainLayoutChanged } =
     useDefaultLayout({ id: "flexmap-main", storage: localStorage });
-  const { defaultLayout: leftLayout, onLayoutChanged: onLeftLayoutChanged } =
-    useDefaultLayout({ id: "flexmap-left-split", storage: localStorage });
 
   useEffect(() => {
     loadProject();
     refreshMonitors();
     refreshSources();
+    refreshAudioInputs();
+    void setBpmConfig(useAppStore.getState().bpmConfig);
+    void syncProjectorWindowState();
 
     // Check for crash recovery
     tauriInvoke<boolean>("has_recovery").then((hasRecovery) => {
@@ -56,14 +65,25 @@ function App() {
         setShowRecovery(true);
       }
     });
+  }, [loadProject, refreshMonitors, refreshSources, refreshAudioInputs, setBpmConfig, syncProjectorWindowState]);
 
-    // Periodic source refresh (every 3s)
-    const interval = setInterval(() => {
-      refreshSources();
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [loadProject, refreshMonitors, refreshSources]);
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<ProjectorWindowState>("projector-window-state", (event) => {
+          applyProjectorWindowState(event.payload);
+        })
+      )
+      .then((cleanup) => {
+        unlisten = cleanup;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
+  }, [applyProjectorWindowState]);
 
   const handleRecover = async () => {
     try {
@@ -109,20 +129,7 @@ function App() {
           collapsible
           className="flex flex-col border-r border-aura-border"
         >
-          <Group
-            orientation="vertical"
-            className="h-full"
-            defaultLayout={leftLayout}
-            onLayoutChanged={onLeftLayoutChanged}
-          >
-            <Panel id="layers" defaultSize="65" minSize={80}>
-              <LayerPanel />
-            </Panel>
-            <Separator />
-            <Panel id="sources" defaultSize="35" minSize={60}>
-              <SourcePanel />
-            </Panel>
-          </Group>
+          <LeftPanel />
         </Panel>
 
         <Separator />

@@ -58,6 +58,8 @@ export interface LayerProperties {
   gamma: number;
   opacity: number;
   feather: number;
+  beatReactive: boolean;
+  beatAmount: number;
 }
 
 export interface SourceAssignment {
@@ -184,6 +186,34 @@ export interface SourceInfo {
   fps: number | null;
 }
 
+export interface ShaderLibraryEntry {
+  id: string;
+  name: string;
+  author: string;
+  tags: string[];
+  categories?: string[];
+  description?: string;
+  thumbnailUrl: string;
+  sourceId?: string;
+  downloadUrl?: string;
+  isBundled: boolean;
+  isInstalled?: boolean;
+  installedAt?: string;
+  previewFragment?: string;
+  sourceCode?: string;
+  license: string;
+  sourceUrl: string;
+}
+
+export interface InstalledShaderSourceDescriptor {
+  id: string;
+  name: string;
+  seed: number;
+  sourceHash?: string;
+  installedAt?: string;
+  sourceCode?: string;
+}
+
 export interface UndoRedoResult {
   layers: Layer[];
   can_undo: boolean;
@@ -192,6 +222,7 @@ export interface UndoRedoResult {
 
 export type FramePacingMode = "show" | "lowLatency" | "benchmark";
 export type EditorSelectionMode = "shape" | "uv";
+export type PerformanceProfile = "max_fps" | "balanced";
 
 export interface RenderStats {
   gpu_name: string;
@@ -231,10 +262,60 @@ export interface ProjectorStats {
   frametime_ms: number;
 }
 
+export interface ProjectorWindowState {
+  open: boolean;
+  gpu_native: boolean;
+}
+
+export interface AudioInputDevice {
+  id: string;
+  name: string;
+  channels: number;
+  sampleRate: number;
+  isDefault: boolean;
+}
+
+export interface BpmConfig {
+  enabled: boolean;
+  sensitivity: number;
+  gate: number;
+  smoothing: number;
+  attack: number;
+  decay: number;
+  manualBpm: number;
+}
+
+export interface BpmState {
+  bpm: number;
+  beat: number;
+  level: number;
+  phase: number;
+  running: boolean;
+  selectedDeviceId: string | null;
+  selectedDeviceName: string | null;
+  lastBeatMs: number;
+}
+
 export interface FrameSnapshot {
   width: number;
   height: number;
   data_b64: string;
+}
+
+export interface PreviewDelta {
+  cursor: number;
+  removed_layer_ids: string[];
+  changed: Record<string, FrameSnapshot>;
+}
+
+export interface PreviewConsumers {
+  editor: boolean;
+  projector_fallback: boolean;
+}
+
+export interface ProjectSnapshotWithRevision {
+  revision: number;
+  project: ProjectFile;
 }
 
 export const DEFAULT_LAYER_PROPERTIES: LayerProperties = {
@@ -243,6 +324,8 @@ export const DEFAULT_LAYER_PROPERTIES: LayerProperties = {
   gamma: 1.0,
   opacity: 1.0,
   feather: 0.0,
+  beatReactive: false,
+  beatAmount: 0.0,
 };
 
 export const DEFAULT_INPUT_TRANSFORM: InputTransform = {

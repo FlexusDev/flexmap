@@ -1,0 +1,207 @@
+import { useEffect } from "react";
+import { useAppStore } from "../../store/useAppStore";
+
+interface SettingsModalProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+function SettingsModal({ open, onClose }: SettingsModalProps) {
+  const {
+    audioInputDevices,
+    selectedAudioInputId,
+    bpmConfig,
+    bpmState,
+    setAudioInputDevice,
+    setBpmConfig,
+    refreshBpmState,
+    tapTempo,
+  } = useAppStore();
+
+  useEffect(() => {
+    if (!open) return;
+    let running = true;
+    const tick = async () => {
+      while (running) {
+        await refreshBpmState();
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    };
+    tick();
+    return () => {
+      running = false;
+    };
+  }, [open, refreshBpmState]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      onMouseDown={onClose}
+    >
+      <div
+        className="w-full max-w-2xl bg-aura-surface border border-aura-border rounded-lg shadow-2xl flex flex-col"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-aura-border">
+          <div>
+            <div className="text-sm font-semibold text-aura-text">Settings</div>
+            <div className="text-[11px] text-aura-text-dim">Audio / BPM</div>
+          </div>
+          <button className="btn-ghost text-xs px-3 py-1" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-xs text-aura-text-dim">
+              Input Device
+              <select
+                className="input mt-1 w-full text-xs"
+                value={selectedAudioInputId ?? ""}
+                onChange={(event) => void setAudioInputDevice(event.target.value || null)}
+              >
+                <option value="">None</option>
+                {audioInputDevices.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {device.name}
+                    {device.isDefault ? " (default)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-xs text-aura-text-dim flex items-center justify-between border border-aura-border rounded px-3">
+              <span>BPM Engine</span>
+              <button
+                type="button"
+                className={`px-2 py-1 rounded text-[11px] ${
+                  bpmConfig.enabled
+                    ? "bg-emerald-600 text-white"
+                    : "bg-aura-hover text-aura-text-dim"
+                }`}
+                onClick={() => void setBpmConfig({ enabled: !bpmConfig.enabled })}
+              >
+                {bpmConfig.enabled ? "Enabled" : "Disabled"}
+              </button>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <RangeControl
+              label="Sensitivity"
+              min={0.1}
+              max={3}
+              step={0.01}
+              value={bpmConfig.sensitivity}
+              onChange={(value) => void setBpmConfig({ sensitivity: value })}
+            />
+            <RangeControl
+              label="Gate"
+              min={0.01}
+              max={1}
+              step={0.01}
+              value={bpmConfig.gate}
+              onChange={(value) => void setBpmConfig({ gate: value })}
+            />
+            <RangeControl
+              label="Smoothing"
+              min={0}
+              max={0.98}
+              step={0.01}
+              value={bpmConfig.smoothing}
+              onChange={(value) => void setBpmConfig({ smoothing: value })}
+            />
+            <RangeControl
+              label="Attack"
+              min={0.05}
+              max={1}
+              step={0.01}
+              value={bpmConfig.attack}
+              onChange={(value) => void setBpmConfig({ attack: value })}
+            />
+            <RangeControl
+              label="Decay"
+              min={0.05}
+              max={0.99}
+              step={0.01}
+              value={bpmConfig.decay}
+              onChange={(value) => void setBpmConfig({ decay: value })}
+            />
+            <RangeControl
+              label="Manual BPM"
+              min={40}
+              max={220}
+              step={1}
+              value={bpmConfig.manualBpm}
+              onChange={(value) => void setBpmConfig({ manualBpm: value })}
+            />
+          </div>
+
+          <div className="border border-aura-border rounded p-3 bg-aura-bg/40">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs text-aura-text">Calibration Meter</div>
+              <button className="btn-ghost text-xs px-2 py-1" onClick={() => void tapTempo()}>
+                Tap Tempo
+              </button>
+            </div>
+            <div className="h-2 rounded bg-aura-hover overflow-hidden mb-2">
+              <div
+                className="h-full bg-emerald-400 transition-[width] duration-100"
+                style={{ width: `${Math.max(0, Math.min(100, bpmState.level * 100))}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-aura-text-dim">
+              <span>BPM: {bpmState.bpm.toFixed(1)}</span>
+              <span>Phase: {bpmState.phase.toFixed(2)}</span>
+              <span>Beat: {bpmState.beat.toFixed(2)}</span>
+              <span>{bpmState.running ? "Input active" : "Input idle"}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface RangeControlProps {
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (value: number) => void;
+}
+
+function RangeControl({ label, min, max, step, value, onChange }: RangeControlProps) {
+  return (
+    <label className="text-xs text-aura-text-dim">
+      <div className="flex items-center justify-between">
+        <span>{label}</span>
+        <span className="font-mono text-aura-text text-[11px]">{value.toFixed(2)}</span>
+      </div>
+      <input
+        type="range"
+        className="slider w-full mt-1"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(parseFloat(event.target.value))}
+      />
+    </label>
+  );
+}
+
+export default SettingsModal;

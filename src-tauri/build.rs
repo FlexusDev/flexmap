@@ -1,9 +1,13 @@
 fn main() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
     // Build Syphon.framework BEFORE tauri_build::build() — Tauri validates
     // the framework path from tauri.conf.json and will fail if it doesn't exist.
     #[cfg(all(target_os = "macos", feature = "input-syphon"))]
     {
-        build_syphon_framework();
+        if target_os == "macos" {
+            build_syphon_framework();
+        }
     }
 
     tauri_build::build();
@@ -16,19 +20,20 @@ fn main() {
     // so that dlopen() succeeds on first launch.
     #[cfg(all(target_os = "macos", feature = "input-syphon"))]
     {
+        if target_os == "macos" {
+            cc::Build::new()
+                .file("src/input/syphon/bridge.m")
+                .include("src/input/syphon") // find bridge.h
+                .flag("-fobjc-arc")          // use ARC
+                .compile("syphon_bridge");
 
-        cc::Build::new()
-            .file("src/input/syphon/bridge.m")
-            .include("src/input/syphon") // find bridge.h
-            .flag("-fobjc-arc")          // use ARC
-            .compile("syphon_bridge");
+            // Link system frameworks (Metal + Foundation are always available)
+            println!("cargo:rustc-link-lib=framework=Metal");
+            println!("cargo:rustc-link-lib=framework=Foundation");
 
-        // Link system frameworks (Metal + Foundation are always available)
-        println!("cargo:rustc-link-lib=framework=Metal");
-        println!("cargo:rustc-link-lib=framework=Foundation");
-
-        println!("cargo:rerun-if-changed=src/input/syphon/bridge.m");
-        println!("cargo:rerun-if-changed=src/input/syphon/bridge.h");
+            println!("cargo:rerun-if-changed=src/input/syphon/bridge.m");
+            println!("cargo:rerun-if-changed=src/input/syphon/bridge.h");
+        }
     }
 }
 
