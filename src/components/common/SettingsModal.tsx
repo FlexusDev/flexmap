@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAppStore } from "../../store/useAppStore";
+import { getGitHubToken, setGitHubToken } from "../../lib/shader-library";
 
 interface SettingsModalProps {
   open: boolean;
@@ -169,6 +170,8 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
               <span>{bpmState.running ? "Input active" : "Input idle"}</span>
             </div>
           </div>
+
+          <GitHubTokenSection />
         </div>
       </div>
     </div>
@@ -201,6 +204,57 @@ function RangeControl({ label, min, max, step, value, onChange }: RangeControlPr
         onChange={(event) => onChange(parseFloat(event.target.value))}
       />
     </label>
+  );
+}
+
+function GitHubTokenSection() {
+  const [token, setToken] = useState(() => getGitHubToken() ?? "");
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = () => {
+    setGitHubToken(token.trim() || null);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div className="border border-aura-border rounded p-3 bg-aura-bg/40">
+      <div className="text-xs text-aura-text mb-2">GitHub Token (ISF Catalog)</div>
+      <div className="text-[11px] text-aura-text-dim mb-2">
+        Optional. Raises the GitHub API rate limit from 60 to 5,000 requests/hour.
+        Create a fine-grained token with no special permissions.
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          type="password"
+          className="flex-1 bg-aura-bg border border-aura-border rounded px-3 py-1.5 text-xs text-aura-text outline-none focus:border-aura-success font-mono"
+          placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+          value={token}
+          onChange={(e) => {
+            setToken(e.target.value);
+            setSaved(false);
+          }}
+        />
+        <button
+          className="btn-ghost text-xs px-3 py-1.5"
+          onClick={handleSave}
+        >
+          {saved ? "Saved" : "Save"}
+        </button>
+        {token.length > 0 && (
+          <button
+            className="btn-ghost text-xs px-2 py-1.5 text-red-400"
+            onClick={() => {
+              setToken("");
+              setGitHubToken(null);
+              setSaved(false);
+            }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -1029,25 +1029,39 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshSources: async () => {
-    if (get()._sourcesRefreshing) return;
+    if (get()._sourcesRefreshing) {
+      console.info("[ISF-diag] refreshSources: skipped (already refreshing)");
+      return;
+    }
     set({ _sourcesRefreshing: true });
+    console.info("[ISF-diag] refreshSources: starting");
     try {
       const installedShaderSources = getInstalledShaderDescriptors();
       const nextFingerprint = fingerprintInstalledShaders(installedShaderSources);
-      if (nextFingerprint !== installedShaderSyncFingerprint) {
+      const fingerprintChanged = nextFingerprint !== installedShaderSyncFingerprint;
+      console.info(
+        `[ISF-diag] refreshSources: ${installedShaderSources.length} installed shader descriptors, fingerprint ${fingerprintChanged ? "CHANGED — syncing to backend" : "unchanged — skipping sync"}`
+      );
+      if (fingerprintChanged) {
         try {
-          await tauriInvoke<number>("set_installed_shader_sources", {
+          const syncedCount = await tauriInvoke<number>("set_installed_shader_sources", {
             sources: installedShaderSources,
           });
           installedShaderSyncFingerprint = nextFingerprint;
+          console.info(`[ISF-diag] refreshSources: backend accepted ${syncedCount} shader sources`);
         } catch (syncErr) {
-          console.error("Failed to sync installed shader sources:", syncErr);
+          console.error("[ISF-diag] refreshSources: set_installed_shader_sources FAILED:", syncErr);
+          get().addToast("Failed to sync shaders to backend", "warning");
         }
       }
       const sources = await tauriInvoke<SourceInfo[]>("refresh_sources");
+      const shaderSources = sources.filter((s) => s.protocol === "shader");
+      console.info(
+        `[ISF-diag] refreshSources: got ${sources.length} total sources (${shaderSources.length} shader)`
+      );
       set({ sources });
     } catch (e) {
-      console.error("Failed to refresh sources:", e);
+      console.error("[ISF-diag] refreshSources: FAILED:", e);
     } finally {
       set({ _sourcesRefreshing: false });
     }
@@ -1078,9 +1092,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   connectSource: async (layerId: string, sourceId: string) => {
+    console.info(`[ISF-diag] connectSource: layerId=${layerId} sourceId=${sourceId}`);
     try {
-      await tauriInvoke<boolean>("connect_source", { layerId, sourceId });
+      const result = await tauriInvoke<boolean>("connect_source", { layerId, sourceId });
+      console.info(`[ISF-diag] connectSource: backend returned ${result}`);
       const source = get().sources.find((s) => s.id === sourceId);
+      if (!source) {
+        console.warn(
+          `[ISF-diag] connectSource: sourceId=${sourceId} not found in local sources list (${get().sources.length} sources). UI assignment will be stale.`
+        );
+      } else {
+        console.info(`[ISF-diag] connectSource: matched source protocol=${source.protocol} name=${source.name}`);
+      }
       set((s) => ({
         layers: s.layers.map((l) =>
           l.id === layerId
@@ -1099,7 +1122,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         void get().refreshSources();
       }
     } catch (e) {
-      console.error("Failed to connect source:", { layerId, sourceId, error: e });
+      console.error(`[ISF-diag] connectSource: FAILED layerId=${layerId} sourceId=${sourceId}:`, e);
       get().addToast("Failed to connect source", "error");
     }
   },

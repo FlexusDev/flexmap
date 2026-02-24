@@ -235,8 +235,30 @@ impl ShaderPatternBackend {
         let is_builtin = Self::is_valid_source(source_id);
         let installed_source = self.installed_sources.get(source_id);
         if !is_builtin && installed_source.is_none() {
-            log::warn!("Shader backend: frame requested for unknown source {}", source_id);
+            log::warn!(
+                "[ISF-diag] generate_frame: unknown source_id={} (installed_sources has {} entries: [{}])",
+                source_id,
+                self.installed_sources.len(),
+                self.installed_sources.keys().take(10).cloned().collect::<Vec<_>>().join(", ")
+            );
             return None;
+        }
+
+        // Log on first frame generation per source
+        let is_first = !self.source_counters.contains_key(source_id);
+        if is_first {
+            if let Some(src) = installed_source {
+                let has_code = src.source_code.is_some();
+                let runtime_ready = self.installed_runtime.get(source_id)
+                    .map(|r| r.compiled.supports_runtime)
+                    .unwrap_or(false);
+                log::info!(
+                    "[ISF-diag] generate_frame: first frame for {} (has_code={}, runtime_ready={}, seed={})",
+                    source_id, has_code, runtime_ready, src.seed
+                );
+            } else {
+                log::info!("[ISF-diag] generate_frame: first frame for builtin {}", source_id);
+            }
         }
 
         let installed_runtime = installed_source.map(|source| {
@@ -607,10 +629,19 @@ impl InputBackend for ShaderPatternBackend {
     }
 
     fn set_installed_sources(&mut self, sources: Vec<InstalledShaderSource>) {
+        let total = sources.len();
+        let with_code = sources.iter().filter(|s| s.source_code.is_some()).count();
+        log::info!(
+            "[ISF-diag] set_installed_sources: received {} source(s) ({} with code, {} without)",
+            total, with_code, total - with_code
+        );
+
         self.installed_sources = sources.into_iter().map(|s| (s.id.clone(), s)).collect();
         self.installed_runtime.clear();
 
         let mut active_cache_keys = HashSet::new();
+        let mut compile_ok = 0usize;
+        let mut compile_fallback = 0usize;
         for source in self.installed_sources.values() {
             let cache_key = Self::runtime_cache_key(source);
             active_cache_keys.insert(cache_key.clone());
@@ -625,6 +656,16 @@ impl InputBackend for ShaderPatternBackend {
                 .or_insert_with(|| Self::compile_installed_source(source))
                 .clone();
 
+            if compiled.supports_runtime {
+                compile_ok += 1;
+            } else {
+                compile_fallback += 1;
+                log::warn!(
+                    "[ISF-diag] compile fallback for {}: pattern={:?}, warnings={:?}",
+                    source.id, compiled.pattern, compiled.warnings
+                );
+            }
+
             self.installed_runtime.insert(
                 source.id.clone(),
                 InstalledRuntimeConfig {
@@ -638,13 +679,26 @@ impl InputBackend for ShaderPatternBackend {
             );
         }
 
+        log::info!(
+            "[ISF-diag] set_installed_sources: compiled {} runtime-ready, {} fallback",
+            compile_ok, compile_fallback
+        );
+
         self.installed_profile_cache
             .retain(|cache_key, _| active_cache_keys.contains(cache_key));
         self.compiled_cache
             .retain(|cache_key, _| active_cache_keys.contains(cache_key));
 
+        let active_before = self.active_sources.len();
         self.active_sources
             .retain(|id| Self::is_valid_source(id) || self.installed_sources.contains_key(id));
+        let pruned = active_before - self.active_sources.len();
+        if pruned > 0 {
+            log::warn!(
+                "[ISF-diag] set_installed_sources: pruned {} stale active source(s)",
+                pruned
+            );
+        }
         self.source_counters
             .retain(|id, _| Self::is_valid_source(id) || self.installed_sources.contains_key(id));
         self.source_last_emit

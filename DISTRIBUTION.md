@@ -2,6 +2,8 @@
 
 **You can build Windows from macOS** via cross-compilation (see below). Easiest is still building each platform on its native OS or using CI (e.g. GitHub Actions). **MSI installers** can only be created on Windows (WiX is Windows-only); from macOS you get **NSIS** (`.exe` setup) or a portable exe.
 
+**Release artifacts** (zips, `.app` bundles) go into `releases/`, which is gitignored — they are not committed. To remove them and frontend build output: `npm run clean`. To also remove Rust/Tauri build output: `npm run clean:all`.
+
 ## Releasing (macOS)
 
 To build and publish the current version to GitHub Releases:

@@ -4,10 +4,11 @@ fn main() {
     // Build Syphon.framework BEFORE tauri_build::build() — Tauri validates
     // the framework path from tauri.conf.json and will fail if it doesn't exist.
     //
-    // Note: #[cfg(feature)] checks the feature at compile time (works in build.rs),
-    // but target_os checks the *host* OS in build.rs. We use CARGO_CFG_TARGET_OS
-    // (the env var) to correctly gate on the *target* OS for cross-compilation.
-    #[cfg(feature = "input-syphon")]
+    // Note: #[cfg(feature)] and #[cfg(target_family)] check at compile time against
+    // the *host* in build.rs. We add target_family = "unix" so these functions don't
+    // compile on Windows hosts (std::os::unix doesn't exist there). The runtime
+    // CARGO_CFG_TARGET_OS check further gates on the *target* OS for cross-compilation.
+    #[cfg(all(feature = "input-syphon", target_family = "unix"))]
     if target_os == "macos" {
         build_syphon_framework();
     }
@@ -20,7 +21,7 @@ fn main() {
     // so it ALWAYS compiles — no framework needed at build time.
     // build_syphon_framework() above ensures the framework binary exists
     // so that dlopen() succeeds on first launch.
-    #[cfg(feature = "input-syphon")]
+    #[cfg(all(feature = "input-syphon", target_family = "unix"))]
     if target_os == "macos" {
         cc::Build::new()
             .file("src/input/syphon/bridge.m")
@@ -43,7 +44,7 @@ fn main() {
 /// and creates a proper macOS framework bundle. Skips if already built.
 /// Also copies to ~/Library/Frameworks/ for dev mode (cargo tauri dev runs
 /// a bare binary, not inside an .app bundle).
-#[cfg(feature = "input-syphon")]
+#[cfg(all(feature = "input-syphon", target_family = "unix"))]
 fn build_syphon_framework() {
     use std::path::PathBuf;
     use std::process::Command;
@@ -240,14 +241,14 @@ fn build_syphon_framework() {
 }
 
 /// Collect .m and .c source files, excluding tests/examples.
-#[cfg(feature = "input-syphon")]
+#[cfg(all(feature = "input-syphon", target_family = "unix"))]
 fn collect_source_files(repo_dir: &std::path::Path) -> Vec<String> {
     let mut files = Vec::new();
     collect_sources_recursive(repo_dir, &mut files);
     files
 }
 
-#[cfg(feature = "input-syphon")]
+#[cfg(all(feature = "input-syphon", target_family = "unix"))]
 fn collect_sources_recursive(dir: &std::path::Path, files: &mut Vec<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -277,12 +278,12 @@ fn collect_sources_recursive(dir: &std::path::Path, files: &mut Vec<String>) {
 }
 
 /// Copy public headers from the repo into the framework Headers dir.
-#[cfg(feature = "input-syphon")]
+#[cfg(all(feature = "input-syphon", target_family = "unix"))]
 fn copy_headers(repo_dir: &std::path::Path, fw_headers: &std::path::Path) {
     copy_headers_recursive(repo_dir, fw_headers);
 }
 
-#[cfg(feature = "input-syphon")]
+#[cfg(all(feature = "input-syphon", target_family = "unix"))]
 fn copy_headers_recursive(dir: &std::path::Path, fw_headers: &std::path::Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -310,7 +311,7 @@ fn copy_headers_recursive(dir: &std::path::Path, fw_headers: &std::path::Path) {
 /// Copy framework to ~/Library/Frameworks/ for dev mode.
 /// In dev mode (`cargo tauri dev`), the binary runs outside an .app bundle
 /// so it can't find the bundled framework. This ensures dlopen() finds it.
-#[cfg(feature = "input-syphon")]
+#[cfg(all(feature = "input-syphon", target_family = "unix"))]
 fn copy_to_user_frameworks(fw_dir: &std::path::Path) {
     if let Ok(home) = std::env::var("HOME") {
         let user_fw = format!("{}/Library/Frameworks", home);
