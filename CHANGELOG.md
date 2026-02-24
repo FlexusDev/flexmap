@@ -2,7 +2,7 @@
 
 All notable changes to FlexMap are documented here.
 
-## [0.2.0] - 2025-02-24
+## [0.2.0] - 2026-02-24
 
 ### Added
 

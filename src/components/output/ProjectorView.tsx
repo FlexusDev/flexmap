@@ -178,6 +178,7 @@ function ProjectorView() {
   // Poll frame deltas at 20fps (non-overlapping: waits for each cycle to finish)
   useEffect(() => {
     let running = true;
+    let deltaFallbackWarned = false;
     let fpsFrames = 0;
     let fpsLastTime = performance.now();
     let lastPollMs = 0;
@@ -231,8 +232,28 @@ function ProjectorView() {
           if (changed) {
             setFrameTick((t) => t + 1);
           }
-        } catch {
-          // ignore
+        } catch (deltaError) {
+          if (!deltaFallbackWarned) {
+            deltaFallbackWarned = true;
+            console.warn("[ProjectorView] poll_all_frames_delta failed; falling back to poll_all_frames", deltaError);
+          }
+          try {
+            const frames = await tauriInvoke<Record<string, FrameSnapshot>>("poll_all_frames");
+            if (!running) break;
+            const cache = frameCache.current;
+            const entries = Object.entries(frames ?? {});
+            if (entries.length > 0) {
+              const decoded = await Promise.all(
+                entries.map(async ([, snapshot]) => decodeFrame(snapshot))
+              );
+              for (let i = 0; i < entries.length; i++) {
+                cache.set(entries[i][0], decoded[i]);
+              }
+              setFrameTick((t) => t + 1);
+            }
+          } catch {
+            // ignore
+          }
         }
 
         const frametime = performance.now() - t0;

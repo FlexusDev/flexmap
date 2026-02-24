@@ -38,6 +38,7 @@ interface ShaderPreviewCanvasProps {
 function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [compileError, setCompileError] = useState<string | null>(null);
+  const [reinitCounter, setReinitCounter] = useState(0);
 
   const previewConfig = useMemo<PreviewSourceConfig | null>(() => {
     if (!entry) return null;
@@ -217,6 +218,7 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
     };
     const handleContextRestored = () => {
       setCompileError(null);
+      setReinitCounter((c) => c + 1);
     };
     canvas.addEventListener("webglcontextlost", handleContextLost, false);
     canvas.addEventListener("webglcontextrestored", handleContextRestored, false);
@@ -235,7 +237,7 @@ function ShaderPreviewCanvas({ entry, enabled, sourceCode }: ShaderPreviewCanvas
       startTime = 0;
       lastFrameMs = 0;
     };
-  }, [enabled, entry, previewConfig]);
+  }, [enabled, entry, previewConfig, reinitCounter]);
 
   return (
     <div className="w-full">

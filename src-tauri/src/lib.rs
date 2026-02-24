@@ -5,6 +5,109 @@ pub mod persistence;
 pub mod renderer;
 pub mod scene;
 
+/// macOS-only: hooks WebKit's private console delegate method so native engine
+/// warnings (e.g. "too many WebGL contexts") appear in the cargo tauri dev terminal.
+/// Uses raw ObjC runtime FFI — no extra crate deps required on macOS.
+#[cfg(target_os = "macos")]
+mod webkit_console {
+    use std::ffi::{c_char, c_void, CStr};
+
+    pub type Id = *mut c_void;
+    type Sel = *const c_void;
+    type Class = *mut c_void;
+
+    extern "C" {
+        fn sel_registerName(str: *const c_char) -> Sel;
+        fn object_getClass(obj: Id) -> Class;
+        fn class_addMethod(
+            cls: Class,
+            name: Sel,
+            imp: unsafe extern "C" fn(),
+            types: *const c_char,
+        ) -> bool;
+        fn objc_msgSend(recv: Id, sel: Sel, ...) -> Id;
+    }
+
+    /// Send a message that returns an `id` (pointer).
+    #[inline]
+    unsafe fn msg_id(recv: Id, sel: Sel) -> Id {
+        let f: unsafe extern "C" fn(Id, Sel) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
+        f(recv, sel)
+    }
+
+    /// Send a message that returns a C string (e.g. `UTF8String`).
+    #[inline]
+    unsafe fn msg_cstr(recv: Id, sel: Sel) -> *const c_char {
+        let f: unsafe extern "C" fn(Id, Sel) -> *const c_char =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(recv, sel)
+    }
+
+    /// Send a message that returns a `usize` (e.g. `NSUInteger` level).
+    #[inline]
+    unsafe fn msg_usize(recv: Id, sel: Sel) -> usize {
+        let f: unsafe extern "C" fn(Id, Sel) -> usize =
+            std::mem::transmute(objc_msgSend as *const c_void);
+        f(recv, sel)
+    }
+
+    /// Method implementation added to the WKWebView UI delegate.
+    /// WebKit calls `-_webView:didReceiveConsoleLogForTesting:` for every console message.
+    unsafe extern "C" fn console_log_imp(
+        _self: Id,
+        _cmd: Sel,
+        _webview: Id,
+        message: Id, // WKConsoleMessage *
+    ) {
+        let sel_message = sel_registerName(c"message".as_ptr());
+        let sel_level = sel_registerName(c"level".as_ptr());
+        let sel_utf8 = sel_registerName(c"UTF8String".as_ptr());
+
+        let ns_string = msg_id(message, sel_message);
+        let level: usize = msg_usize(message, sel_level);
+        let utf8_ptr = msg_cstr(ns_string, sel_utf8);
+
+        if !utf8_ptr.is_null() {
+            let s = CStr::from_ptr(utf8_ptr).to_string_lossy();
+            // WKConsoleMessageLevel: Log=0, Warning=1, Error=2, Debug=3, Info=4
+            match level {
+                2 => log::error!(target: "webview_native", "[console] {s}"),
+                1 => log::warn!(target: "webview_native", "[console] {s}"),
+                _ => log::info!(target: "webview_native", "[console] {s}"),
+            }
+        }
+    }
+
+    /// Install the console hook onto the WKWebView's UIDelegate class.
+    /// `webview_id` must be a valid `WKWebView *`.
+    pub unsafe fn install(webview_id: Id) {
+        let sel_ui_delegate = sel_registerName(c"UIDelegate".as_ptr());
+        let delegate = msg_id(webview_id, sel_ui_delegate);
+        if delegate.is_null() {
+            log::warn!("[webview_native] UIDelegate is nil — console hook not installed");
+            return;
+        }
+
+        let cls = object_getClass(delegate);
+        let sel = sel_registerName(c"_webView:didReceiveConsoleLogForTesting:".as_ptr());
+        let added = class_addMethod(
+            cls,
+            sel,
+            std::mem::transmute::<
+                unsafe extern "C" fn(Id, Sel, Id, Id),
+                unsafe extern "C" fn(),
+            >(console_log_imp),
+            c"v@:@@".as_ptr(),
+        );
+
+        if added {
+            log::info!("[webview_native] WebKit console hook installed");
+        } else {
+            log::warn!("[webview_native] WebKit console hook: method already registered or failed");
+        }
+    }
+}
+
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use scene::state::SceneState;
@@ -130,6 +233,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
+                // Clear default targets (Stdout + LogDir) to avoid duplicate lines
+                // in the terminal — we add only Stderr explicitly below.
+                .clear_targets()
                 // Write all logs (backend + frontend-forwarded) to stderr so they
                 // appear in the `cargo tauri dev` terminal.
                 .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stderr))
@@ -288,6 +394,17 @@ pub fn run() {
             // Main editor window is always resizable; aspect lock applies only to projector + preview.
             if let Some(main_window) = app.get_webview_window("main") {
                 let _ = main_window.set_resizable(true);
+
+                // Install WebKit native console hook so engine-level messages
+                // (e.g. "too many WebGL contexts") reach the cargo tauri dev terminal.
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = main_window.with_webview(|wv| {
+                        unsafe {
+                            webkit_console::install(wv.inner() as *mut _ as webkit_console::Id);
+                        }
+                    });
+                }
             }
 
             // Initialize GPU context on a background thread

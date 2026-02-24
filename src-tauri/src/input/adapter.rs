@@ -236,7 +236,7 @@ impl InputManager {
         backends.push(Box::new(super::media::MediaFileBackend::new()));
         log::info!("Media file input backend registered");
 
-        #[cfg(all(feature = "input-syphon", target_os = "macos"))]
+        #[cfg(all(target_os = "macos", feature = "input-syphon"))]
         {
             let syphon = super::syphon::SyphonBackend::new();
             backends.push(Box::new(syphon));

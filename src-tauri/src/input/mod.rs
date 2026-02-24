@@ -6,7 +6,7 @@ pub mod test_pattern;
 #[cfg(feature = "input-spout")]
 pub mod spout;
 
-#[cfg(all(feature = "input-syphon", target_os = "macos"))]
+#[cfg(all(target_os = "macos", feature = "input-syphon"))]
 pub mod syphon;
 
 pub use adapter::*;

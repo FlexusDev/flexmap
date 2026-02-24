@@ -19,18 +19,19 @@ function InspectorPane({
   onToggleCollapsed,
   children,
 }: InspectorPaneProps) {
+  const isClickable = Boolean(onHeaderClick);
   return (
     <div className={`inspector-pane ${collapsed ? "is-collapsed" : ""}`}>
       <div
         className={`inspector-pane-header ${active ? "is-active" : ""}`}
         onClick={onHeaderClick}
-        onKeyDown={(event) => {
+        onKeyDown={isClickable ? (event) => {
           if (event.key !== "Enter" && event.key !== " ") return;
           event.preventDefault();
           onHeaderClick?.();
-        }}
-        role="button"
-        tabIndex={0}
+        } : undefined}
+        role={isClickable ? "button" : undefined}
+        tabIndex={isClickable ? 0 : undefined}
       >
         <div className="min-w-0">
           <div className="inspector-pane-title">{title}</div>

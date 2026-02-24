@@ -257,6 +257,13 @@ impl WorkerState {
 
     fn set_audio_input_device(&mut self, device_id: &str) -> Result<BpmState, String> {
         let (device, device_name) = self.resolve_input_device(device_id)?;
+        if !self.config.enabled {
+            self.stop_stream();
+            self.state.selected_device_id = Some(device_id.to_string());
+            self.state.selected_device_name = Some(device_name);
+            self.state.running = false;
+            return Ok(self.get_bpm_state());
+        }
         self.start_stream(device, device_id.to_string(), device_name)?;
         Ok(self.get_bpm_state())
     }

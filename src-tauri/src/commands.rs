@@ -356,7 +356,6 @@ pub async fn open_projector_window(
                         tauri::WindowEvent::CloseRequested { .. } => {
                             let p = resize_app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
                             p.lock().stop();
-                            emit_projector_window_state(&resize_app);
                             log::info!("GPU projector stopped via window close");
                         }
                         tauri::WindowEvent::Destroyed => {

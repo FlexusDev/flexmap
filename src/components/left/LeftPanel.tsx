@@ -103,7 +103,7 @@ function LeftPanel() {
     });
     setActiveSection(sectionId);
     requestAnimationFrame(() => {
-      getPanelHandle(sectionId)?.resize("100%");
+      getPanelHandle(sectionId)?.resize(100);
     });
   };
 
