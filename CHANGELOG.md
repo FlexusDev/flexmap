@@ -2,6 +2,17 @@
 
 All notable changes to FlexMap are documented here.
 
+## [0.2.3] - 2026-02-28
+
+### Fixed
+
+- **Windows white screen (shader effects)**: source textures were created as `Rgba8UnormSrgb` / `Bgra8UnormSrgb`, which some DX12 drivers don't support for simultaneous `TEXTURE_BINDING + COPY_DST`. Switched to the non-sRGB `Rgba8Unorm` / `Bgra8Unorm` variants, which are universally supported. Shader effects and Spout sources now render correctly instead of showing solid white.
+- **Windows offscreen format mismatch**: the engine's offscreen, ping-pong, and layer-temp textures were hardcoded to `Bgra8UnormSrgb` even on Windows where DX12's `get_default_config` returns `Bgra8Unorm`. Added a `#[cfg(windows)]` guard so each platform uses the correct format.
+- **Spout errors silent in release builds**: D3D11 capture failures (`OpenSharedResource`, staging create, `Map`) were logged at `debug!` level — invisible in release `.zip` runs. All per-step failures now emit named `warn!` messages identifying exactly which D3D11 call failed and for which sender.
+- **Frame pump silent on no-frames**: if sources are bound but `poll_frame` returns nothing (e.g. sender gone, D3D11 error), the frame pump now logs an `info!` message once per tick — visible in `cmd.exe` without needing `RUST_LOG=debug`.
+
+---
+
 ## [0.2.2] - 2026-02-28
 
 ### Fixed
@@ -104,6 +115,7 @@ All notable changes to FlexMap are documented here.
 - Input routing: InputBackend trait, test pattern, media file, Spout, Syphon.
 - Persistence: save/load .flexmap JSON, autosave, crash recovery.
 
+[0.2.3]: https://github.com/FlexusDev/flexmap/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/FlexusDev/flexmap/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/FlexusDev/flexmap/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/FlexusDev/flexmap/compare/v0.1.0...v0.2.0
