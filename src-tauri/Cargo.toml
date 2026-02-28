@@ -1,6 +1,6 @@
 [package]
 name = "flexmap"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "Lightweight projection mapping for live visual artists"
 license = "MIT OR Apache-2.0"
