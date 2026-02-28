@@ -165,7 +165,7 @@ function SourcePanel() {
       )}
 
       {/* Syphon status banner — show if bridge is NOT available */}
-      {syphonStatus && !syphonStatus.bridge_available && (
+      {syphonStatus && syphonStatus.bridge_compiled && !syphonStatus.bridge_available && (
         <div className="px-3 py-2 border-b border-aura-border/50 bg-yellow-500/10">
           <div className="text-[10px] text-yellow-300 mb-1">
             Syphon not available
