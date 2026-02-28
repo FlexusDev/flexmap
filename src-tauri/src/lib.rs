@@ -622,6 +622,16 @@ pub fn run() {
                         }
                         let poll_ms = t_poll.elapsed().as_secs_f64() * 1000.0;
 
+                        // Visibility: if sources are bound but no frames came back, log once
+                        // per pump tick at INFO so it's visible in cmd.exe release runs.
+                        if all_polled_source_frames.is_empty() && !source_to_layers.is_empty() {
+                            log::info!(
+                                "[frame-pump] poll returned no frames for {} source(s): {:?}",
+                                source_to_layers.len(),
+                                source_to_layers.keys().collect::<Vec<_>>()
+                            );
+                        }
+
                         let mut changed_source_ids: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
                         for (source_id, _, frame) in &all_polled_source_frames {

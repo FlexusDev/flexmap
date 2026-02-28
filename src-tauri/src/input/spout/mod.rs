@@ -184,14 +184,26 @@ impl D3D11Receiver {
             // windows 0.61: HANDLE wraps *mut c_void; OpenSharedResource uses out-pointer.
             let handle = HANDLE(info.share_handle as usize as *mut core::ffi::c_void);
             let mut shared_tex: Option<ID3D11Texture2D> = None;
-            self.device
-                .OpenSharedResource(handle, &mut shared_tex)
-                .map_err(|e| format!("OpenSharedResource failed: {}", e))?;
-            let shared_tex = shared_tex
-                .ok_or_else(|| "OpenSharedResource returned None".to_string())?;
+            if let Err(e) = self.device.OpenSharedResource(handle, &mut shared_tex) {
+                log::warn!(
+                    "[spout] OpenSharedResource failed for '{}' (handle=0x{:x}, fmt={}): {}",
+                    info.name, info.share_handle, info.format, e
+                );
+                return Err(format!("OpenSharedResource failed: {}", e));
+            }
+            let shared_tex = match shared_tex {
+                Some(t) => t,
+                None => {
+                    log::warn!("[spout] OpenSharedResource returned None for '{}'", info.name);
+                    return Err("OpenSharedResource returned None".into());
+                }
+            };
 
             // Ensure staging texture is the right size
-            self.ensure_staging(info.width, info.height, format)?;
+            if let Err(e) = self.ensure_staging(info.width, info.height, format) {
+                log::warn!("[spout] ensure_staging failed for '{}': {}", info.name, e);
+                return Err(e);
+            }
             let staging = self.staging.as_ref().unwrap();
 
             // GPU-side copy: shared texture → staging texture
@@ -201,9 +213,10 @@ impl D3D11Receiver {
             // Map the staging texture for CPU read.
             // windows 0.61: Map uses an out-pointer for D3D11_MAPPED_SUBRESOURCE.
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context
-                .Map(&staging.texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
-                .map_err(|e| format!("Map staging texture failed: {}", e))?;
+            if let Err(e) = self.context.Map(&staging.texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) {
+                log::warn!("[spout] Map staging texture failed for '{}': {}", info.name, e);
+                return Err(format!("Map staging texture failed: {}", e));
+            }
 
             let row_pitch = mapped.RowPitch as usize;
             let src_ptr = mapped.pData as *const u8;
@@ -532,7 +545,7 @@ impl InputBackend for SpoutBackend {
                 Some(packet)
             }
             Err(e) => {
-                log::debug!("Spout capture failed for {}: {}", sender_name, e);
+                log::warn!("[spout] capture_frame failed for '{}': {}", sender_name, e);
                 self.return_cached_frame(source_id)
             }
         }

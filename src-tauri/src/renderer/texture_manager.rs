@@ -52,8 +52,8 @@ impl TextureManager {
 
     /// Create or recreate a texture for a given source ID.
     /// Uses the pixel format from the frame to choose the GPU texture format:
-    /// - BGRA sources → Bgra8UnormSrgb (native Metal format, zero CPU conversion)
-    /// - RGBA sources → Rgba8UnormSrgb
+    /// - BGRA sources → Bgra8Unorm (universally supported for TEXTURE_BINDING + COPY_DST on DX12/Metal/Vulkan)
+    /// - RGBA sources → Rgba8Unorm
     fn ensure_source_texture(
         &mut self,
         device: &wgpu::Device,
@@ -104,7 +104,8 @@ impl TextureManager {
     /// All layers bound to this source will share the texture.
     ///
     /// BGRA and RGBA frames are uploaded directly — no CPU swizzle needed.
-    /// wgpu handles both Bgra8UnormSrgb and Rgba8UnormSrgb natively.
+    /// Non-sRGB (Unorm) variants are used for universal TEXTURE_BINDING + COPY_DST
+    /// support on DX12/Metal/Vulkan; sRGB variants can fail silently on some DX12 drivers.
     pub fn upload_frame_for_source(
         &mut self,
         device: &wgpu::Device,
@@ -115,8 +116,8 @@ impl TextureManager {
         // Choose GPU format and upload data based on pixel format.
         // BGRA and RGBA write directly — no clone, no swizzle.
         let (gpu_format, upload_data) = match frame.pixel_format {
-            PixelFormat::Bgra8 => (wgpu::TextureFormat::Bgra8UnormSrgb, std::borrow::Cow::Borrowed(&frame.data[..])),
-            PixelFormat::Rgba8 => (wgpu::TextureFormat::Rgba8UnormSrgb, std::borrow::Cow::Borrowed(&frame.data[..])),
+            PixelFormat::Bgra8 => (wgpu::TextureFormat::Bgra8Unorm, std::borrow::Cow::Borrowed(&frame.data[..])),
+            PixelFormat::Rgba8 => (wgpu::TextureFormat::Rgba8Unorm, std::borrow::Cow::Borrowed(&frame.data[..])),
             PixelFormat::Rgb8 => {
                 // Convert RGB to RGBA (only format that needs conversion)
                 let mut rgba = Vec::with_capacity((frame.width * frame.height * 4) as usize);
@@ -124,7 +125,7 @@ impl TextureManager {
                     rgba.extend_from_slice(chunk);
                     rgba.push(255);
                 }
-                (wgpu::TextureFormat::Rgba8UnormSrgb, std::borrow::Cow::Owned(rgba))
+                (wgpu::TextureFormat::Rgba8Unorm, std::borrow::Cow::Owned(rgba))
             }
         };
 
