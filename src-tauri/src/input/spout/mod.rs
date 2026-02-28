@@ -15,9 +15,9 @@ use std::collections::{HashMap, HashSet};
 use windows::{
     core::PCSTR,
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::{CloseHandle, HANDLE, HMODULE},
         Graphics::{
-            Direct3D::D3D_DRIVER_TYPE_HARDWARE,
+            Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0},
             Direct3D11::*,
             Dxgi::Common::*,
         },
@@ -93,10 +93,10 @@ impl D3D11Receiver {
             let mut context = None;
 
             D3D11CreateDevice(
-                None,                        // default adapter
+                None,                                           // default adapter
                 D3D_DRIVER_TYPE_HARDWARE,
-                None,                        // no software rasterizer
-                D3D11_CREATE_DEVICE_FLAG(0), // no special flags
+                HMODULE(std::ptr::null_mut()),                  // no software rasterizer
+                D3D11_CREATE_DEVICE_FLAG(0),                    // no special flags
                 Some(&[D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1]),
                 D3D11_SDK_VERSION,
                 Some(&mut device),
@@ -138,15 +138,17 @@ impl D3D11Receiver {
                     Quality: 0,
                 },
                 Usage: D3D11_USAGE_STAGING,
-                BindFlags: D3D11_BIND_FLAG(0),
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ,
-                MiscFlags: D3D11_RESOURCE_MISC_FLAG(0),
+                BindFlags: 0,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                MiscFlags: 0,
             };
 
             let texture = unsafe {
+                let mut tex: Option<ID3D11Texture2D> = None;
                 self.device
-                    .CreateTexture2D(&desc, None)
-                    .map_err(|e| format!("CreateTexture2D (staging) failed: {}", e))?
+                    .CreateTexture2D(&desc, None, Some(&mut tex))
+                    .map_err(|e| format!("CreateTexture2D (staging) failed: {}", e))?;
+                tex.ok_or_else(|| "CreateTexture2D returned None".to_string())?
             };
 
             log::debug!(
@@ -174,15 +176,19 @@ impl D3D11Receiver {
             return Err("Invalid sender info (zero handle or dimensions)".into());
         }
 
-        let format = DXGI_FORMAT(info.format);
+        // windows 0.61: DXGI_FORMAT wraps i32
+        let format = DXGI_FORMAT(info.format as i32);
 
         unsafe {
-            // Open the DXGI shared texture handle from the sender process
-            let handle = HANDLE(info.share_handle as isize);
-            let shared_tex: ID3D11Texture2D = self
-                .device
-                .OpenSharedResource(handle)
+            // Open the DXGI shared texture handle from the sender process.
+            // windows 0.61: HANDLE wraps *mut c_void; OpenSharedResource uses out-pointer.
+            let handle = HANDLE(info.share_handle as usize as *mut core::ffi::c_void);
+            let mut shared_tex: Option<ID3D11Texture2D> = None;
+            self.device
+                .OpenSharedResource(handle, &mut shared_tex)
                 .map_err(|e| format!("OpenSharedResource failed: {}", e))?;
+            let shared_tex = shared_tex
+                .ok_or_else(|| "OpenSharedResource returned None".to_string())?;
 
             // Ensure staging texture is the right size
             self.ensure_staging(info.width, info.height, format)?;
@@ -192,10 +198,11 @@ impl D3D11Receiver {
             self.context
                 .CopyResource(&staging.texture, &shared_tex);
 
-            // Map the staging texture for CPU read
-            let mapped = self
-                .context
-                .Map(&staging.texture, 0, D3D11_MAP_READ, 0)
+            // Map the staging texture for CPU read.
+            // windows 0.61: Map uses an out-pointer for D3D11_MAPPED_SUBRESOURCE.
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            self.context
+                .Map(&staging.texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                 .map_err(|e| format!("Map staging texture failed: {}", e))?;
 
             let row_pitch = mapped.RowPitch as usize;
@@ -545,6 +552,10 @@ impl InputBackend for SpoutBackend {
 
     fn is_source_active(&self, source_id: &str) -> bool {
         self.active_sources.contains(source_id)
+    }
+
+    fn refresh(&mut self) {
+        self.refresh_sources();
     }
 }
 

@@ -2,6 +2,17 @@
 
 All notable changes to FlexMap are documented here.
 
+## [0.2.2] - 2026-02-28
+
+### Fixed
+
+- **Spout on Windows**: Spout backend was never compiled into Windows builds because `input-spout` was missing from the default Cargo features. Windows users now get Spout source discovery out of the box with no manual flags required.
+- **Spout D3D11 API compatibility**: updated `spout/mod.rs` for the `windows` crate 0.61 API — `CreateTexture2D`, `OpenSharedResource`, and `Map` all switched to out-pointer patterns; `HANDLE`, `DXGI_FORMAT`, and texture descriptor flag fields updated to match the new type signatures.
+- **Spout source refresh**: `SpoutBackend` now implements `fn refresh()` so clicking Refresh in the Sources panel correctly rescans for new Spout senders instead of silently no-opping.
+- **Syphon banner on Windows**: the "Syphon not available" warning no longer appears on Windows — the banner now only shows when Syphon is compiled in but fails to load at runtime (a genuine macOS error), not simply because Syphon isn't applicable to the platform.
+
+---
+
 ## [0.2.1] - 2026-02-24
 
 ### Fixed
@@ -93,6 +104,7 @@ All notable changes to FlexMap are documented here.
 - Input routing: InputBackend trait, test pattern, media file, Spout, Syphon.
 - Persistence: save/load .flexmap JSON, autosave, crash recovery.
 
+[0.2.2]: https://github.com/FlexusDev/flexmap/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/FlexusDev/flexmap/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/FlexusDev/flexmap/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/FlexusDev/flexmap/releases/tag/v0.1.0
