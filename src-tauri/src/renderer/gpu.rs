@@ -124,6 +124,15 @@ impl OutputSurface {
             .get_default_config(adapter, width, height)
             .ok_or("Surface not supported by adapter")?;
 
+        // On Windows/DX12, get_default_config returns Bgra8UnormSrgb but the
+        // engine's blit pipeline is compiled for Bgra8Unorm. Force them to match.
+        #[cfg(windows)]
+        {
+            config.format = wgpu::TextureFormat::Bgra8Unorm;
+        }
+
+        log::info!("[projector] surface format: {:?}", config.format);
+
         config.present_mode = wgpu::PresentMode::Fifo; // VSync for projector
         config.desired_maximum_frame_latency = 2;
 
