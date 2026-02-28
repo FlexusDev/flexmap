@@ -2,6 +2,17 @@
 
 All notable changes to FlexMap are documented here.
 
+## [0.2.4] - 2026-02-28
+
+### Fixed
+
+- **Projector black screen on Windows**: the engine's blit pipeline is compiled for `Bgra8Unorm`, but `get_default_config` on DX12 returns `Bgra8UnormSrgb` as the swapchain format. The format mismatch caused wgpu to silently discard every blit, leaving the projector window black regardless of source. Forced the surface to `Bgra8Unorm` on Windows so pipeline and surface formats match. The selected format is now logged at startup (`[projector] surface format`).
+- **Spout capture stale data on Windows**: `CopyResource` is asynchronous — mapping the staging texture immediately after could read garbage or stale pixels on some drivers. Added `context.Flush()` between the copy and the map, matching the reference Spout2 implementation.
+- **Spout capture failing on multi-GPU systems**: `D3D11CreateDevice` was called with the default adapter (`None`), which on laptops with iGPU + dGPU picks adapter 0 (often the iGPU). If the Spout sender runs on the dGPU, `OpenSharedResource` fails because legacy D3D11 shared handles are not cross-adapter. The D3D11 receiver now enumerates DXGI adapters explicitly (0 → 3) and creates a device on the first available hardware adapter. Adapter name is logged at startup (`[spout] D3D11 device on adapter N 'GPU name'`).
+- **Spout adapter auto-retry**: if `OpenSharedResource` still fails (sender on a different adapter than the one FlexMap opened), the backend automatically retries on the next adapter within ~66ms without blocking the render thread.
+
+---
+
 ## [0.2.3] - 2026-02-28
 
 ### Fixed
@@ -115,6 +126,7 @@ All notable changes to FlexMap are documented here.
 - Input routing: InputBackend trait, test pattern, media file, Spout, Syphon.
 - Persistence: save/load .flexmap JSON, autosave, crash recovery.
 
+[0.2.4]: https://github.com/FlexusDev/flexmap/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/FlexusDev/flexmap/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/FlexusDev/flexmap/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/FlexusDev/flexmap/compare/v0.2.0...v0.2.1

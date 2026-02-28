@@ -17,9 +17,15 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, HMODULE},
         Graphics::{
-            Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0},
+            Direct3D::{
+                D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN,
+                D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0,
+            },
             Direct3D11::*,
-            Dxgi::Common::*,
+            Dxgi::{
+                CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+                Common::*,
+            },
         },
         System::Memory::*,
     },
@@ -77,6 +83,10 @@ struct D3D11Receiver {
     context: ID3D11DeviceContext,
     /// Cached staging texture — reused across frames if dimensions match.
     staging: Option<StagingTexture>,
+    /// Which DXGI adapter index this device was created on.
+    adapter_index: u32,
+    /// Human-readable adapter name for logs.
+    adapter_name: String,
 }
 
 struct StagingTexture {
@@ -87,28 +97,69 @@ struct StagingTexture {
 }
 
 impl D3D11Receiver {
+    /// Try adapters 0..3 in order; return the first usable hardware device.
     fn new() -> Result<Self, String> {
+        for i in 0..4u32 {
+            match Self::on_adapter(i) {
+                Ok(r) => return Ok(r),
+                Err(e) => log::warn!("[spout] adapter {}: {}", i, e),
+            }
+        }
+        Err("Spout: no usable D3D11 hardware adapter found".into())
+    }
+
+    /// Create a D3D11 device on the specific DXGI adapter `index`.
+    fn on_adapter(index: u32) -> Result<Self, String> {
         unsafe {
+            let factory: IDXGIFactory1 = CreateDXGIFactory1()
+                .map_err(|e| format!("CreateDXGIFactory1: {}", e))?;
+
+            let adapter = factory
+                .EnumAdapters1(index)
+                .map_err(|e| format!("no adapter at index {}: {}", index, e))?;
+
+            let desc = adapter
+                .GetDesc1()
+                .map_err(|e| format!("GetDesc1: {}", e))?;
+
+            let name: String = desc
+                .Description
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| char::from_u32(c as u32).unwrap_or('?'))
+                .collect();
+
+            // Skip WARP / software adapters
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                return Err(format!(
+                    "adapter {} '{}' is a software rasterizer — skip",
+                    index, name
+                ));
+            }
+
             let mut device = None;
             let mut context = None;
 
             D3D11CreateDevice(
-                None,                                           // default adapter
-                D3D_DRIVER_TYPE_HARDWARE,
-                HMODULE(std::ptr::null_mut()),                  // no software rasterizer
-                D3D11_CREATE_DEVICE_FLAG(0),                    // no special flags
+                &adapter,                    // explicit adapter
+                D3D_DRIVER_TYPE_UNKNOWN,     // required when adapter is non-null
+                HMODULE(std::ptr::null_mut()),
+                D3D11_CREATE_DEVICE_FLAG(0),
                 Some(&[D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1]),
                 D3D11_SDK_VERSION,
                 Some(&mut device),
                 None,
                 Some(&mut context),
             )
-            .map_err(|e| format!("D3D11CreateDevice failed: {}", e))?;
+            .map_err(|e| format!("D3D11CreateDevice on adapter {} '{}': {}", index, name, e))?;
 
+            log::info!("[spout] D3D11 device on adapter {} '{}'", index, name);
             Ok(Self {
                 device: device.ok_or("D3D11 device is None after creation")?,
                 context: context.ok_or("D3D11 context is None after creation")?,
                 staging: None,
+                adapter_index: index,
+                adapter_name: name,
             })
         }
     }
@@ -207,8 +258,12 @@ impl D3D11Receiver {
             let staging = self.staging.as_ref().unwrap();
 
             // GPU-side copy: shared texture → staging texture
-            self.context
-                .CopyResource(&staging.texture, &shared_tex);
+            self.context.CopyResource(&staging.texture, &shared_tex);
+
+            // Flush the command queue so the GPU copy is complete before we Map.
+            // CopyResource is async — mapping without Flush can return stale data
+            // on some drivers (required per Spout2 reference implementation).
+            self.context.Flush();
 
             // Map the staging texture for CPU read.
             // windows 0.61: Map uses an out-pointer for D3D11_MAPPED_SUBRESOURCE.
@@ -375,6 +430,8 @@ pub struct SpoutBackend {
     sequence_counters: HashMap<String, u64>,
     /// Timestamp of last sender discovery scan.
     last_discovery: std::time::Instant,
+    /// Bitmask of DXGI adapter indices already tried for OpenSharedResource.
+    d3d11_tried_adapters: u32,
 }
 
 // D3D11Receiver contains COM pointers which aren't Send/Sync by default,
@@ -408,6 +465,7 @@ impl SpoutBackend {
             // Force immediate discovery on first list_sources / connect
             last_discovery: std::time::Instant::now()
                 - std::time::Duration::from_secs(10),
+            d3d11_tried_adapters: 0,
         };
 
         backend.refresh_sources();
@@ -546,6 +604,23 @@ impl InputBackend for SpoutBackend {
             }
             Err(e) => {
                 log::warn!("[spout] capture_frame failed for '{}': {}", sender_name, e);
+
+                // If OpenSharedResource failed, the sender may be on a different
+                // GPU adapter (common on laptops with iGPU + dGPU). Try the next
+                // adapter once — on the following tick the new device is used.
+                if e.contains("OpenSharedResource") {
+                    if let Some(ref current) = self.d3d11 {
+                        let next = current.adapter_index + 1;
+                        if next < 4 && (self.d3d11_tried_adapters >> next) & 1 == 0 {
+                            self.d3d11_tried_adapters |= 1 << next;
+                            log::info!("[spout] retrying on adapter {}", next);
+                            if let Ok(new_dev) = D3D11Receiver::on_adapter(next) {
+                                self.d3d11 = Some(new_dev);
+                            }
+                        }
+                    }
+                }
+
                 self.return_cached_frame(source_id)
             }
         }
