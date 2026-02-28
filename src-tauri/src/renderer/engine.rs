@@ -117,7 +117,11 @@ struct BlitCache {
 
 impl RenderEngine {
     pub fn new(gpu: GpuContext, width: u32, height: u32) -> Self {
-        // We need a surface format for the pipeline — use Bgra8UnormSrgb (Metal default)
+        // Surface/offscreen format: Bgra8UnormSrgb on macOS (Metal default);
+        // Bgra8Unorm on Windows (DX12 default, and avoids sRGB COPY_DST issues).
+        #[cfg(windows)]
+        let surface_format = wgpu::TextureFormat::Bgra8Unorm;
+        #[cfg(not(windows))]
         let surface_format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let pipeline = RenderPipeline::new(&gpu.device, surface_format);
         let texture_manager = TextureManager::new();
@@ -210,6 +214,9 @@ impl RenderEngine {
         if width == self.offscreen_width && height == self.offscreen_height {
             return;
         }
+        #[cfg(windows)]
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        #[cfg(not(windows))]
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let (tex, view) = Self::create_offscreen_target(&self.gpu.device, width, height, format);
         self.offscreen_texture = tex;
