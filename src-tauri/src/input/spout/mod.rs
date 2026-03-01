@@ -18,7 +18,7 @@ use windows::{
         Foundation::{CloseHandle, HANDLE, HMODULE},
         Graphics::{
             Direct3D::{
-                D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN,
+                D3D_DRIVER_TYPE_UNKNOWN,
                 D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0,
             },
             Direct3D11::*,
@@ -85,7 +85,8 @@ struct D3D11Receiver {
     staging: Option<StagingTexture>,
     /// Which DXGI adapter index this device was created on.
     adapter_index: u32,
-    /// Human-readable adapter name for logs.
+    /// Human-readable adapter name for logs (used in log::info! on creation).
+    #[allow(dead_code)]
     adapter_name: String,
 }
 
