@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { useAppStore } from "../../store/useAppStore";
+import { useShallow } from "zustand/react/shallow";
 
 // ── Shortcut definitions ────────────────────────────────────────────────
 interface Shortcut {
@@ -137,14 +138,14 @@ function KeyboardOverlay() {
     editorSelectionMode,
     setEditorSelectionMode,
     toggleEditorSelectionMode,
-  } = useAppStore((s) => ({
+  } = useAppStore(useShallow((s) => ({
     layers: s.layers,
     selectedLayerId: s.selectedLayerId,
     selectedLayerIds: s.selectedLayerIds,
     editorSelectionMode: s.editorSelectionMode,
     setEditorSelectionMode: s.setEditorSelectionMode,
     toggleEditorSelectionMode: s.toggleEditorSelectionMode,
-  }));
+  })));
 
   const selectedLayer = selectedLayerId
     ? layers.find((l) => l.id === selectedLayerId) ?? null
