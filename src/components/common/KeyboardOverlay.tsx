@@ -34,15 +34,15 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["1"],               label: "10%",        description: "Set selected layer opacity to 10%",            category: "layer" },
   { keys: ["5"],               label: "50%",        description: "Set selected layer opacity to 50%",            category: "layer" },
   { keys: ["0"],               label: "100%",       description: "Set selected layer opacity to 100%",           category: "layer" },
-  // Layer nudge
-  { keys: ["arrowleft"],       label: "Nudge ←",    description: "Move selected layer left (0.5%)",              category: "layer" },
-  { keys: ["arrowright"],      label: "Nudge →",    description: "Move selected layer right (0.5%)",             category: "layer" },
-  { keys: ["arrowup"],         label: "Nudge ↑",    description: "Move selected layer up (0.5%)",                category: "layer" },
-  { keys: ["arrowdown"],       label: "Nudge ↓",    description: "Move selected layer down (0.5%)",              category: "layer" },
-  { keys: ["shift", "arrowleft"],  label: "Fine ←",  description: "Fine-nudge selected layer left (0.1%)",       category: "layer" },
-  { keys: ["shift", "arrowright"], label: "Fine →",  description: "Fine-nudge selected layer right (0.1%)",      category: "layer" },
-  { keys: ["shift", "arrowup"],    label: "Fine ↑",  description: "Fine-nudge selected layer up (0.1%)",         category: "layer" },
-  { keys: ["shift", "arrowdown"],  label: "Fine ↓",  description: "Fine-nudge selected layer down (0.1%)",       category: "layer" },
+  // Point / layer nudge
+  { keys: ["arrowleft"],       label: "Nudge ←",    description: "Move selected point or layer left (0.5%, Shift: 0.1%)",   category: "edit" },
+  { keys: ["arrowright"],      label: "Nudge →",    description: "Move selected point or layer right (0.5%, Shift: 0.1%)",  category: "edit" },
+  { keys: ["arrowup"],         label: "Nudge ↑",    description: "Move selected point or layer up (0.5%, Shift: 0.1%)",     category: "edit" },
+  { keys: ["arrowdown"],       label: "Nudge ↓",    description: "Move selected point or layer down (0.5%, Shift: 0.1%)",   category: "edit" },
+  { keys: ["shift", "arrowleft"],  label: "Fine ←",  description: "Fine-nudge selected point or layer left (0.1%)",         category: "edit" },
+  { keys: ["shift", "arrowright"], label: "Fine →",  description: "Fine-nudge selected point or layer right (0.1%)",        category: "edit" },
+  { keys: ["shift", "arrowup"],    label: "Fine ↑",  description: "Fine-nudge selected point or layer up (0.1%)",           category: "edit" },
+  { keys: ["shift", "arrowdown"],  label: "Fine ↓",  description: "Fine-nudge selected point or layer down (0.1%)",         category: "edit" },
 ];
 
 // Build a set of all key IDs that have bindings
