@@ -15,6 +15,7 @@ import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import type { PerfStats } from "../../store/useAppStore";
 import { hashPoints, drawTriangleTextured } from "../../lib/math";
 import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
+import { CoordinateHUD } from "./CoordinateHUD";
 
 /** Fast base64→Uint8ClampedArray decode using fetch + data URI (avoids byte-by-byte loop) */
 async function decodeBase64Fast(b64: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
@@ -202,6 +203,7 @@ function EditorCanvas() {
     index: number;
   } | null>(null);
   const [hoveredFaceIndex, setHoveredFaceIndex] = useState<number | null>(null);
+  const [hudData, setHudData] = useState<{ x: number; y: number; cursorX: number; cursorY: number; mode: "point" | "layer-delta"; visible: boolean }>({ x: 0, y: 0, cursorX: 0, cursorY: 0, mode: "point", visible: false });
 
   const {
     project,
@@ -294,6 +296,7 @@ function EditorCanvas() {
   const inputRafRef = useRef<number | null>(null);
   // Shape drag/rotate state (mutable to avoid per-move re-renders)
   const shapeTransformRef = useRef<ShapeTransformState | null>(null);
+  const shapeDragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   // Geometry delta queue for shape drag/rotate
   const geometryPendingRef = useRef<{
     layerIds: string[];
@@ -873,6 +876,7 @@ function EditorCanvas() {
             center,
             lastAngle: startAngle,
           };
+          shapeDragStartRef.current = { x: mx, y: my };
           setShapeTransformActive(true);
         }
         return;
@@ -944,6 +948,12 @@ function EditorCanvas() {
         const dy = (my - shapeTransform.lastMouse.y) / viewRect.h;
         shapeTransform.lastMouse = { x: mx, y: my };
         enqueueGeometryDelta(shapeTransform.layerIds, { dx, dy }, false);
+        const containerRect = containerRef.current?.getBoundingClientRect();
+        if (containerRect) {
+          const pxDx = mx - shapeDragStartRef.current.x;
+          const pxDy = my - shapeDragStartRef.current.y;
+          setHudData({ x: pxDx, y: pxDy, cursorX: e.clientX - containerRect.left, cursorY: e.clientY - containerRect.top, mode: "layer-delta", visible: true });
+        }
       } else {
         const nextAngle = Math.atan2(my - shapeTransform.center.y, mx - shapeTransform.center.x);
         const dRotation = normalizeAngleDelta(nextAngle - shapeTransform.lastAngle);
@@ -995,6 +1005,10 @@ function EditorCanvas() {
       }
 
       const newPt: Point2D = { x: nx, y: ny };
+      const containerRect = containerRef.current?.getBoundingClientRect();
+      if (containerRect) {
+        setHudData({ x: nx, y: ny, cursorX: e.clientX - containerRect.left, cursorY: e.clientY - containerRect.top, mode: "point", visible: true });
+      }
       void updateLayerPoint(layer.id, dragState.pointIndex, newPt);
     } else {
       if (isInputFaceMode) {
@@ -1021,6 +1035,7 @@ function EditorCanvas() {
   const handleMouseUp = () => {
     setDragState(null);
     finishShapeTransform();
+    setHudData(prev => ({ ...prev, visible: false }));
     if (inputDragState || inputRotateState) {
       if (inputRafRef.current !== null) {
         cancelAnimationFrame(inputRafRef.current);
@@ -1826,6 +1841,7 @@ function EditorCanvas() {
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       />
+      <CoordinateHUD {...hudData} />
     </div>
   );
 }
