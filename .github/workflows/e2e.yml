@@ -17,13 +17,7 @@ jobs:
         if: matrix.platform == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev webkit2gtk-driver xvfb
-
-      - name: Setup Edge (Windows)
-        if: matrix.platform == 'windows-latest'
-        uses: browser-actions/setup-edge@v1
-        with:
-          edge-version: stable
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev webkit2gtk-driver xvfb libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
