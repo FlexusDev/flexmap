@@ -2,6 +2,22 @@
 
 All notable changes to FlexMap are documented here.
 
+## [0.3.1] - 2026-03-07
+
+### Added
+
+- **Point selection**: click individual corner points on the canvas to select them, with white/indigo visual highlight; arrow keys nudge the selected point (0.5%, Shift for 0.1%)
+- **Coordinate HUD**: floating tooltip near the cursor shows point coordinates or layer delta during drag, fades out after release
+- **Alignment guides**: dashed cyan lines appear when a point aligns horizontally or vertically with another layer's points during drag
+- **Magnifier mode**: press Z to toggle a 3x zoom lens that follows the cursor for precision work on small screens
+- **Purpose-built controls**: custom Slider with filled track and click-to-edit value, NumericField with drag-to-scrub, BlendModePicker with categorized tile grid, SourcePicker with protocol-grouped popover
+
+### Changed
+
+- **Properties panel**: replaced 4 resizable panes with 2 context-aware sections (Layer + Edit); controls change based on edit mode and point selection state; advanced look settings collapse into an accordion
+
+---
+
 ## [0.3.0] - 2026-03-07
 
 ### Changed
@@ -148,6 +164,7 @@ All notable changes to FlexMap are documented here.
 - Input routing: InputBackend trait, test pattern, media file, Spout, Syphon.
 - Persistence: save/load .flexmap JSON, autosave, crash recovery.
 
+[0.3.1]: https://github.com/FlexusDev/flexmap/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/FlexusDev/flexmap/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/FlexusDev/flexmap/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/FlexusDev/flexmap/compare/v0.2.2...v0.2.3
