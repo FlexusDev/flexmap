@@ -3,6 +3,7 @@ import { useAppStore } from "../../store/useAppStore";
 import { tauriInvoke } from "../../lib/tauri-bridge";
 import type {
   Point2D,
+  Layer,
   LayerGeometry,
   FrameSnapshot,
   PreviewDelta,
@@ -158,6 +159,58 @@ interface ShapeTransformState {
   lastAngle: number;
 }
 
+interface AlignmentGuide {
+  axis: "h" | "v";
+  position: number; // normalized 0-1
+}
+
+/** Extract all control points from a layer geometry (normalized 0-1) */
+function getLayerGeometryPoints(geom: LayerGeometry): Point2D[] {
+  switch (geom.type) {
+    case "Quad":
+      return [...geom.data.corners];
+    case "Triangle":
+      return [...geom.data.vertices];
+    case "Mesh":
+      return [...geom.data.points];
+    case "Circle":
+      return [geom.data.center];
+  }
+}
+
+/** Find horizontal/vertical alignment guides when a point aligns with other layers' points */
+function findAlignmentGuides(
+  dragPoints: Point2D[],
+  currentLayerIds: string[],
+  layers: Layer[],
+  threshold: number = 0.02
+): AlignmentGuide[] {
+  const guides: AlignmentGuide[] = [];
+  const skipIds = new Set(currentLayerIds);
+  for (const layer of layers) {
+    if (skipIds.has(layer.id) || layer.locked || !layer.visible) continue;
+    const points = getLayerGeometryPoints(layer.geometry);
+    for (const pt of points) {
+      for (const dragPt of dragPoints) {
+        if (Math.abs(pt.x - dragPt.x) < threshold) {
+          guides.push({ axis: "v", position: pt.x });
+        }
+        if (Math.abs(pt.y - dragPt.y) < threshold) {
+          guides.push({ axis: "h", position: pt.y });
+        }
+      }
+    }
+  }
+  // Deduplicate
+  const seen = new Set<string>();
+  return guides.filter((g) => {
+    const key = `${g.axis}-${g.position.toFixed(4)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** Offscreen warp cache per layer */
 interface WarpCache {
   canvas: HTMLCanvasElement;
@@ -307,6 +360,7 @@ function EditorCanvas() {
   const geometryInFlightRef = useRef(false);
   const geometryRafRef = useRef<number | null>(null);
   const deltaFallbackWarnedRef = useRef(false);
+  const activeGuidesRef = useRef<AlignmentGuide[]>([]);
   const previewCursorRef = useRef(0);
 
   // Poll source frames at ~15fps for editor preview (delta transport + consumer gating)
@@ -948,6 +1002,13 @@ function EditorCanvas() {
         const dy = (my - shapeTransform.lastMouse.y) / viewRect.h;
         shapeTransform.lastMouse = { x: mx, y: my };
         enqueueGeometryDelta(shapeTransform.layerIds, { dx, dy }, false);
+        // Compute alignment guides from all points of dragged layers
+        const draggedPts: Point2D[] = [];
+        for (const lid of shapeTransform.layerIds) {
+          const l = layers.find((la) => la.id === lid);
+          if (l) draggedPts.push(...getLayerGeometryPoints(l.geometry));
+        }
+        activeGuidesRef.current = findAlignmentGuides(draggedPts, shapeTransform.layerIds, layers);
         const containerRect = containerRef.current?.getBoundingClientRect();
         if (containerRect) {
           const pxDx = mx - shapeDragStartRef.current.x;
@@ -1005,6 +1066,7 @@ function EditorCanvas() {
       }
 
       const newPt: Point2D = { x: nx, y: ny };
+      activeGuidesRef.current = findAlignmentGuides([newPt], [dragState.layerId], layers);
       const containerRect = containerRef.current?.getBoundingClientRect();
       if (containerRect) {
         setHudData({ x: nx, y: ny, cursorX: e.clientX - containerRect.left, cursorY: e.clientY - containerRect.top, mode: "point", visible: true });
@@ -1035,6 +1097,7 @@ function EditorCanvas() {
   const handleMouseUp = () => {
     setDragState(null);
     finishShapeTransform();
+    activeGuidesRef.current = [];
     setHudData(prev => ({ ...prev, visible: false }));
     if (inputDragState || inputRotateState) {
       if (inputRafRef.current !== null) {
@@ -1671,6 +1734,30 @@ function EditorCanvas() {
         }
       }
     }
+
+    // Draw alignment guides (thin dashed cyan lines)
+    const guides = activeGuidesRef.current;
+    if (guides.length > 0) {
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = "rgba(34, 211, 238, 0.5)";
+      ctx.lineWidth = 1;
+      for (const guide of guides) {
+        ctx.beginPath();
+        if (guide.axis === "v") {
+          const x = viewRect.x + guide.position * viewRect.w;
+          ctx.moveTo(x, viewRect.y);
+          ctx.lineTo(x, viewRect.y + viewRect.h);
+        } else {
+          const y = viewRect.y + guide.position * viewRect.h;
+          ctx.moveTo(viewRect.x, y);
+          ctx.lineTo(viewRect.x + viewRect.w, y);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     ctx.restore();
   }, [
     layers,
