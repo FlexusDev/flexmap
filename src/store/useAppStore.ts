@@ -198,6 +198,7 @@ interface AppState {
   selectedLayerId: string | null;
   selectedLayerIds: string[];
   selectedFaceIndices: number[];
+  selectedPointIndex: number | null;
   editorSelectionMode: EditorSelectionMode;
 
   // Calibration
@@ -254,6 +255,8 @@ interface AppState {
   setSelectedFaces: (indices: number[]) => void;
   toggleFaceSelection: (index: number) => void;
   clearFaceSelection: () => void;
+  selectPoint: (index: number | null) => void;
+  clearPointSelection: () => void;
   setLayerVisibility: (id: string, visible: boolean) => Promise<void>;
   setLayerLocked: (id: string, locked: boolean) => Promise<void>;
   reorderLayers: (ids: string[]) => Promise<void>;
@@ -356,6 +359,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedLayerId: null,
   selectedLayerIds: [],
   selectedFaceIndices: [],
+  selectedPointIndex: null,
   editorSelectionMode: "shape",
   calibrationEnabled: false,
   calibrationPattern: "grid",
@@ -582,6 +586,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             singleSelected && selectedLayerId === s.selectedLayerId
               ? s.selectedFaceIndices
               : [],
+          selectedPointIndex: null,
           editorSelectionMode: singleSelected
             ? normalizeEditorSelectionMode(s.editorSelectionMode, selectedLayer)
             : "shape",
@@ -635,6 +640,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedLayerId: id,
         selectedLayerIds: id ? [id] : [],
         selectedFaceIndices: [],
+        selectedPointIndex: null,
         editorSelectionMode: normalizeEditorSelectionMode(s.editorSelectionMode, nextLayer),
       };
     }),
@@ -696,6 +702,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedLayerId: null,
       selectedLayerIds: [],
       selectedFaceIndices: [],
+      selectedPointIndex: null,
       editorSelectionMode: "shape",
     }),
   removeSelectedLayers: async () => {
@@ -714,6 +721,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedLayerId: null,
         selectedLayerIds: [],
         selectedFaceIndices: [],
+        selectedPointIndex: null,
         editorSelectionMode: "shape",
         isDirty: true,
         canUndo: true,
@@ -786,6 +794,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           : [...s.selectedFaceIndices, index],
     })),
   clearFaceSelection: () => set({ selectedFaceIndices: [] }),
+  selectPoint: (index: number | null) => set({ selectedPointIndex: index }),
+  clearPointSelection: () => set({ selectedPointIndex: null }),
 
   setLayerVisibility: async (id, visible) => {
     try {

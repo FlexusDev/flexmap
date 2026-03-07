@@ -18,6 +18,7 @@ beforeEach(() => {
     selectedLayerId: null,
     selectedLayerIds: [],
     selectedFaceIndices: [],
+    selectedPointIndex: null,
     editorSelectionMode: "shape",
     calibrationEnabled: false,
     calibrationPattern: "grid",
@@ -266,5 +267,23 @@ describe("addToast / dismissToast", () => {
     const remaining = getState().toasts;
     expect(remaining).toHaveLength(1);
     expect(remaining[0].message).toBe("Keep");
+  });
+});
+
+describe("point selection", () => {
+  it("selects and clears a point", () => {
+    getState().selectPoint(2);
+    expect(getState().selectedPointIndex).toBe(2);
+    getState().clearPointSelection();
+    expect(getState().selectedPointIndex).toBeNull();
+  });
+
+  it("clears point selection when layer selection changes", async () => {
+    await act(async () => { await getState().addLayer("A", "quad"); });
+    await tick();
+    getState().selectPoint(1);
+    expect(getState().selectedPointIndex).toBe(1);
+    getState().clearLayerSelection();
+    expect(getState().selectedPointIndex).toBeNull();
   });
 });
