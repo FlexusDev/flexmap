@@ -1074,22 +1074,41 @@ function EditorCanvas() {
         beginInteraction();
       }
 
-      for (const id of targetIds) {
-        void applyGeometryTransformDelta(id, {
-          dx,
-          dy,
-          dRotation: 0,
-          sx: 1,
-          sy: 1,
-        });
+      if (selectedPointIndex !== null && selectedLayerId) {
+        // Nudge single selected point
+        const layer = layers.find((l) => l.id === selectedLayerId);
+        if (layer && !layer.locked) {
+          const pts = getPoints(layer.geometry);
+          if (selectedPointIndex < pts.length) {
+            const pt = pts[selectedPointIndex];
+            const newPt: Point2D = {
+              x: Math.max(0, Math.min(1, pt.x + dx)),
+              y: Math.max(0, Math.min(1, pt.y + dy)),
+            };
+            void updateLayerPoint(selectedLayerId, selectedPointIndex, newPt);
+          }
+        }
+      } else {
+        // Nudge whole layer(s)
+        for (const id of targetIds) {
+          void applyGeometryTransformDelta(id, {
+            dx,
+            dy,
+            dRotation: 0,
+            sx: 1,
+            sy: 1,
+          });
+        }
       }
     },
     [
       effectiveSelectedIds,
       selectedFaceIndices,
       selectedPointIndex,
+      selectedLayerId,
       layers,
       applyGeometryTransformDelta,
+      updateLayerPoint,
       beginInteraction,
       clearFaceSelection,
       clearPointSelection,
