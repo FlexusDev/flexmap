@@ -1,6 +1,8 @@
-# wgpu Reference (v23)
+# wgpu Reference (v26)
 
-> **Pinned at v23.0.1.** Do NOT upgrade — v24-26 have breaking surface, pipeline, and shader API changes.
+> Upgraded from v23 to v26. Key API changes: `TexelCopyTextureInfo` (was `ImageCopyTexture`),
+> `TexelCopyBufferLayout` (was `ImageDataLayout`), `depth_slice: None` on `RenderPassColorAttachment`,
+> `Instance::new(&desc)` takes reference, `request_adapter` returns `Result`.
 
 ## Project Usage
 

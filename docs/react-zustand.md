@@ -1,8 +1,4 @@
-# React 18 + Zustand 4 Reference
-
-> **Pinned versions: React 18.3.1, Zustand 4.5.x.** Do NOT upgrade.
-> - React 19 has breaking changes (new compiler, hooks changes, removed legacy APIs).
-> - Zustand 5 requires `useShallow` for array selectors, stricter `setState` types.
+# React 19 + Zustand 5 Reference
 
 ## State Management
 
@@ -30,17 +26,27 @@ export const useAppStore = create<AppState>((set, get) => ({
 }));
 ```
 
-### Selector Pattern (Zustand 4)
+### Selector Patterns (Zustand 5)
 ```typescript
-// Simple selector — no useShallow needed in v4
+// Simple scalar selector — no useShallow needed
 const layers = useAppStore(state => state.layers);
 
-// Multiple values — this works fine in v4 (would break in v5 without useShallow)
-const { layers, selectedLayerId } = useAppStore(state => ({
+// Object/array-returning selectors REQUIRE useShallow in Zustand 5
+import { useShallow } from 'zustand/react/shallow';
+
+const { layers, selectedLayerId } = useAppStore(useShallow(state => ({
   layers: state.layers,
   selectedLayerId: state.selectedLayerId,
-}));
+})));
 ```
+
+> **Important**: In Zustand 5, selectors that return new object/array references on every call
+> will cause infinite re-render loops. Always wrap them with `useShallow`.
+
+### React 19 Notes
+- `RefObject<T>` now requires explicit `null`: use `RefObject<HTMLDivElement | null>`
+- `forwardRef` is no longer needed — `ref` is a regular prop
+- No `defaultProps` or `propTypes` — use TypeScript interfaces
 
 ## Key Files
 - `src/store/` — Zustand store
