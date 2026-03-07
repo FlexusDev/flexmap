@@ -531,3 +531,51 @@ impl Default for InputManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_manager_empty_bindings() {
+        let mgr = InputManager::new();
+        assert!(mgr.bound_layer_ids().is_empty());
+    }
+
+    #[test]
+    fn available_protocols_not_empty() {
+        let mgr = InputManager::new();
+        let protocols = mgr.available_protocols();
+        assert!(!protocols.is_empty());
+        assert!(protocols.contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn list_all_sources_includes_test_patterns() {
+        let mgr = InputManager::new();
+        let sources = mgr.list_all_sources();
+        // Test pattern backend should always have sources
+        assert!(sources.iter().any(|s| s.protocol == "test"));
+    }
+
+    #[test]
+    fn connect_and_disconnect_source() {
+        let mut mgr = InputManager::new();
+        let sources = mgr.list_all_sources();
+        let test_source = sources.iter().find(|s| s.protocol == "test").unwrap();
+
+        let result = mgr.connect_source("layer1", &test_source.id);
+        assert!(result.is_ok());
+        assert_eq!(mgr.get_binding("layer1"), Some(test_source.id.as_str()));
+
+        mgr.disconnect_source("layer1");
+        assert!(mgr.get_binding("layer1").is_none());
+    }
+
+    #[test]
+    fn connect_nonexistent_returns_error() {
+        let mut mgr = InputManager::new();
+        let result = mgr.connect_source("layer1", "nonexistent_source_id");
+        assert!(result.is_err());
+    }
+}
