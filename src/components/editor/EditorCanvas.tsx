@@ -17,6 +17,7 @@ import type { PerfStats } from "../../store/useAppStore";
 import { hashPoints, drawTriangleTextured } from "../../lib/math";
 import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
 import { CoordinateHUD } from "./CoordinateHUD";
+import { Magnifier } from "./Magnifier";
 
 /** Fast base64→Uint8ClampedArray decode using fetch + data URI (avoids byte-by-byte loop) */
 async function decodeBase64Fast(b64: string): Promise<Uint8ClampedArray<ArrayBuffer>> {
@@ -257,6 +258,7 @@ function EditorCanvas() {
   } | null>(null);
   const [hoveredFaceIndex, setHoveredFaceIndex] = useState<number | null>(null);
   const [hudData, setHudData] = useState<{ x: number; y: number; cursorX: number; cursorY: number; mode: "point" | "layer-delta"; visible: boolean }>({ x: 0, y: 0, cursorX: 0, cursorY: 0, mode: "point", visible: false });
+  const [magnifierPos, setMagnifierPos] = useState({ x: 0, y: 0 });
 
   const {
     project,
@@ -264,7 +266,7 @@ function EditorCanvas() {
     setLayerSelection, toggleLayerSelection, clearLayerSelection,
     setSelectedFaces, toggleFaceSelection, clearFaceSelection,
     updateLayerPoint, applyGeometryTransformDelta,
-    beginInteraction, setEditorPerf, snapEnabled, editorSelectionMode,
+    beginInteraction, setEditorPerf, snapEnabled, magnifierEnabled, editorSelectionMode,
     setLayerInputTransform, toggleEditorSelectionMode,
     performanceProfile,
     selectedPointIndex, selectPoint, clearPointSelection,
@@ -990,6 +992,11 @@ function EditorCanvas() {
     if (!rect) return;
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
+
+    // Track mouse position for magnifier (only when enabled)
+    if (magnifierEnabled) {
+      setMagnifierPos({ x: mx, y: my });
+    }
 
     const shapeTransform = shapeTransformRef.current;
     if (shapeTransform) {
@@ -1929,6 +1936,12 @@ function EditorCanvas() {
         onMouseLeave={handleMouseUp}
       />
       <CoordinateHUD {...hudData} />
+      <Magnifier
+        sourceCanvas={canvasRef.current}
+        cursorX={magnifierPos.x}
+        cursorY={magnifierPos.y}
+        enabled={magnifierEnabled}
+      />
     </div>
   );
 }

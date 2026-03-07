@@ -28,6 +28,8 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["meta", "p"],       label: "Projector",  description: "Toggle the projector output window",           category: "view" },
   // Snap
   { keys: ["g"],               label: "Snap",       description: "Toggle snap-to-grid for point dragging",         category: "edit" },
+  // Magnifier
+  { keys: ["z"],               label: "Magnifier",  description: "Toggle magnifier lens (3x zoom)",                category: "view" },
   // Layer opacity (0-9)
   { keys: ["1"],               label: "10%",        description: "Set selected layer opacity to 10%",            category: "layer" },
   { keys: ["5"],               label: "50%",        description: "Set selected layer opacity to 50%",            category: "layer" },

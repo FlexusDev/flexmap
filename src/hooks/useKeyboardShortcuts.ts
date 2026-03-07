@@ -191,6 +191,17 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // Z — Toggle magnifier
+      if (!meta && !e.altKey && matchesKey("z", "KeyZ")) {
+        if (isTypingTarget(target)) {
+          return;
+        }
+        e.preventDefault();
+        markHandled(e);
+        state.toggleMagnifier();
+        return;
+      }
+
       // G — Toggle snap to grid
       if (!meta && !e.altKey && matchesKey("g", "KeyG")) {
         if (isTypingTarget(target)) {

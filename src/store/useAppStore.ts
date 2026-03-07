@@ -230,6 +230,8 @@ interface AppState {
   // Snap-to-grid
   snapEnabled: boolean;
   toggleSnap: () => void;
+  magnifierEnabled: boolean;
+  toggleMagnifier: () => void;
 
   // Performance metrics
   editorPerf: PerfStats;
@@ -390,6 +392,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   snapEnabled: false,
   toggleSnap: () => set((s) => ({ snapEnabled: !s.snapEnabled })),
+  magnifierEnabled: false,
+  toggleMagnifier: () => set((s) => ({ magnifierEnabled: !s.magnifierEnabled })),
 
   editorPerf: { ...EMPTY_PERF },
   projectorPerf: { ...EMPTY_PERF },
