@@ -48,7 +48,7 @@ pub struct GpuContext {
 impl GpuContext {
     /// Initialize wgpu with best available backend
     pub async fn new() -> Result<Self, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -60,7 +60,7 @@ impl GpuContext {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or("Failed to find a suitable GPU adapter")?;
+            .map_err(|e| format!("Failed to find a suitable GPU adapter: {}", e))?;
 
         log::info!("GPU adapter: {:?}", adapter.get_info());
 
@@ -76,7 +76,6 @@ impl GpuContext {
                     memory_hints: wgpu::MemoryHints::Performance,
                     ..Default::default()
                 },
-                None,
             )
             .await
             .map_err(|e| format!("Failed to create GPU device: {}", e))?;
