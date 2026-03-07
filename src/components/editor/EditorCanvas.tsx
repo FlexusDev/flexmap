@@ -212,6 +212,7 @@ function EditorCanvas() {
     beginInteraction, setEditorPerf, snapEnabled, editorSelectionMode,
     setLayerInputTransform, toggleEditorSelectionMode,
     performanceProfile,
+    selectedPointIndex, selectPoint, clearPointSelection,
   } = useAppStore();
   const editorPreviewIntervalMs = performanceProfile === "max_fps" ? 66 : 100;
   const effectiveSelectedIds = selectedLayerIds.length > 0
@@ -829,6 +830,7 @@ function EditorCanvas() {
       const hit = hitTest(mx, my);
       if (hit) {
         setLayerSelection([hit.layerId], hit.layerId);
+        selectPoint(hit.index);
         const layer = layers.find((l) => l.id === hit.layerId);
         if (layer) {
           beginInteraction();
@@ -920,7 +922,8 @@ function EditorCanvas() {
       }
     }
 
-    // Click on empty area — deselect layer + clear faces
+    // Click on empty area — deselect layer + clear faces + clear point
+    clearPointSelection();
     clearLayerSelection();
   };
 
@@ -1032,6 +1035,13 @@ function EditorCanvas() {
   // Keyboard handler for nudging
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      // Escape: clear point selection
+      if (e.key === "Escape" && selectedPointIndex !== null) {
+        e.preventDefault();
+        clearPointSelection();
+        return;
+      }
+
       // Escape: clear face selection
       if (e.key === "Escape" && selectedFaceIndices.length > 0) {
         e.preventDefault();
@@ -1077,10 +1087,12 @@ function EditorCanvas() {
     [
       effectiveSelectedIds,
       selectedFaceIndices,
+      selectedPointIndex,
       layers,
       applyGeometryTransformDelta,
       beginInteraction,
       clearFaceSelection,
+      clearPointSelection,
     ]
   );
 
@@ -1587,18 +1599,41 @@ function EditorCanvas() {
           const p = points[i];
           const isHovered = hoveredPoint?.layerId === layer.id && hoveredPoint.index === i;
           const isDragging = dragState?.layerId === layer.id && dragState.pointIndex === i;
+          const isSelected = i === selectedPointIndex && layer.id === selectedLayerId;
 
-          ctx.beginPath();
-          ctx.arc(
-            p.x, p.y,
-            isDragging || isHovered ? POINT_RADIUS + 2 : POINT_RADIUS,
-            0, Math.PI * 2
-          );
-          ctx.fillStyle = isDragging || isHovered ? POINT_SELECTED_COLOR : POINT_COLOR;
-          ctx.fill();
-          ctx.strokeStyle = "#fff";
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
+          if (isSelected) {
+            // Selected point: indigo ring + white fill + glow
+            ctx.save();
+            ctx.shadowColor = "rgba(129, 140, 248, 0.5)";
+            ctx.shadowBlur = 6;
+
+            // Outer indigo ring
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, POINT_RADIUS + 3, 0, Math.PI * 2);
+            ctx.strokeStyle = "#818cf8";
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // White filled circle
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, POINT_RADIUS, 0, Math.PI * 2);
+            ctx.fillStyle = "#ffffff";
+            ctx.fill();
+
+            ctx.restore();
+          } else {
+            ctx.beginPath();
+            ctx.arc(
+              p.x, p.y,
+              isDragging || isHovered ? POINT_RADIUS + 2 : POINT_RADIUS,
+              0, Math.PI * 2
+            );
+            ctx.fillStyle = isDragging || isHovered ? POINT_SELECTED_COLOR : POINT_COLOR;
+            ctx.fill();
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
         }
       }
     }
@@ -1616,6 +1651,7 @@ function EditorCanvas() {
     hoveredPoint,
     dragState,
     frameTickState,
+    selectedPointIndex,
   ]);
 
   return (
