@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
   e2e:
-    name: E2E Tests
+    name: E2E (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -19,6 +19,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev webkit2gtk-driver xvfb
 
+      - name: Setup Edge (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: browser-actions/setup-edge@v1
+        with:
+          edge-version: stable
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -26,7 +32,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install root deps
