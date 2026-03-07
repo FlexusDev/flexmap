@@ -33,6 +33,9 @@ jobs:
       - name: Rust tests
         run: cd src-tauri && cargo test --lib
 
+      - name: Frontend tests
+        run: npm test
+
       - name: Build macOS portable app
         run: npm run build:portable:mac
 
