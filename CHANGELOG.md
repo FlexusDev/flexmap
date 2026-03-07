@@ -2,6 +2,28 @@
 
 All notable changes to FlexMap are documented here.
 
+## [0.3.0] - 2026-03-07
+
+### Changed
+
+- **wgpu 23 → 26**: upgraded GPU backend to latest wgpu with new texture copy API (`TexelCopyTextureInfo`, `TexelCopyBufferLayout`), `depth_slice` on render pass color attachments, and updated adapter/device request patterns
+- **React 18 → 19**: upgraded to React 19 with updated `RefObject` types; no breaking changes for this codebase
+- **Zustand 4 → 5**: upgraded state management with `useShallow` for object-returning selectors
+- **Tailwind CSS 3 → 4**: migrated to CSS-first configuration (`@theme` block, `@tailwindcss/vite` plugin), removed `tailwind.config.js` and `postcss.config.js`
+- **Vite 5 → 7**: upgraded build tooling with zero config changes needed
+- **Vitest 3 → 4**: upgraded test runner, all tests pass without changes
+
+### Added
+
+- **Test infrastructure**: 54 Rust unit tests, 92 frontend Vitest tests, WebDriverIO e2e test framework, CI workflows for tests
+- **Tech reference docs**: split architecture docs into `docs/` folder with per-technology reference files
+
+### Fixed
+
+- **Build check**: excluded test files from `tsc` build to prevent vitest globals type errors
+
+---
+
 ## [0.2.4] - 2026-02-28
 
 ### Fixed
@@ -126,6 +148,7 @@ All notable changes to FlexMap are documented here.
 - Input routing: InputBackend trait, test pattern, media file, Spout, Syphon.
 - Persistence: save/load .flexmap JSON, autosave, crash recovery.
 
+[0.3.0]: https://github.com/FlexusDev/flexmap/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/FlexusDev/flexmap/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/FlexusDev/flexmap/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/FlexusDev/flexmap/compare/v0.2.1...v0.2.2
