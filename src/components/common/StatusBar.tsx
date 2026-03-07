@@ -280,6 +280,7 @@ function StatusBar() {
     isDirty,
     calibrationEnabled,
     snapEnabled,
+    magnifierEnabled,
     editorSelectionMode,
     project,
     editorPerf,
@@ -378,6 +379,11 @@ function StatusBar() {
       </span>
       {snapEnabled && (
         <span className="text-cyan-400 font-medium">SNAP</span>
+      )}
+      {magnifierEnabled && (
+        <span className="px-1.5 py-0.5 bg-violet-500/20 text-violet-300 rounded text-[10px] font-medium">
+          MAGNIFIER
+        </span>
       )}
       {calibrationEnabled && (
         <span className="text-amber-400 font-medium">CALIBRATION</span>
