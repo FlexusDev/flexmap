@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface CoordinateHUDProps {
   x: number;
@@ -12,17 +12,19 @@ interface CoordinateHUDProps {
 export function CoordinateHUD({ x, y, cursorX, cursorY, mode, visible }: CoordinateHUDProps) {
   const [show, setShow] = useState(false);
   const [fadeOut, setFadeOut] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (visible) {
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
       setShow(true);
       setFadeOut(false);
     } else if (show) {
       setFadeOut(true);
-      const timer = setTimeout(() => { setShow(false); setFadeOut(false); }, 500);
-      return () => clearTimeout(timer);
+      timerRef.current = setTimeout(() => { setShow(false); setFadeOut(false); timerRef.current = null; }, 500);
     }
-  }, [visible, show]);
+    return () => { if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; } };
+  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!show) return null;
 

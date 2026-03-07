@@ -52,7 +52,7 @@ export function Magnifier({ sourceCanvas, cursorX, cursorY, enabled }: Magnifier
     ctx.beginPath();
     ctx.arc(SIZE / 2, SIZE / 2, SIZE / 2 - 1, 0, Math.PI * 2);
     ctx.stroke();
-  });
+  }, [enabled, sourceCanvas, cursorX, cursorY]);
 
   if (!enabled) return null;
 

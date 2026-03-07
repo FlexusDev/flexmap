@@ -67,7 +67,7 @@ Replace 4 panes with 2 sections.
 ### Alignment Guides
 - Thin dashed cyan lines when point/edge aligns with another layer's point/edge
 - Horizontal and vertical only
-- Triggers within snap threshold (5%)
+- Triggers within 2% threshold (tighter than snap grid for precision)
 - Visual only (snap-to-grid controls actual locking)
 - Only checks visible, non-locked layers
 
