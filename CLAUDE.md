@@ -3,7 +3,7 @@
 ## Project Overview
 
 FlexMap is a lightweight projection mapping desktop app for live visual artists.
-Stack: Tauri v2 (Rust backend + React/TypeScript/Tailwind frontend), wgpu v23 (Metal on macOS, D3D12 on Windows).
+Stack: Tauri v2 (Rust backend + React/TypeScript/Tailwind frontend), wgpu v26 (Metal on macOS, D3D12 on Windows).
 
 ## Required Reading
 
@@ -18,18 +18,17 @@ Stack: Tauri v2 (Rust backend + React/TypeScript/Tailwind frontend), wgpu v23 (M
 | Input backends / Syphon / Spout | `docs/input-backends.md` | Any file in `src-tauri/src/input/` |
 | Windows / D3D11 / Spout internals | `docs/spout-windows.md` | Any `cfg(windows)` or Spout code |
 
-## Pinned Versions — DO NOT UPGRADE
+## Current Versions
 
-All major deps are pinned. Upgrades have breaking changes. Do not bump:
-
-| Dep | Pinned | Latest (breaking) | Why not |
-|-----|--------|-------------------|---------|
-| wgpu | 23 | 26 | Surface, pipeline, shader API rewrites |
-| React | 18.3 | 19.x | New compiler, hooks changes |
-| Zustand | 4.5 | 5.x | `useShallow` required, stricter types |
-| Tailwind | 3.4 | 4.x | Full rewrite, CSS-first config |
-| Vite | 5.4 | 7.x | Node 18 dropped, env API changes |
-| Tauri | 2.10 | 2.10 | Already latest |
+| Dep | Version | Notes |
+|-----|---------|-------|
+| wgpu | 26 | `TexelCopyTextureInfo`, `depth_slice` on color attachments |
+| React | 19 | `RefObject<T \| null>`, no `forwardRef` needed |
+| Zustand | 5 | Object/array selectors require `useShallow` |
+| Tailwind | 4 | CSS-first config (`@theme` block), `@tailwindcss/vite` plugin |
+| Vite | 7 | No `splitVendorChunkPlugin`, modern env API |
+| Vitest | 4 | Compatible with Vite 7 |
+| Tauri | 2.10 | Already latest |
 
 ## Architecture
 
