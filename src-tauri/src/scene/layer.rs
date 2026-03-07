@@ -481,3 +481,96 @@ impl Layer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_quad_is_mesh_with_4_points() {
+        let layer = Layer::new_quad("Q", 0);
+        // default_quad() returns a 1x1 Mesh (quad_to_mesh)
+        if let LayerGeometry::Mesh { cols, rows, points, .. } = &layer.geometry {
+            assert_eq!(*cols, 1);
+            assert_eq!(*rows, 1);
+            assert_eq!(points.len(), 4); // (1+1)*(1+1)
+        } else {
+            panic!("Expected Mesh geometry from new_quad");
+        }
+    }
+
+    #[test]
+    fn new_triangle_has_3_vertices() {
+        let layer = Layer::new_triangle("T", 0);
+        if let LayerGeometry::Triangle { vertices } = &layer.geometry {
+            assert_eq!(vertices.len(), 3);
+        } else {
+            panic!("Expected Triangle geometry");
+        }
+    }
+
+    #[test]
+    fn new_mesh_dimensions_correct() {
+        let layer = Layer::new_mesh("M", 0, 3, 2);
+        if let LayerGeometry::Mesh { cols, rows, points, .. } = &layer.geometry {
+            assert_eq!(*cols, 3);
+            assert_eq!(*rows, 2);
+            assert_eq!(points.len(), (3 + 1) * (2 + 1)); // 12
+        } else {
+            panic!("Expected Mesh geometry");
+        }
+    }
+
+    #[test]
+    fn new_circle_is_mesh() {
+        // default_circle() converts to a 1x1 Mesh via circle_to_mesh
+        let layer = Layer::new_circle("C", 0);
+        if let LayerGeometry::Mesh { cols, rows, points, .. } = &layer.geometry {
+            assert_eq!(*cols, 1);
+            assert_eq!(*rows, 1);
+            assert_eq!(points.len(), 4);
+        } else {
+            panic!("Expected Mesh geometry from new_circle");
+        }
+    }
+
+    #[test]
+    fn default_properties() {
+        let layer = Layer::new_quad("Q", 0);
+        assert_eq!(layer.properties.opacity, 1.0);
+        assert!(layer.visible);
+        assert!(!layer.locked);
+    }
+
+    #[test]
+    fn control_points_count() {
+        let quad = Layer::new_quad("Q", 0);
+        assert_eq!(quad.geometry.control_points().len(), 4);
+
+        let tri = Layer::new_triangle("T", 0);
+        assert_eq!(tri.geometry.control_points().len(), 3);
+
+        let mesh = Layer::new_mesh("M", 0, 4, 3);
+        assert_eq!(mesh.geometry.control_points().len(), 5 * 4); // 20
+    }
+
+    #[test]
+    fn unique_ids() {
+        let a = Layer::new_quad("A", 0);
+        let b = Layer::new_quad("B", 1);
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn default_blend_mode_normal() {
+        let layer = Layer::new_quad("Q", 0);
+        assert_eq!(layer.blend_mode, BlendMode::Normal);
+    }
+
+    #[test]
+    fn point2d_new() {
+        let p = Point2D::new(0.5, 0.75);
+        assert_eq!(p.x, 0.5);
+        assert_eq!(p.y, 0.75);
+    }
+}

@@ -1,0 +1,50 @@
+name: E2E Tests
+
+on: [push, pull_request]
+
+jobs:
+  e2e:
+    name: E2E Tests
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps (Ubuntu)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev webkit2gtk-driver xvfb
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root deps
+        run: npm ci
+
+      - name: Install e2e deps
+        run: npm ci
+        working-directory: e2e-tests
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: E2E (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: xvfb-run npm test
+        working-directory: e2e-tests
+
+      - name: E2E (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: npm test
+        working-directory: e2e-tests

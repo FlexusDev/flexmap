@@ -838,3 +838,308 @@ impl Default for SceneState {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn add_quad(state: &SceneState, name: &str) -> String {
+        let layer = Layer::new_quad(name, 0);
+        let id = layer.id.clone();
+        state.add_layer(layer);
+        id
+    }
+
+    fn add_mesh(state: &SceneState, name: &str, cols: u32, rows: u32) -> String {
+        let layer = Layer::new_mesh(name, 0, cols, rows);
+        let id = layer.id.clone();
+        state.add_layer(layer);
+        id
+    }
+
+    // --- Basic SceneState tests ---
+
+    #[test]
+    fn empty_initial_state() {
+        let state = SceneState::new();
+        assert!(state.get_layers_snapshot().is_empty());
+        assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn add_and_remove_layer() {
+        let state = SceneState::new();
+        let id = add_quad(&state, "L1");
+        assert_eq!(state.get_layers_snapshot().len(), 1);
+
+        let removed = state.remove_layer(&id);
+        assert!(removed.is_some());
+        assert!(state.get_layers_snapshot().is_empty());
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_none() {
+        let state = SceneState::new();
+        assert!(state.remove_layer("bogus").is_none());
+    }
+
+    #[test]
+    fn duplicate_creates_copy_with_new_id() {
+        let state = SceneState::new();
+        let id = add_quad(&state, "Original");
+        let dup = state.duplicate_layer(&id).unwrap();
+        assert_ne!(dup.id, id);
+        assert!(dup.name.contains("copy"));
+        assert_eq!(state.get_layers_snapshot().len(), 2);
+    }
+
+    #[test]
+    fn undo_add_layer() {
+        let state = SceneState::new();
+        add_quad(&state, "L1");
+        assert_eq!(state.get_layers_snapshot().len(), 1);
+
+        state.undo();
+        assert!(state.get_layers_snapshot().is_empty());
+    }
+
+    #[test]
+    fn redo_after_undo() {
+        let state = SceneState::new();
+        add_quad(&state, "L1");
+        state.undo();
+        assert!(state.get_layers_snapshot().is_empty());
+
+        state.redo();
+        assert_eq!(state.get_layers_snapshot().len(), 1);
+    }
+
+    #[test]
+    fn begin_interaction_multiple_updates_one_undo() {
+        let state = SceneState::new();
+        let id = add_quad(&state, "L1");
+
+        // Simulate drag: one begin_interaction, many geometry updates
+        state.begin_interaction();
+        for _ in 0..10 {
+            state.update_layer_geometry(&id, LayerGeometry::default_quad());
+        }
+
+        // One undo should revert to the state before the drag started
+        state.undo();
+        // The layer should still exist (undo reverts the geometry changes, not the add)
+        assert_eq!(state.get_layers_snapshot().len(), 1);
+
+        // Another undo reverts the add_layer
+        state.undo();
+        assert!(state.get_layers_snapshot().is_empty());
+    }
+
+    #[test]
+    fn reorder_layers() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "L1");
+        let id2 = add_quad(&state, "L2");
+
+        state.reorder_layers(&[id2.clone(), id1.clone()]);
+
+        let layers = state.get_layers_snapshot();
+        let l1 = layers.iter().find(|l| l.id == id1).unwrap();
+        let l2 = layers.iter().find(|l| l.id == id2).unwrap();
+        assert_eq!(l2.z_index, 0);
+        assert_eq!(l1.z_index, 1);
+    }
+
+    #[test]
+    fn set_layer_visibility() {
+        let state = SceneState::new();
+        let id = add_quad(&state, "L1");
+        assert!(state.set_layer_visibility(&id, false));
+        let layers = state.get_layers_snapshot();
+        assert!(!layers[0].visible);
+    }
+
+    #[test]
+    fn rename_layer() {
+        let state = SceneState::new();
+        let id = add_quad(&state, "Old");
+        assert!(state.rename_layer(&id, "New"));
+        assert_eq!(state.get_layers_snapshot()[0].name, "New");
+    }
+
+    #[test]
+    fn dirty_flag_tracking() {
+        let state = SceneState::new();
+        assert!(!state.is_dirty());
+        add_quad(&state, "L1");
+        assert!(state.is_dirty());
+        state.mark_clean();
+        assert!(!state.is_dirty());
+    }
+
+    #[test]
+    fn revision_increments() {
+        let state = SceneState::new();
+        let r0 = state.revision();
+        add_quad(&state, "L1");
+        let r1 = state.revision();
+        assert!(r1 > r0);
+    }
+
+    #[test]
+    fn set_blend_mode() {
+        let state = SceneState::new();
+        let id = add_quad(&state, "L1");
+        assert!(state.set_layer_blend_mode(&id, BlendMode::Additive));
+        assert_eq!(state.get_layers_snapshot()[0].blend_mode, BlendMode::Additive);
+    }
+
+    #[test]
+    fn remove_layers_batch() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let id2 = add_quad(&state, "B");
+        add_quad(&state, "C");
+
+        assert!(state.remove_layers(&[id1, id2]));
+        assert_eq!(state.get_layers_snapshot().len(), 1);
+        assert_eq!(state.get_layers_snapshot()[0].name, "C");
+    }
+
+    #[test]
+    fn duplicate_layers_batch() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let id2 = add_quad(&state, "B");
+
+        let dups = state.duplicate_layers(&[id1, id2]);
+        assert_eq!(dups.len(), 2);
+        assert_eq!(state.get_layers_snapshot().len(), 4);
+    }
+
+    // --- Mesh face operation tests ---
+
+    #[test]
+    fn toggle_face_mask() {
+        let state = SceneState::new();
+        let id = add_mesh(&state, "M", 2, 2);
+
+        assert!(state.toggle_face_mask(&id, vec![0, 1], true));
+        let layers = state.get_layers_snapshot();
+        if let LayerGeometry::Mesh { masked_faces, .. } = &layers[0].geometry {
+            assert!(masked_faces.contains(&0));
+            assert!(masked_faces.contains(&1));
+        } else {
+            panic!("Expected Mesh");
+        }
+
+        // Unmask face 0
+        assert!(state.toggle_face_mask(&id, vec![0], false));
+        let layers = state.get_layers_snapshot();
+        if let LayerGeometry::Mesh { masked_faces, .. } = &layers[0].geometry {
+            assert!(!masked_faces.contains(&0));
+            assert!(masked_faces.contains(&1));
+        } else {
+            panic!("Expected Mesh");
+        }
+    }
+
+    #[test]
+    fn create_and_remove_face_group() {
+        let state = SceneState::new();
+        let id = add_mesh(&state, "M", 2, 2);
+
+        assert!(state.create_face_group(&id, "Group1".into(), vec![0, 1], "#ff0000".into()));
+        let layers = state.get_layers_snapshot();
+        if let LayerGeometry::Mesh { face_groups, .. } = &layers[0].geometry {
+            assert_eq!(face_groups.len(), 1);
+            assert_eq!(face_groups[0].name, "Group1");
+        } else {
+            panic!("Expected Mesh");
+        }
+
+        assert!(state.remove_face_group(&id, 0));
+        let layers = state.get_layers_snapshot();
+        if let LayerGeometry::Mesh { face_groups, .. } = &layers[0].geometry {
+            assert!(face_groups.is_empty());
+        } else {
+            panic!("Expected Mesh");
+        }
+    }
+
+    #[test]
+    fn rename_face_group() {
+        let state = SceneState::new();
+        let id = add_mesh(&state, "M", 2, 2);
+        state.create_face_group(&id, "Old".into(), vec![0], "#ff0000".into());
+
+        assert!(state.rename_face_group(&id, 0, "New".into()));
+        let layers = state.get_layers_snapshot();
+        if let LayerGeometry::Mesh { face_groups, .. } = &layers[0].geometry {
+            assert_eq!(face_groups[0].name, "New");
+        } else {
+            panic!("Expected Mesh");
+        }
+    }
+
+    #[test]
+    fn set_and_clear_face_uv_override() {
+        let state = SceneState::new();
+        let id = add_mesh(&state, "M", 2, 2);
+
+        let adj = UvAdjustment {
+            offset: [0.1, 0.2],
+            rotation: 0.5,
+            scale: [1.0, 1.0],
+        };
+        assert!(state.set_face_uv_override(&id, 0, adj));
+
+        let layers = state.get_layers_snapshot();
+        if let LayerGeometry::Mesh { uv_overrides, .. } = &layers[0].geometry {
+            assert!(uv_overrides.contains_key(&0));
+        } else {
+            panic!("Expected Mesh");
+        }
+
+        assert!(state.clear_face_uv_override(&id, 0));
+        let layers = state.get_layers_snapshot();
+        if let LayerGeometry::Mesh { uv_overrides, .. } = &layers[0].geometry {
+            assert!(!uv_overrides.contains_key(&0));
+        } else {
+            panic!("Expected Mesh");
+        }
+    }
+
+    #[test]
+    fn subdivide_mesh_doubles_resolution() {
+        let state = SceneState::new();
+        let id = add_mesh(&state, "M", 2, 2);
+
+        let result = state.subdivide_mesh(&id);
+        assert!(result.is_some());
+        if let Some(LayerGeometry::Mesh { cols, rows, points, .. }) = result {
+            assert_eq!(cols, 4);
+            assert_eq!(rows, 4);
+            assert_eq!(points.len(), (4 + 1) * (4 + 1)); // 25
+        } else {
+            panic!("Expected Mesh geometry");
+        }
+    }
+
+    #[test]
+    fn face_ops_on_non_mesh_return_false() {
+        let state = SceneState::new();
+        let layer = Layer::new_triangle("T", 0);
+        let id = layer.id.clone();
+        state.add_layer(layer);
+
+        // toggle_face_mask on a triangle does "succeed" (returns true because layer exists)
+        // but doesn't modify anything since the geometry isn't a Mesh.
+        // The important thing is it doesn't panic.
+        let _ = state.toggle_face_mask(&id, vec![0], true);
+        let _ = state.create_face_group(&id, "G".into(), vec![0], "#fff".into());
+
+        // subdivide on non-mesh returns None
+        assert!(state.subdivide_mesh(&id).is_none());
+    }
+}

@@ -83,3 +83,138 @@ pub fn clear_recovery(project_path: Option<&Path>) {
     let path = autosave_path(project_path);
     let _ = std::fs::remove_file(&path);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::layer::*;
+    use crate::scene::project::ProjectFile;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn sample_project() -> ProjectFile {
+        let mut proj = ProjectFile::new("Test Project");
+        proj.layers.push(Layer::new_quad("Q1", 0));
+        proj.layers.push(Layer::new_mesh("M1", 1, 3, 2));
+        proj
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.flexmap");
+        let proj = sample_project();
+
+        save_project(&proj, &path).unwrap();
+        let loaded = load_project(&path).unwrap();
+
+        assert_eq!(loaded.project_name, "Test Project");
+        assert_eq!(loaded.layers.len(), 2);
+        assert_eq!(loaded.layers[0].name, "Q1");
+        assert_eq!(loaded.layers[1].name, "M1");
+    }
+
+    #[test]
+    fn save_creates_valid_json() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.flexmap");
+        let proj = sample_project();
+
+        save_project(&proj, &path).unwrap();
+        let json = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_object());
+        assert_eq!(parsed["projectName"], "Test Project");
+    }
+
+    #[test]
+    fn load_nonexistent_returns_error() {
+        let result = load_project(Path::new("/tmp/nonexistent_flexmap_test_file.flexmap"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn autosave_and_recovery_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let proj_path = dir.path().join("project.flexmap");
+        let proj = sample_project();
+
+        // Autosave
+        let auto_path = autosave(&proj, Some(proj_path.as_path())).unwrap();
+        assert!(auto_path.exists());
+
+        // Has recovery
+        assert!(has_recovery(Some(proj_path.as_path())));
+
+        // Load recovery
+        let recovered = load_recovery(Some(proj_path.as_path())).unwrap();
+        assert_eq!(recovered.project_name, "Test Project");
+        assert_eq!(recovered.layers.len(), 2);
+
+        // Clear recovery
+        clear_recovery(Some(proj_path.as_path()));
+        assert!(!has_recovery(Some(proj_path.as_path())));
+    }
+
+    #[test]
+    fn layer_geometry_survives_serialization() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("geo.flexmap");
+
+        let mut proj = ProjectFile::new("Geo Test");
+        let mut mesh_layer = Layer::new_mesh("M", 0, 2, 2);
+
+        // Add masked_faces and face_groups to the mesh
+        if let LayerGeometry::Mesh {
+            ref mut masked_faces,
+            ref mut face_groups,
+            ref mut uv_overrides,
+            ..
+        } = mesh_layer.geometry
+        {
+            masked_faces.push(0);
+            masked_faces.push(2);
+            face_groups.push(FaceGroup {
+                name: "MyGroup".into(),
+                face_indices: vec![1, 3],
+                color: "#00ff00".into(),
+            });
+            uv_overrides.insert(
+                1,
+                UvAdjustment {
+                    offset: [0.1, 0.2],
+                    rotation: 0.5,
+                    scale: [1.0, 1.5],
+                },
+            );
+        }
+        proj.layers.push(mesh_layer);
+
+        save_project(&proj, &path).unwrap();
+        let loaded = load_project(&path).unwrap();
+
+        if let LayerGeometry::Mesh {
+            cols,
+            rows,
+            points,
+            masked_faces,
+            face_groups,
+            uv_overrides,
+        } = &loaded.layers[0].geometry
+        {
+            assert_eq!(*cols, 2);
+            assert_eq!(*rows, 2);
+            assert_eq!(points.len(), 9);
+            assert_eq!(masked_faces.len(), 2);
+            assert!(masked_faces.contains(&0));
+            assert!(masked_faces.contains(&2));
+            assert_eq!(face_groups.len(), 1);
+            assert_eq!(face_groups[0].name, "MyGroup");
+            assert!(uv_overrides.contains_key(&1));
+            let adj = &uv_overrides[&1];
+            assert_eq!(adj.offset, [0.1, 0.2]);
+        } else {
+            panic!("Expected Mesh geometry after deserialization");
+        }
+    }
+}

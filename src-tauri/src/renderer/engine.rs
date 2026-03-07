@@ -80,6 +80,53 @@ impl Default for RenderState {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::layer::Layer;
+    use crate::scene::project::CalibrationConfig;
+
+    #[test]
+    fn new_defaults() {
+        let rs = RenderState::new();
+        assert_eq!(rs.layer_generation(), 0);
+        // needs_redraw starts true (initial render needed)
+        assert!(*rs.needs_redraw.read());
+    }
+
+    #[test]
+    fn update_layers_increments_generation() {
+        let rs = RenderState::new();
+        assert_eq!(rs.layer_generation(), 0);
+
+        rs.update_layers(vec![Layer::new_quad("L1", 0)]);
+        assert_eq!(rs.layer_generation(), 1);
+
+        rs.update_layers(vec![]);
+        assert_eq!(rs.layer_generation(), 2);
+    }
+
+    #[test]
+    fn request_redraw_and_take_redraw() {
+        let rs = RenderState::new();
+        // Consume initial redraw
+        assert!(rs.take_redraw());
+        assert!(!rs.take_redraw());
+
+        rs.request_redraw();
+        assert!(rs.take_redraw());
+        assert!(!rs.take_redraw());
+    }
+
+    #[test]
+    fn update_calibration_does_not_panic() {
+        let rs = RenderState::new();
+        let config = CalibrationConfig::default();
+        rs.update_calibration(config);
+        assert!(*rs.needs_redraw.read());
+    }
+}
+
 /// The main render engine — composites layers onto an offscreen texture,
 /// then blits to the projector surface.
 pub struct RenderEngine {
@@ -300,6 +347,7 @@ impl RenderEngine {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
                         },
+                        depth_slice: None,
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -345,6 +393,7 @@ impl RenderEngine {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -373,6 +422,7 @@ impl RenderEngine {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -397,6 +447,7 @@ impl RenderEngine {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         },
+                        depth_slice: None,
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -421,6 +472,7 @@ impl RenderEngine {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                                 store: wgpu::StoreOp::Store,
                             },
+                            depth_slice: None,
                         })],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
@@ -515,6 +567,7 @@ impl RenderEngine {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                                 store: wgpu::StoreOp::Store,
                             },
+                            depth_slice: None,
                         })],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
@@ -530,13 +583,13 @@ impl RenderEngine {
 
                 // Step 3: Copy ping_pong → offscreen
                 encoder.copy_texture_to_texture(
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: &self.ping_pong_texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: &self.offscreen_texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
@@ -841,6 +894,7 @@ impl RenderEngine {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -942,6 +996,7 @@ impl RenderEngine {
                     load: wgpu::LoadOp::Load, // Overlay on top of existing scene
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,

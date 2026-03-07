@@ -136,7 +136,7 @@ impl TextureManager {
         queue.write_texture(
             managed.texture.as_image_copy(),
             &upload_data,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(frame.height),
