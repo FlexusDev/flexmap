@@ -24,6 +24,9 @@ yarn-error.log*
 # Tauri generated files
 gen/
 
+# Claude Code
+.claude/
+
 # IDE
 .vscode/
 .idea/

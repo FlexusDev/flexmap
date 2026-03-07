@@ -72,3 +72,87 @@ impl Default for History {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::layer::*;
+
+    fn make_layer(name: &str) -> Layer {
+        Layer::new_quad(name, 0)
+    }
+
+    #[test]
+    fn new_history_empty() {
+        let h = History::new();
+        assert!(!h.can_undo());
+        assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn push_then_undo() {
+        let h = History::new();
+        let snap = vec![make_layer("A")];
+        h.push(snap.clone());
+        assert!(h.can_undo());
+
+        let current = vec![make_layer("B")];
+        let prev = h.undo(current).unwrap();
+        assert_eq!(prev.len(), 1);
+        assert_eq!(prev[0].name, "A");
+    }
+
+    #[test]
+    fn undo_then_redo() {
+        let h = History::new();
+        let snap = vec![make_layer("A")];
+        h.push(snap);
+
+        let current = vec![make_layer("B")];
+        let prev = h.undo(current).unwrap();
+        assert!(h.can_redo());
+
+        let next = h.redo(prev).unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].name, "B");
+    }
+
+    #[test]
+    fn push_after_undo_clears_redo() {
+        let h = History::new();
+        h.push(vec![make_layer("A")]);
+        let _ = h.undo(vec![make_layer("B")]);
+        assert!(h.can_redo());
+
+        h.push(vec![make_layer("C")]);
+        assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn empty_undo_returns_none() {
+        let h = History::new();
+        assert!(h.undo(vec![]).is_none());
+    }
+
+    #[test]
+    fn max_history_truncation() {
+        let h = History::new();
+        for i in 0..60 {
+            h.push(vec![make_layer(&format!("L{}", i))]);
+        }
+        // Should be capped at MAX_HISTORY (50)
+        assert_eq!(h.undo_stack.read().len(), MAX_HISTORY);
+    }
+
+    #[test]
+    fn clear_resets() {
+        let h = History::new();
+        h.push(vec![make_layer("A")]);
+        let _ = h.undo(vec![make_layer("B")]);
+        assert!(h.can_redo());
+
+        h.clear();
+        assert!(!h.can_undo());
+        assert!(!h.can_redo());
+    }
+}

@@ -102,3 +102,37 @@ impl ProjectFile {
         self.updated_at = Utc::now();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_project_defaults() {
+        let proj = ProjectFile::new("Test");
+        assert_eq!(proj.project_name, "Test");
+        assert_eq!(proj.schema_version, SCHEMA_VERSION);
+        assert!(proj.layers.is_empty());
+        assert_eq!(proj.output.width, 3840);
+        assert_eq!(proj.output.height, 2160);
+        assert_eq!(proj.output.framerate, 60);
+    }
+
+    #[test]
+    fn touch_updates_timestamp() {
+        let mut proj = ProjectFile::new("Test");
+        let before = proj.updated_at;
+        // Small sleep to ensure timestamp differs
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        proj.touch();
+        assert!(proj.updated_at >= before);
+    }
+
+    #[test]
+    fn calibration_defaults_disabled() {
+        let proj = ProjectFile::new("Test");
+        assert!(!proj.calibration.enabled);
+        assert_eq!(proj.calibration.pattern, CalibrationPattern::Grid);
+        assert!(proj.calibration.target_layer.is_none());
+    }
+}

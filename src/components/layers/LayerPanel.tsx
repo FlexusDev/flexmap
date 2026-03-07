@@ -150,10 +150,11 @@ function LayerPanel() {
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0" role="region" aria-label="Layers">
+    <div data-testid="layer-panel" className="flex-1 flex flex-col min-h-0" role="region" aria-label="Layers">
       <div className="flex items-center justify-end px-3 py-1.5 border-b border-aura-border/50">
         <div className="relative">
           <button
+            data-testid="add-layer-btn"
             onClick={() => setShowAddMenu(!showAddMenu)}
             className="btn-ghost text-xs px-2 py-0.5"
           >
@@ -164,6 +165,7 @@ function LayerPanel() {
               {["quad", "triangle", "mesh", "circle"].map((type) => (
                 <button
                   key={type}
+                  data-testid={`add-${type}`}
                   onClick={() => handleAddLayer(type)}
                   className="w-full text-left px-3 py-1.5 text-xs hover:bg-aura-hover transition-colors"
                 >
@@ -184,6 +186,8 @@ function LayerPanel() {
           sortedLayers.map((layer) => (
             <div
               key={layer.id}
+              data-testid="layer-item"
+              data-selected={selectedSet.has(layer.id) ? "true" : "false"}
               onClick={(e) => handleLayerClick(e, layer.id)}
               className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors border-b border-aura-border/50 ${
                 selectedSet.has(layer.id)

@@ -54,7 +54,7 @@ function Toolbar() {
   };
 
   return (
-    <div className="flex items-center h-10 px-3 bg-aura-surface border-b border-aura-border gap-1">
+    <div data-testid="toolbar" className="flex items-center h-10 px-3 bg-aura-surface border-b border-aura-border gap-1">
       {/* Project controls */}
       <div className="flex items-center gap-1">
         <button onClick={handleNew} className="btn-ghost text-xs" title="New Project (Cmd+N)">
