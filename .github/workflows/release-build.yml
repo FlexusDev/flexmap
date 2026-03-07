@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Rust tests
+        run: cd src-tauri && cargo test --lib
+
       - name: Build macOS portable app
         run: npm run build:portable:mac
 
