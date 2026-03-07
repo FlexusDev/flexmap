@@ -37,7 +37,7 @@ interface TransformPaneProps {
   onGeomPointerDown: () => void;
   onGeomPointerUp: () => void;
 
-  joystickRef: RefObject<HTMLDivElement>;
+  joystickRef: RefObject<HTMLDivElement | null>;
   onJoystickPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
   onJoystickPointerMove: (event: PointerEvent<HTMLDivElement>) => void;
   onJoystickPointerUp: (event: PointerEvent<HTMLDivElement>) => void;

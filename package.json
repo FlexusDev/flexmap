@@ -25,18 +25,18 @@
     "@tauri-apps/plugin-fs": "^2.0.0",
     "@tauri-apps/plugin-log": "^2.8.0",
     "gl-matrix": "^3.4.3",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
     "react-resizable-panels": "^4.6.5",
-    "zustand": "^4.5.0"
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
-    "@types/react": "^18.3.0",
-    "@types/react-dom": "^18.3.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.20",
     "jsdom": "^28.1.0",
