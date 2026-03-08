@@ -89,7 +89,6 @@ mod tests {
     use super::*;
     use crate::scene::layer::*;
     use crate::scene::project::ProjectFile;
-    use std::collections::HashMap;
     use tempfile::TempDir;
 
     fn sample_project() -> ProjectFile {
@@ -162,32 +161,7 @@ mod tests {
         let path = dir.path().join("geo.flexmap");
 
         let mut proj = ProjectFile::new("Geo Test");
-        let mut mesh_layer = Layer::new_mesh("M", 0, 2, 2);
-
-        // Add masked_faces and face_groups to the mesh
-        if let LayerGeometry::Mesh {
-            ref mut masked_faces,
-            ref mut face_groups,
-            ref mut uv_overrides,
-            ..
-        } = mesh_layer.geometry
-        {
-            masked_faces.push(0);
-            masked_faces.push(2);
-            face_groups.push(FaceGroup {
-                name: "MyGroup".into(),
-                face_indices: vec![1, 3],
-                color: "#00ff00".into(),
-            });
-            uv_overrides.insert(
-                1,
-                UvAdjustment {
-                    offset: [0.1, 0.2],
-                    rotation: 0.5,
-                    scale: [1.0, 1.5],
-                },
-            );
-        }
+        let mesh_layer = Layer::new_mesh("M", 0, 2, 2);
         proj.layers.push(mesh_layer);
 
         save_project(&proj, &path).unwrap();
@@ -197,22 +171,11 @@ mod tests {
             cols,
             rows,
             points,
-            masked_faces,
-            face_groups,
-            uv_overrides,
         } = &loaded.layers[0].geometry
         {
             assert_eq!(*cols, 2);
             assert_eq!(*rows, 2);
             assert_eq!(points.len(), 9);
-            assert_eq!(masked_faces.len(), 2);
-            assert!(masked_faces.contains(&0));
-            assert!(masked_faces.contains(&2));
-            assert_eq!(face_groups.len(), 1);
-            assert_eq!(face_groups[0].name, "MyGroup");
-            assert!(uv_overrides.contains_key(&1));
-            let adj = &uv_overrides[&1];
-            assert_eq!(adj.offset, [0.1, 0.2]);
         } else {
             panic!("Expected Mesh geometry after deserialization");
         }
