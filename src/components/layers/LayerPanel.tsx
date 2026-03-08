@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 
 function LayerPanel() {
@@ -16,7 +17,23 @@ function LayerPanel() {
     setLayerVisibility,
     setLayerLocked,
     renameLayer,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      layers: s.layers,
+      selectedLayerId: s.selectedLayerId,
+      selectedLayerIds: s.selectedLayerIds,
+      setLayerSelection: s.setLayerSelection,
+      toggleLayerSelection: s.toggleLayerSelection,
+      addLayer: s.addLayer,
+      removeLayer: s.removeLayer,
+      duplicateLayer: s.duplicateLayer,
+      removeSelectedLayers: s.removeSelectedLayers,
+      duplicateSelectedLayers: s.duplicateSelectedLayers,
+      setLayerVisibility: s.setLayerVisibility,
+      setLayerLocked: s.setLayerLocked,
+      renameLayer: s.renameLayer,
+    }))
+  );
 
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);

@@ -1,3 +1,4 @@
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import type { CalibrationPattern } from "../../types";
 
@@ -20,7 +21,16 @@ function CalibrationBar() {
     setCalibrationTarget,
     project,
     layers,
-  } = useAppStore();
+  } = useAppStore(useShallow((s) => ({
+    calibrationEnabled: s.calibrationEnabled,
+    calibrationPattern: s.calibrationPattern,
+    toggleCalibration: s.toggleCalibration,
+    setCalibrationPattern: s.setCalibrationPattern,
+    selectedLayerId: s.selectedLayerId,
+    setCalibrationTarget: s.setCalibrationTarget,
+    project: s.project,
+    layers: s.layers,
+  })));
 
   const hasTarget = !!project?.calibration?.target_layer;
   const canTargetLayer = calibrationEnabled && !!selectedLayerId;

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import { tauriInvoke } from "../../lib/tauri-bridge";
 import type { RenderStats, SourceDiagnostics, FramePacingMode } from "../../types";
@@ -10,7 +11,11 @@ const PACING_MODES: { value: FramePacingMode; label: string; desc: string }[] = 
 ];
 
 function PerformancePanel() {
-  const { framePacingMode, setFramePacing, togglePerformancePanel } = useAppStore();
+  const { framePacingMode, setFramePacing, togglePerformancePanel } = useAppStore(useShallow((s) => ({
+    framePacingMode: s.framePacingMode,
+    setFramePacing: s.setFramePacing,
+    togglePerformancePanel: s.togglePerformancePanel,
+  })));
   const [renderStats, setRenderStats] = useState<RenderStats | null>(null);
   const [sourceDiag, setSourceDiag] = useState<SourceDiagnostics[]>([]);
 

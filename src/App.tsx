@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "./store/useAppStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { isTauri, tauriInvoke } from "./lib/tauri-bridge";
@@ -43,7 +44,17 @@ function App() {
     setBpmConfig,
     syncProjectorWindowState,
     applyProjectorWindowState,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      loadProject: s.loadProject,
+      refreshMonitors: s.refreshMonitors,
+      refreshSources: s.refreshSources,
+      refreshAudioInputs: s.refreshAudioInputs,
+      setBpmConfig: s.setBpmConfig,
+      syncProjectorWindowState: s.syncProjectorWindowState,
+      applyProjectorWindowState: s.applyProjectorWindowState,
+    }))
+  );
   const [showRecovery, setShowRecovery] = useState(false);
 
   useKeyboardShortcuts();

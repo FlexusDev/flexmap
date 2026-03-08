@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import { tauriInvoke } from "../../lib/tauri-bridge";
 import type { AspectRatioId, AspectRatioUiState, OutputConfig } from "../../types";
@@ -41,7 +42,14 @@ function OutputConfigPanel() {
     setOutputConfig,
     setProjectUiState,
     refreshMonitors,
-  } = useAppStore();
+  } = useAppStore(useShallow((s) => ({
+    project: s.project,
+    monitors: s.monitors,
+    projectorWindowOpen: s.projectorWindowOpen,
+    setOutputConfig: s.setOutputConfig,
+    setProjectUiState: s.setProjectUiState,
+    refreshMonitors: s.refreshMonitors,
+  })));
   const [open, setOpen] = useState(false);
   const [widthText, setWidthText] = useState("");
   const [heightText, setHeightText] = useState("");

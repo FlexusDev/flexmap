@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import type { PerfStats } from "../../store/useAppStore";
 import { tauriInvoke, isTauri } from "../../lib/tauri-bridge";
@@ -286,7 +287,25 @@ function StatusBar() {
     editorPerf,
     performancePanelOpen,
     togglePerformancePanel,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      layers: s.layers,
+      selectedLayerId: s.selectedLayerId,
+      selectedLayerIds: s.selectedLayerIds,
+      sources: s.sources,
+      monitors: s.monitors,
+      projectorWindowOpen: s.projectorWindowOpen,
+      isDirty: s.isDirty,
+      calibrationEnabled: s.calibrationEnabled,
+      snapEnabled: s.snapEnabled,
+      magnifierEnabled: s.magnifierEnabled,
+      editorSelectionMode: s.editorSelectionMode,
+      project: s.project,
+      editorPerf: s.editorPerf,
+      performancePanelOpen: s.performancePanelOpen,
+      togglePerformancePanel: s.togglePerformancePanel,
+    })),
+  );
 
   const [gpuInfo, setGpuInfo] = useState<RenderStats | null>(null);
 
