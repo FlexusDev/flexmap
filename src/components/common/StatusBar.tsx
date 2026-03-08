@@ -338,14 +338,12 @@ function StatusBar() {
     : selectedLayer
       ? 1
       : 0;
-  const isUvLike = editorSelectionMode === "uv" && !!selectedLayer;
+  const isInputMode = editorSelectionMode === "input" && !!selectedLayer;
   const modeLabel = selectedCount !== 1
     ? "SHAPE"
-    : !isUvLike
-    ? "SHAPE"
-    : selectedLayer?.geometry.type === "Mesh"
-      ? "UV"
-      : "INPUT";
+    : isInputMode
+      ? "INPUT"
+      : "SHAPE";
 
   return (
     <div className="flex items-center h-6 px-3 bg-aura-surface border-t border-aura-border text-xs text-aura-text-dim gap-4">
@@ -387,11 +385,9 @@ function StatusBar() {
 
       <span
         className={
-          modeLabel === "UV"
-            ? "text-amber-400 font-medium"
-            : modeLabel === "INPUT"
-              ? "text-cyan-300 font-medium"
-              : "text-indigo-300 font-medium"
+          modeLabel === "INPUT"
+            ? "text-cyan-300 font-medium"
+            : "text-indigo-300 font-medium"
         }
       >
         MODE: {modeLabel}

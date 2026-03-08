@@ -16,7 +16,7 @@ interface EditSectionProps {
   pointPosition: Point2D | null;
   pointCount: number;
   onPointChange: (pt: Point2D) => void;
-  // UV/Input mode
+  // Input mode
   inputTransform: {
     offsetX: number;
     offsetY: number;
@@ -26,17 +26,6 @@ interface EditSectionProps {
   };
   onInputTransformChange: (key: string, value: number) => void;
   onInputTransformReset: () => void;
-  // Per-face UV (mesh + faces selected)
-  facesSelected: number;
-  faceUv: {
-    offsetX: number;
-    offsetY: number;
-    rotation: number;
-    scaleX: number;
-    scaleY: number;
-  } | null;
-  onFaceUvChange: (key: string, value: number) => void;
-  onFaceUvReset: () => void;
   // Undo
   onSliderDown: () => void;
   onSliderUp: () => void;
@@ -72,17 +61,13 @@ export default function EditSection({
   inputTransform,
   onInputTransformChange,
   onInputTransformReset,
-  facesSelected,
-  faceUv,
-  onFaceUvChange,
-  onFaceUvReset,
   onSliderDown,
   onSliderUp,
 }: EditSectionProps) {
   if (!layer) return null;
 
-  // View 1: UV/Input mode
-  if (mode === "uv") {
+  // View 1: Input mode
+  if (mode === "input") {
     return (
       <div className="px-2 py-2 space-y-1.5">
         <span className="text-[10px] text-zinc-500 uppercase tracking-wider">
@@ -141,68 +126,6 @@ export default function EditSection({
         >
           Reset
         </button>
-
-        {facesSelected > 0 && faceUv && (
-          <>
-            <div className="border-t border-zinc-700/50" />
-            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">
-              {facesSelected} Face{facesSelected !== 1 ? "s" : ""} UV
-            </span>
-            <div className="grid grid-cols-2 gap-1">
-              <NumericField
-                label="X"
-                value={faceUv.offsetX}
-                min={-1}
-                max={1}
-                step={0.001}
-                decimals={3}
-                onChange={(v) => onFaceUvChange("offsetX", v)}
-                onPointerDown={onSliderDown}
-                onPointerUp={onSliderUp}
-              />
-              <NumericField
-                label="Y"
-                value={faceUv.offsetY}
-                min={-1}
-                max={1}
-                step={0.001}
-                decimals={3}
-                onChange={(v) => onFaceUvChange("offsetY", v)}
-                onPointerDown={onSliderDown}
-                onPointerUp={onSliderUp}
-              />
-              <NumericField
-                label="R"
-                value={faceUv.rotation}
-                min={-180}
-                max={180}
-                step={1}
-                decimals={0}
-                suffix={"\u00B0"}
-                onChange={(v) => onFaceUvChange("rotation", v)}
-                onPointerDown={onSliderDown}
-                onPointerUp={onSliderUp}
-              />
-              <NumericField
-                label="S"
-                value={faceUv.scaleX}
-                min={0.1}
-                max={3}
-                step={0.01}
-                onChange={(v) => onFaceUvChange("scaleX", v)}
-                onPointerDown={onSliderDown}
-                onPointerUp={onSliderUp}
-              />
-            </div>
-            <button
-              type="button"
-              className="text-[10px] text-zinc-500 hover:text-zinc-300"
-              onClick={onFaceUvReset}
-            >
-              Reset
-            </button>
-          </>
-        )}
       </div>
     );
   }

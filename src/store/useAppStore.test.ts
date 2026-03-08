@@ -17,7 +17,6 @@ beforeEach(() => {
     layers: [],
     selectedLayerId: null,
     selectedLayerIds: [],
-    selectedFaceIndices: [],
     selectedPointIndex: null,
     editorSelectionMode: "shape",
     calibrationEnabled: false,

@@ -17,7 +17,6 @@ import type {
   LayerGeometry,
   LayerProperties,
   SourceAssignment,
-  UvAdjustment,
   InputTransform,
   InstalledShaderSourceDescriptor,
   FrameSnapshot,
@@ -205,9 +204,6 @@ function defaultGeometry(type: string, cols?: number, rows?: number): LayerGeome
             { x: 0.1, y: 0.9 }, // BL
             { x: 0.9, y: 0.9 }, // BR
           ],
-          face_groups: [],
-          masked_faces: [],
-          uv_overrides: {},
         },
       };
     }
@@ -234,7 +230,7 @@ function defaultGeometry(type: string, cols?: number, rows?: number): LayerGeome
           });
         }
       }
-      return { type: "Mesh", data: { cols: c, rows: r, points, face_groups: [], masked_faces: [], uv_overrides: {} } };
+      return { type: "Mesh", data: { cols: c, rows: r, points } };
     }
     case "circle": {
       // Circle as 1x1 mesh: 4 corners of the bounding box (center 0.5,0.5, radius 0.3)
@@ -249,9 +245,6 @@ function defaultGeometry(type: string, cols?: number, rows?: number): LayerGeome
             { x: 0.2, y: 0.8 }, // BL
             { x: 0.8, y: 0.8 }, // BR
           ],
-          face_groups: [],
-          masked_faces: [],
-          uv_overrides: {},
         },
       };
     }
@@ -850,83 +843,9 @@ const mockCommands: Record<string, (args: any) => any> = {
     system_cpu: 25.0, cpu_count: 8, cpu_name: "Mock CPU",
   }),
 
-  toggle_face_mask: (args: { layerId: string; faceIndices: number[]; masked: boolean }) => {
-    const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (!layer || layer.geometry.type !== "Mesh") return false;
-    const data = layer.geometry.data as { masked_faces?: number[] };
-    data.masked_faces = data.masked_faces ?? [];
-    if (args.masked) {
-      for (const idx of args.faceIndices) {
-        if (!data.masked_faces.includes(idx)) data.masked_faces.push(idx);
-      }
-    } else {
-      data.masked_faces = data.masked_faces.filter((f) => !args.faceIndices.includes(f));
-    }
-    touchMockProject();
-    return true;
-  },
-
-  create_face_group: (args: { layerId: string; name: string; faceIndices: number[]; color: string }) => {
-    const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (!layer || layer.geometry.type !== "Mesh") return false;
-    const data = layer.geometry.data as { face_groups?: { name: string; face_indices: number[]; color: string }[] };
-    data.face_groups = data.face_groups ?? [];
-    data.face_groups.push({ name: args.name, face_indices: args.faceIndices, color: args.color });
-    touchMockProject();
-    return true;
-  },
-
-  remove_face_group: (args: { layerId: string; groupIndex: number }) => {
-    const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (!layer || layer.geometry.type !== "Mesh") return false;
-    const data = layer.geometry.data as { face_groups?: unknown[] };
-    data.face_groups = data.face_groups ?? [];
-    if (args.groupIndex < data.face_groups.length) {
-      data.face_groups.splice(args.groupIndex, 1);
-      touchMockProject();
-      return true;
-    }
-    return false;
-  },
-
-  rename_face_group: (args: { layerId: string; groupIndex: number; name: string }) => {
-    const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (!layer || layer.geometry.type !== "Mesh") return false;
-    const data = layer.geometry.data as { face_groups?: { name: string }[] };
-    data.face_groups = data.face_groups ?? [];
-    if (args.groupIndex < data.face_groups.length) {
-      data.face_groups[args.groupIndex].name = args.name;
-      touchMockProject();
-      return true;
-    }
-    return false;
-  },
-
   set_calibration_target: (args: { target: CalibrationTarget | null }) => {
     mockProject.calibration.target_layer = args.target;
     touchMockProject();
-  },
-
-  set_face_uv_override: (args: { layerId: string; faceIndex: number; adjustment: UvAdjustment }) => {
-    const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (!layer || layer.geometry.type !== "Mesh") return false;
-    const data = layer.geometry.data as { uv_overrides?: Record<number, UvAdjustment> };
-    data.uv_overrides = data.uv_overrides ?? {};
-    data.uv_overrides[args.faceIndex] = args.adjustment;
-    touchMockProject();
-    return true;
-  },
-
-  clear_face_uv_override: (args: { layerId: string; faceIndex: number }) => {
-    const layer = mockProject.layers.find((l) => l.id === args.layerId);
-    if (!layer || layer.geometry.type !== "Mesh") return false;
-    const data = layer.geometry.data as { uv_overrides?: Record<number, UvAdjustment> };
-    if (data.uv_overrides && args.faceIndex in data.uv_overrides) {
-      delete data.uv_overrides[args.faceIndex];
-      touchMockProject();
-      return true;
-    }
-    return false;
   },
 
   subdivide_mesh: (args: { layerId: string }) => {
@@ -949,7 +868,7 @@ const mockCommands: Record<string, (args: any) => any> = {
         newPoints.push({ x: (p00.x + p01.x + p10.x + p11.x) / 4, y: (p00.y + p01.y + p10.y + p11.y) / 4 });
       }
     }
-    const newGeometry: LayerGeometry = { type: "Mesh", data: { cols: newCols, rows: newRows, points: newPoints, face_groups: [], masked_faces: [], uv_overrides: {} } };
+    const newGeometry: LayerGeometry = { type: "Mesh", data: { cols: newCols, rows: newRows, points: newPoints } };
     layer.geometry = newGeometry;
     touchMockProject();
     return newGeometry;

@@ -10,7 +10,6 @@ import type {
   PreviewDelta,
   BlendMode,
   InputTransform,
-  UvAdjustment,
   EditorSelectionMode,
 } from "../../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
@@ -70,23 +69,6 @@ const TWO_PI = Math.PI * 2;
 const TRANSFORM_EPS = 1e-6;
 
 type ShapeEditTool = "points" | "drag" | "rotate";
-
-function applyUvAdjustmentToUv(
-  uv: { u: number; v: number },
-  center: { u: number; v: number },
-  adj: UvAdjustment
-): { u: number; v: number } {
-  const sx = adj.scale[0];
-  const sy = adj.scale[1];
-  const c = Math.cos(adj.rotation);
-  const s = Math.sin(adj.rotation);
-  const du = (uv.u - center.u) * sx;
-  const dv = (uv.v - center.v) * sy;
-  return {
-    u: du * c - dv * s + center.u + adj.offset[0],
-    v: du * s + dv * c + center.v + adj.offset[1],
-  };
-}
 
 function applyInputTransformToUv(
   uv: { u: number; v: number },
@@ -250,22 +232,20 @@ function EditorCanvas() {
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [inputDragState, setInputDragState] = useState<InputDragState | null>(null);
   const [inputRotateState, setInputRotateState] = useState<InputRotateState | null>(null);
-  const [inputEditTool, setInputEditTool] = useState<"faces" | "drag" | "rotate">("faces");
+  const [inputEditTool, setInputEditTool] = useState<"drag" | "rotate">("drag");
   const [shapeEditTool, setShapeEditTool] = useState<ShapeEditTool>("points");
   const [shapeTransformActive, setShapeTransformActive] = useState(false);
   const [hoveredPoint, setHoveredPoint] = useState<{
     layerId: string;
     index: number;
   } | null>(null);
-  const [hoveredFaceIndex, setHoveredFaceIndex] = useState<number | null>(null);
   const [hudData, setHudData] = useState<{ x: number; y: number; cursorX: number; cursorY: number; mode: "point" | "layer-delta"; visible: boolean }>({ x: 0, y: 0, cursorX: 0, cursorY: 0, mode: "point", visible: false });
   const [magnifierPos, setMagnifierPos] = useState({ x: 0, y: 0 });
 
   const {
     project,
-    layers, selectedLayerId, selectedLayerIds, selectedFaceIndices,
+    layers, selectedLayerId, selectedLayerIds,
     setLayerSelection, toggleLayerSelection, clearLayerSelection,
-    setSelectedFaces, toggleFaceSelection, clearFaceSelection,
     updateLayerPoint, applyGeometryTransformDelta,
     beginInteraction, setEditorPerf, snapEnabled, magnifierEnabled, editorSelectionMode,
     setLayerInputTransform, toggleEditorSelectionMode,
@@ -276,13 +256,9 @@ function EditorCanvas() {
     layers: s.layers,
     selectedLayerId: s.selectedLayerId,
     selectedLayerIds: s.selectedLayerIds,
-    selectedFaceIndices: s.selectedFaceIndices,
     setLayerSelection: s.setLayerSelection,
     toggleLayerSelection: s.toggleLayerSelection,
     clearLayerSelection: s.clearLayerSelection,
-    setSelectedFaces: s.setSelectedFaces,
-    toggleFaceSelection: s.toggleFaceSelection,
-    clearFaceSelection: s.clearFaceSelection,
     updateLayerPoint: s.updateLayerPoint,
     applyGeometryTransformDelta: s.applyGeometryTransformDelta,
     beginInteraction: s.beginInteraction,
@@ -333,22 +309,14 @@ function EditorCanvas() {
     ? layers.find((l) => l.id === selectedLayerId) ?? null
     : null;
   const singleLayerSelected = !!selectedLayer && effectiveSelectedIds.length === 1;
-  const meshSelected = selectedLayer?.geometry.type === "Mesh";
   const selectionMode: EditorSelectionMode =
     singleLayerSelected
       ? editorSelectionMode
       : "shape";
-  const isUvMode = selectionMode === "uv";
-  const effectiveInputTool: "faces" | "drag" | "rotate" = meshSelected
-    ? inputEditTool
-    : inputEditTool === "faces"
-      ? "drag"
-      : inputEditTool;
-  const isInputFaceMode = isUvMode && meshSelected && effectiveInputTool === "faces";
-  const isInputDragMode = isUvMode && !!selectedLayer && effectiveInputTool === "drag";
-  const isInputRotateMode = isUvMode && !!selectedLayer && effectiveInputTool === "rotate";
-  const isInputMode = isInputDragMode || isInputRotateMode;
-  const isShapeMode = !isUvMode;
+  const isInputMode = selectionMode === "input";
+  const isInputDragMode = isInputMode && !!selectedLayer && inputEditTool === "drag";
+  const isInputRotateMode = isInputMode && !!selectedLayer && inputEditTool === "rotate";
+  const isShapeMode = !isInputMode;
   const isShapePointMode = isShapeMode && shapeEditTool === "points";
   const isShapeDragMode = isShapeMode && shapeEditTool === "drag";
   const isShapeRotateMode = isShapeMode && shapeEditTool === "rotate";
@@ -697,17 +665,8 @@ function EditorCanvas() {
   }, [flushGeometryDelta]);
 
   useEffect(() => {
-    if (isInputFaceMode) {
-      setHoveredPoint(null);
-      setDragState(null);
-      setInputDragState(null);
-      setInputRotateState(null);
-      finishShapeTransform();
-      return;
-    }
     if (isInputMode) {
       setHoveredPoint(null);
-      setHoveredFaceIndex(null);
       setDragState(null);
       finishShapeTransform();
       return;
@@ -720,11 +679,9 @@ function EditorCanvas() {
       setHoveredPoint(null);
       setDragState(null);
     }
-    setHoveredFaceIndex(null);
     setInputDragState(null);
     setInputRotateState(null);
   }, [
-    isInputFaceMode,
     isInputMode,
     isShapePointMode,
     isShapeDragMode,
@@ -806,26 +763,6 @@ function EditorCanvas() {
     return !(hasNeg && hasPos);
   };
 
-  /** Find which mesh face index the mouse is over (returns null if none) */
-  const faceHitTest = (mx: number, my: number, layerId: string): number | null => {
-    const layer = layers.find((l) => l.id === layerId);
-    if (!layer || layer.geometry.type !== "Mesh") return null;
-    const { cols, rows } = layer.geometry.data;
-    const pts = layer.geometry.data.points.map(toCanvas);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const tl = pts[r * (cols + 1) + c];
-        const tr = pts[r * (cols + 1) + c + 1];
-        const br = pts[(r + 1) * (cols + 1) + c + 1];
-        const bl = pts[(r + 1) * (cols + 1) + c];
-        if (pointInQuad(mx, my, tl, tr, br, bl)) {
-          return r * cols + c;
-        }
-      }
-    }
-    return null;
-  };
-
   const pointInLayer = (mx: number, my: number, layer: (typeof layers)[number]): boolean => {
     if (layer.geometry.type === "Quad") {
       const pts = layer.geometry.data.corners.map(toCanvas);
@@ -850,7 +787,23 @@ function EditorCanvas() {
       const localY = -dx * s + dy * c;
       return (localX * localX) / (rx * rx) + (localY * localY) / (ry * ry) <= 1;
     }
-    return faceHitTest(mx, my, layer.id) !== null;
+    // Mesh: check each cell
+    if (layer.geometry.type === "Mesh") {
+      const { cols, rows } = layer.geometry.data;
+      const pts = layer.geometry.data.points.map(toCanvas);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const tl = pts[r * (cols + 1) + c];
+          const tr = pts[r * (cols + 1) + c + 1];
+          const br = pts[(r + 1) * (cols + 1) + c + 1];
+          const bl = pts[(r + 1) * (cols + 1) + c];
+          if (pointInQuad(mx, my, tl, tr, br, bl)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   };
 
   const layerBodyHitTest = (mx: number, my: number): string | null => {
@@ -960,19 +913,6 @@ function EditorCanvas() {
           };
           shapeDragStartRef.current = { x: mx, y: my };
           setShapeTransformActive(true);
-        }
-        return;
-      }
-    }
-
-    // UV mode on mesh layers: face selection
-    if (isInputFaceMode && selectedLayerId) {
-      const faceIdx = faceHitTest(mx, my, selectedLayerId);
-      if (faceIdx !== null) {
-        if (e.shiftKey) {
-          toggleFaceSelection(faceIdx);
-        } else {
-          setSelectedFaces([faceIdx]);
         }
         return;
       }
@@ -1106,23 +1046,13 @@ function EditorCanvas() {
       }
       void updateLayerPoint(layer.id, dragState.pointIndex, newPt);
     } else {
-      if (isInputFaceMode) {
+      if (isInputMode) {
         setHoveredPoint(null);
-        if (selectedLayerId) {
-          setHoveredFaceIndex(faceHitTest(mx, my, selectedLayerId));
-        } else {
-          setHoveredFaceIndex(null);
-        }
-      } else if (isInputMode) {
-        setHoveredPoint(null);
-        setHoveredFaceIndex(null);
       } else if (isShapePointMode) {
         const hit = hitTest(mx, my);
         setHoveredPoint(hit);
-        setHoveredFaceIndex(null);
       } else {
         setHoveredPoint(null);
-        setHoveredFaceIndex(null);
       }
     }
   };
@@ -1150,13 +1080,6 @@ function EditorCanvas() {
       if (e.key === "Escape" && selectedPointIndex !== null) {
         e.preventDefault();
         clearPointSelection();
-        return;
-      }
-
-      // Escape: clear face selection
-      if (e.key === "Escape" && selectedFaceIndices.length > 0) {
-        e.preventDefault();
-        clearFaceSelection();
         return;
       }
 
@@ -1214,14 +1137,12 @@ function EditorCanvas() {
     },
     [
       effectiveSelectedIds,
-      selectedFaceIndices,
       selectedPointIndex,
       selectedLayerId,
       layers,
       applyGeometryTransformDelta,
       updateLayerPoint,
       beginInteraction,
-      clearFaceSelection,
       clearPointSelection,
     ]
   );
@@ -1335,22 +1256,7 @@ function EditorCanvas() {
             cols,
             rows,
             points: rawPts,
-            uv_overrides: uvOverrides = {},
-            masked_faces: maskedFaces = [],
           } = layer.geometry.data;
-          let uvHash = 0;
-          for (const [faceIndex, adj] of Object.entries(uvOverrides)) {
-            uvHash ^= (Number(faceIndex) * 2654435761) >>> 0;
-            uvHash ^= ((adj.offset[0] * 1e6) | 0) >>> 0;
-            uvHash ^= ((adj.offset[1] * 1e6) | 0) >>> 0;
-            uvHash ^= ((adj.rotation * 1e6) | 0) >>> 0;
-            uvHash ^= ((adj.scale[0] * 1e6) | 0) >>> 0;
-            uvHash ^= ((adj.scale[1] * 1e6) | 0) >>> 0;
-          }
-          let maskHash = 0;
-          for (const faceIdx of maskedFaces) {
-            maskHash ^= (faceIdx * 2246822519) >>> 0;
-          }
           const inputHash =
             (((inputTransform.offset[0] * 1e6) | 0) >>> 0)
             ^ (((inputTransform.offset[1] * 1e6) | 0) >>> 0)
@@ -1364,8 +1270,6 @@ function EditorCanvas() {
             ^ (((viewRect.h * 1e3) | 0) >>> 0);
           const geoHash =
             hashPoints(rawPts)
-            ^ uvHash
-            ^ maskHash
             ^ inputHash
             ^ viewportHash
             ^ (currentFrameTick * 0x9e3779b9);
@@ -1396,16 +1300,11 @@ function EditorCanvas() {
             const wCtx = warp.canvas.getContext("2d")!;
             wCtx.clearRect(0, 0, bw, bh);
 
-            const maskedSet = new Set(layer.geometry.data.masked_faces ?? []);
-
             // Offset all canvas-space points to warp-canvas-space once
             const offsetPts = points.map(p => ({ x: p.x - minX, y: p.y - minY }));
 
             for (let r = 0; r < rows; r++) {
               for (let c = 0; c < cols; c++) {
-                const faceIdx = r * cols + c;
-                if (maskedSet.has(faceIdx)) continue;
-
                 const tl = offsetPts[r * (cols + 1) + c];
                 const tr = offsetPts[r * (cols + 1) + c + 1];
                 const br = offsetPts[(r + 1) * (cols + 1) + c + 1];
@@ -1413,19 +1312,14 @@ function EditorCanvas() {
 
                 const fw = frame.width;
                 const fh = frame.height;
-                const centerUv = { u: (c + 0.5) / cols, v: (r + 0.5) / rows };
                 const baseUvs = [
                   { u: c / cols, v: r / rows },
                   { u: (c + 1) / cols, v: r / rows },
                   { u: (c + 1) / cols, v: (r + 1) / rows },
                   { u: c / cols, v: (r + 1) / rows },
                 ];
-                const uvOverride = layer.geometry.data.uv_overrides?.[faceIdx];
                 const finalUvs = baseUvs.map((uv) => {
-                  const withFace = uvOverride
-                    ? applyUvAdjustmentToUv(uv, centerUv, uvOverride)
-                    : uv;
-                  const withLayer = applyInputTransformToUv(withFace, inputTransform);
+                  const withLayer = applyInputTransformToUv(uv, inputTransform);
                   return { x: withLayer.u * fw, y: withLayer.v * fh };
                 });
 
@@ -1549,29 +1443,6 @@ function EditorCanvas() {
 
             warp.geoHash = geoHash;
             warp.frameGen = currentFrameTick;
-
-            // Draw masked faces (dark overlay) — on top of warped content
-            if (maskedSet.size > 0) {
-              wCtx.save();
-              wCtx.fillStyle = "rgba(0,0,0,0.75)";
-              for (const faceIdx of maskedSet) {
-                const r = Math.floor(faceIdx / cols);
-                const c = faceIdx % cols;
-                const tl = offsetPts[r * (cols + 1) + c];
-                const tr = offsetPts[r * (cols + 1) + c + 1];
-                const br = offsetPts[(r + 1) * (cols + 1) + c + 1];
-                const bl = offsetPts[(r + 1) * (cols + 1) + c];
-                wCtx.beginPath();
-                wCtx.moveTo(tl.x, tl.y);
-                wCtx.lineTo(tr.x, tr.y);
-                wCtx.lineTo(br.x, br.y);
-                wCtx.lineTo(bl.x, bl.y);
-                wCtx.closePath();
-                wCtx.fill();
-              }
-              wCtx.restore();
-            }
-
           }
 
           // Blit warp cache to main canvas — 1 drawImage call
@@ -1624,55 +1495,6 @@ function EditorCanvas() {
       } else {
         // No source — use default fill
         ctx.fillStyle = isSelected ? SELECTED_FILL : LAYER_FILL;
-      }
-
-      // --- Draw face selection highlights (selected mesh layer in UV mode) ---
-      if (isInputFaceMode && isPrimary && layer.geometry.type === "Mesh") {
-        const { cols, rows } = layer.geometry.data;
-
-        // Hovered face
-        if (hoveredFaceIndex !== null) {
-          const r = Math.floor(hoveredFaceIndex / cols);
-          const c = hoveredFaceIndex % cols;
-          if (r < rows && c < cols) {
-            const tl = points[r * (cols + 1) + c];
-            const tr = points[r * (cols + 1) + c + 1];
-            const br = points[(r + 1) * (cols + 1) + c + 1];
-            const bl = points[(r + 1) * (cols + 1) + c];
-            ctx.beginPath();
-            ctx.moveTo(tl.x, tl.y);
-            ctx.lineTo(tr.x, tr.y);
-            ctx.lineTo(br.x, br.y);
-            ctx.lineTo(bl.x, bl.y);
-            ctx.closePath();
-            ctx.fillStyle = "rgba(251,191,36,0.15)";
-            ctx.fill();
-          }
-        }
-
-        // Selected faces
-        for (const faceIdx of selectedFaceIndices) {
-          const r = Math.floor(faceIdx / cols);
-          const c = faceIdx % cols;
-          if (r >= rows || c >= cols) continue;
-          const tl = points[r * (cols + 1) + c];
-          const tr = points[r * (cols + 1) + c + 1];
-          const br = points[(r + 1) * (cols + 1) + c + 1];
-          const bl = points[(r + 1) * (cols + 1) + c];
-          ctx.beginPath();
-          ctx.moveTo(tl.x, tl.y);
-          ctx.lineTo(tr.x, tr.y);
-          ctx.lineTo(br.x, br.y);
-          ctx.lineTo(bl.x, bl.y);
-          ctx.closePath();
-          ctx.fillStyle = "rgba(251,191,36,0.25)";
-          ctx.fill();
-          ctx.strokeStyle = "rgba(251,191,36,0.6)";
-          ctx.lineWidth = 2;
-          ctx.stroke();
-          ctx.strokeStyle = isSelected ? SELECTED_STROKE : LAYER_STROKE;
-          ctx.lineWidth = isSelected ? 2 : 1;
-        }
       }
 
       // --- Draw shape outline (always on top) ---
@@ -1796,10 +1618,7 @@ function EditorCanvas() {
     layers,
     selectedLayerId,
     effectiveSelectedIds,
-    selectedFaceIndices,
-    isInputFaceMode,
     isShapePointMode,
-    hoveredFaceIndex,
     canvasSize,
     toCanvas,
     hoveredPoint,
@@ -1816,21 +1635,17 @@ function EditorCanvas() {
           disabled={!singleLayerSelected}
           onClick={handleModeChipToggle}
           className={`px-2 py-1 rounded-md text-[11px] font-semibold tracking-wide border transition ${
-            isInputFaceMode
-              ? "bg-amber-500/20 border-amber-400/40 text-amber-200"
-            : isInputMode
-                ? "bg-cyan-500/20 border-cyan-400/40 text-cyan-200"
+            isInputMode
+              ? "bg-cyan-500/20 border-cyan-400/40 text-cyan-200"
               : "bg-indigo-500/20 border-indigo-400/40 text-indigo-200"
           } ${singleLayerSelected ? "hover:brightness-125" : "opacity-70 cursor-not-allowed"}`}
           title={
             !singleLayerSelected
               ? "Select exactly one layer to edit mode"
-              : meshSelected
-                ? "Toggle Shape/UV mode (Tab)"
-                : "Toggle Shape/Input mode (Tab)"
+              : "Toggle Shape/Input mode (Tab)"
           }
         >
-          {isInputFaceMode ? "UV Edit (Tab)" : isInputMode ? "Input Edit (Tab)" : "Shape Edit (Tab)"}
+          {isInputMode ? "Input Edit (Tab)" : "Shape Edit (Tab)"}
         </button>
         {isShapeMode && (
           <div className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-black/45 p-1">
@@ -1872,22 +1687,8 @@ function EditorCanvas() {
             </button>
           </div>
         )}
-        {isUvMode && (
+        {isInputMode && (
           <div className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-black/45 p-1">
-            {meshSelected && (
-              <button
-                type="button"
-                onClick={() => setInputEditTool("faces")}
-                className={`px-2 py-1 rounded text-[11px] font-semibold transition ${
-                  isInputFaceMode
-                    ? "bg-amber-500/30 border border-amber-400/40 text-amber-200"
-                    : "text-white/70 hover:text-white"
-                }`}
-                title="Select mesh faces for UV edits"
-              >
-                Faces
-              </button>
-            )}
             <button
               type="button"
               onClick={() => setInputEditTool("drag")}
@@ -1924,11 +1725,6 @@ function EditorCanvas() {
             Drag around the layer to rotate shape
           </div>
         )}
-        {isInputFaceMode && selectedFaceIndices.length === 0 && (
-          <div className="pointer-events-none px-2 py-1 rounded-md text-[11px] border bg-black/45 border-white/20 text-white/80">
-            Click mesh faces to edit UV
-          </div>
-        )}
         {isInputDragMode && (
           <div className="pointer-events-none px-2 py-1 rounded-md text-[11px] border bg-black/45 border-white/20 text-white/80">
             Drag inside the layer to pan input
@@ -1952,8 +1748,6 @@ function EditorCanvas() {
               ? (inputDragState ? "cursor-grabbing" : "cursor-grab")
               : isInputRotateMode
                 ? (inputRotateState ? "cursor-grabbing" : "cursor-crosshair")
-            : isInputFaceMode
-              ? "cursor-pointer"
               : "cursor-crosshair"
         }
         onMouseDown={handleMouseDown}
