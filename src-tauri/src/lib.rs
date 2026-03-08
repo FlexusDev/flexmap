@@ -451,14 +451,8 @@ pub fn run() {
             commands::set_frame_pacing,
             // System
             commands::get_system_stats,
-            // Mesh face operations
-            commands::toggle_face_mask,
-            commands::create_face_group,
-            commands::remove_face_group,
-            commands::rename_face_group,
+            // Mesh operations
             commands::set_calibration_target,
-            commands::set_face_uv_override,
-            commands::clear_face_uv_override,
             commands::subdivide_mesh,
         ])
         .setup(|app| {

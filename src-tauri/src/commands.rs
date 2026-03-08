@@ -1638,62 +1638,6 @@ pub async fn get_projector_stats(
     })
 }
 
-// =============================================================================
-// Mesh face operations (Phases 4, 5, 7, 8)
-// =============================================================================
-
-#[tauri::command]
-pub async fn toggle_face_mask(
-    layer_id: String,
-    face_indices: Vec<usize>,
-    masked: bool,
-    state: State<'_, SceneState>,
-    render: State<'_, Arc<RenderState>>,
-) -> Result<bool, String> {
-    let ok = state.toggle_face_mask(&layer_id, face_indices, masked);
-    if ok { sync_render_state(&state, &render); }
-    Ok(ok)
-}
-
-#[tauri::command]
-pub async fn create_face_group(
-    layer_id: String,
-    name: String,
-    face_indices: Vec<usize>,
-    color: String,
-    state: State<'_, SceneState>,
-    render: State<'_, Arc<RenderState>>,
-) -> Result<bool, String> {
-    let ok = state.create_face_group(&layer_id, name, face_indices, color);
-    if ok { sync_render_state(&state, &render); }
-    Ok(ok)
-}
-
-#[tauri::command]
-pub async fn remove_face_group(
-    layer_id: String,
-    group_index: usize,
-    state: State<'_, SceneState>,
-    render: State<'_, Arc<RenderState>>,
-) -> Result<bool, String> {
-    let ok = state.remove_face_group(&layer_id, group_index);
-    if ok { sync_render_state(&state, &render); }
-    Ok(ok)
-}
-
-#[tauri::command]
-pub async fn rename_face_group(
-    layer_id: String,
-    group_index: usize,
-    name: String,
-    state: State<'_, SceneState>,
-    render: State<'_, Arc<RenderState>>,
-) -> Result<bool, String> {
-    let ok = state.rename_face_group(&layer_id, group_index, name);
-    if ok { sync_render_state(&state, &render); }
-    Ok(ok)
-}
-
 #[tauri::command]
 pub async fn set_calibration_target(
     target: Option<CalibrationTarget>,
@@ -1703,31 +1647,6 @@ pub async fn set_calibration_target(
     state.set_calibration_target(target);
     sync_render_state(&state, &render);
     Ok(())
-}
-
-#[tauri::command]
-pub async fn set_face_uv_override(
-    layer_id: String,
-    face_index: usize,
-    adjustment: UvAdjustment,
-    state: State<'_, SceneState>,
-    render: State<'_, Arc<RenderState>>,
-) -> Result<bool, String> {
-    let ok = state.set_face_uv_override(&layer_id, face_index, adjustment);
-    if ok { sync_render_state(&state, &render); }
-    Ok(ok)
-}
-
-#[tauri::command]
-pub async fn clear_face_uv_override(
-    layer_id: String,
-    face_index: usize,
-    state: State<'_, SceneState>,
-    render: State<'_, Arc<RenderState>>,
-) -> Result<bool, String> {
-    let ok = state.clear_face_uv_override(&layer_id, face_index);
-    if ok { sync_render_state(&state, &render); }
-    Ok(ok)
 }
 
 #[tauri::command]

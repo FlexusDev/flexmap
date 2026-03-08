@@ -540,7 +540,6 @@ fn compute_quad_q_weights(corners: &[[f32; 2]; 4]) -> [f32; 4] {
 }
 
 /// Generate vertices and indices for a layer's geometry.
-/// Handles masked faces (skip), UV overrides (duplicate vertices with transformed UVs).
 /// tex_coord is stored as [u*q, v*q, q] for perspective-correct interpolation.
 pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u16>) {
     match geometry {
@@ -581,12 +580,9 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
             let indices = vec![0, 1, 2];
             (vertices, indices)
         }
-        LayerGeometry::Mesh { cols, rows, points, masked_faces, uv_overrides, .. } => {
+        LayerGeometry::Mesh { cols, rows, points, .. } => {
             let cols = *cols as usize;
             let rows = *rows as usize;
-
-            // O(1) lookup for masked faces
-            let mask_set: std::collections::HashSet<usize> = masked_faces.iter().copied().collect();
 
             // Compute q weights per cell, accumulate at vertices (shared-vertex averaging)
             let n_verts = (rows + 1) * (cols + 1);
@@ -631,79 +627,14 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
             }
 
             // Generate triangle indices for the grid
-            let mut indices: Vec<u16> = Vec::new();
+            let mut indices: Vec<u16> = Vec::with_capacity(rows * cols * 6);
             for r in 0..rows {
                 for c in 0..cols {
-                    let face_idx = r * cols + c;
-
-                    // Skip masked faces
-                    if mask_set.contains(&face_idx) {
-                        continue;
-                    }
-
-                    if let Some(adj) = uv_overrides.get(&face_idx) {
-                        // UV override: duplicate this face's 4 vertices with transformed UVs
-                        let tl_idx = r * (cols + 1) + c;
-                        let tr_idx = tl_idx + 1;
-                        let bl_idx = (r + 1) * (cols + 1) + c;
-                        let br_idx = bl_idx + 1;
-                        let cell_corners_arr = [
-                            [points[tl_idx].x as f32, points[tl_idx].y as f32],
-                            [points[tr_idx].x as f32, points[tr_idx].y as f32],
-                            [points[br_idx].x as f32, points[br_idx].y as f32],
-                            [points[bl_idx].x as f32, points[bl_idx].y as f32],
-                        ];
-                        let qs = compute_quad_q_weights(&cell_corners_arr);
-
-                        let center_u = (c as f32 + 0.5) / cols as f32;
-                        let center_v = (r as f32 + 0.5) / rows as f32;
-                        let cos_r = (adj.rotation as f32).cos();
-                        let sin_r = (adj.rotation as f32).sin();
-                        let sx = adj.scale[0] as f32;
-                        let sy = adj.scale[1] as f32;
-                        let ox = adj.offset[0] as f32;
-                        let oy = adj.offset[1] as f32;
-
-                        let corner_positions = [
-                            vertices[tl_idx].position,
-                            vertices[tr_idx].position,
-                            vertices[br_idx].position,
-                            vertices[bl_idx].position,
-                        ];
-                        let base_uvs: [[f32; 2]; 4] = [
-                            [c as f32 / cols as f32, r as f32 / rows as f32],
-                            [(c + 1) as f32 / cols as f32, r as f32 / rows as f32],
-                            [(c + 1) as f32 / cols as f32, (r + 1) as f32 / rows as f32],
-                            [c as f32 / cols as f32, (r + 1) as f32 / rows as f32],
-                        ];
-
-                        let new_base = vertices.len() as u16;
-                        for i in 0..4 {
-                            let bu = base_uvs[i][0];
-                            let bv = base_uvs[i][1];
-                            let su = (bu - center_u) * sx;
-                            let sv = (bv - center_v) * sy;
-                            let new_u = su * cos_r - sv * sin_r + center_u + ox;
-                            let new_v = su * sin_r + sv * cos_r + center_v + oy;
-                            let q = qs[i];
-                            vertices.push(LayerVertex {
-                                position: corner_positions[i],
-                                tex_coord: [new_u * q, new_v * q, q],
-                            });
-                        }
-                        // TL=0, TR=1, BR=2, BL=3
-                        indices.extend_from_slice(&[
-                            new_base, new_base + 1, new_base + 2,
-                            new_base, new_base + 2, new_base + 3,
-                        ]);
-                    } else {
-                        // Standard shared-vertex indices
-                        let tl = (r * (cols + 1) + c) as u16;
-                        let tr = tl + 1;
-                        let bl = ((r + 1) * (cols + 1) + c) as u16;
-                        let br = bl + 1;
-                        indices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
-                    }
+                    let tl = (r * (cols + 1) + c) as u16;
+                    let tr = tl + 1;
+                    let bl = ((r + 1) * (cols + 1) + c) as u16;
+                    let br = bl + 1;
+                    indices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
                 }
             }
 

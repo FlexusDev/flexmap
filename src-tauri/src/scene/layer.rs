@@ -14,32 +14,6 @@ impl Point2D {
     }
 }
 
-/// A named group of face indices within a Mesh layer
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FaceGroup {
-    pub name: String,
-    pub face_indices: Vec<usize>,
-    pub color: String, // hex color for editor overlay
-}
-
-/// Per-face UV transform (applied on top of default grid UVs)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UvAdjustment {
-    pub offset: [f64; 2],
-    pub rotation: f64,
-    pub scale: [f64; 2],
-}
-
-impl Default for UvAdjustment {
-    fn default() -> Self {
-        Self {
-            offset: [0.0, 0.0],
-            rotation: 0.0,
-            scale: [1.0, 1.0],
-        }
-    }
-}
-
 /// Per-layer input transform (applied in UV/content space)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InputTransform {
@@ -76,15 +50,6 @@ pub enum LayerGeometry {
         rows: u32,
         /// Flattened grid of (rows+1) * (cols+1) control points
         points: Vec<Point2D>,
-        /// Named face groups for selective calibration / group operations
-        #[serde(default)]
-        face_groups: Vec<FaceGroup>,
-        /// Faces to skip (render black) — stored as Vec for serde, converted to HashSet at render time
-        #[serde(default)]
-        masked_faces: Vec<usize>,
-        /// Per-face UV transforms keyed by face index
-        #[serde(default)]
-        uv_overrides: std::collections::HashMap<usize, UvAdjustment>,
     },
     /// Ellipse mask (circle is a special case where radius_x == radius_y)
     Circle {
@@ -95,6 +60,7 @@ pub enum LayerGeometry {
     },
 }
 
+#[allow(dead_code)] // Legacy fields kept for backward-compat deserialization
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", content = "data")]
 enum LayerGeometryDe {
@@ -109,12 +75,13 @@ enum LayerGeometryDe {
         rows: u32,
         #[serde(default)]
         points: Vec<Point2D>,
+        /// Legacy fields — accepted for backward compat, ignored at runtime
         #[serde(default)]
-        face_groups: Vec<FaceGroup>,
+        face_groups: Vec<serde_json::Value>,
         #[serde(default)]
-        masked_faces: Vec<usize>,
+        masked_faces: Vec<serde_json::Value>,
         #[serde(default)]
-        uv_overrides: std::collections::HashMap<usize, UvAdjustment>,
+        uv_overrides: serde_json::Value,
     },
     Circle {
         center: Point2D,
@@ -145,16 +112,11 @@ impl<'de> Deserialize<'de> for LayerGeometry {
                 cols,
                 rows,
                 points,
-                face_groups,
-                masked_faces,
-                uv_overrides,
+                ..  // ignore legacy face_groups / masked_faces / uv_overrides
             } => LayerGeometry::Mesh {
                 cols,
                 rows,
                 points,
-                face_groups,
-                masked_faces,
-                uv_overrides,
             },
             LayerGeometryDe::Circle {
                 center,
@@ -200,22 +162,6 @@ impl<'de> Deserialize<'de> for LayerGeometry {
     }
 }
 
-impl PartialEq for UvAdjustment {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset == other.offset
-            && self.rotation == other.rotation
-            && self.scale == other.scale
-    }
-}
-
-impl PartialEq for FaceGroup {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.face_indices == other.face_indices
-            && self.color == other.color
-    }
-}
-
 impl LayerGeometry {
     /// Create a default quad covering the full canvas (returns a 1x1 Mesh)
     pub fn default_quad() -> Self {
@@ -252,9 +198,6 @@ impl LayerGeometry {
             cols,
             rows,
             points,
-            face_groups: Vec::new(),
-            masked_faces: Vec::new(),
-            uv_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -282,9 +225,6 @@ impl LayerGeometry {
             cols: 1,
             rows: 1,
             points: vec![corners[0], corners[1], corners[3], corners[2]],
-            face_groups: Vec::new(),
-            masked_faces: Vec::new(),
-            uv_overrides: std::collections::HashMap::new(),
         }
     }
 
@@ -308,9 +248,6 @@ impl LayerGeometry {
             cols: 1,
             rows: 1,
             points: vec![corners[0], corners[1], corners[3], corners[2]],
-            face_groups: Vec::new(),
-            masked_faces: Vec::new(),
-            uv_overrides: std::collections::HashMap::new(),
         }
     }
 

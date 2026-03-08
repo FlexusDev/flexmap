@@ -100,9 +100,6 @@ fn apply_geometry_delta(
             cols,
             rows,
             points,
-            face_groups,
-            masked_faces,
-            uv_overrides,
         } => LayerGeometry::Mesh {
             cols: *cols,
             rows: *rows,
@@ -111,9 +108,6 @@ fn apply_geometry_delta(
                 .copied()
                 .map(|p| transform_point(p, pivot, dx, dy, d_rotation, sx, sy))
                 .collect(),
-            face_groups: face_groups.clone(),
-            masked_faces: masked_faces.clone(),
-            uv_overrides: uv_overrides.clone(),
         },
         LayerGeometry::Circle {
             center,
@@ -511,149 +505,13 @@ impl SceneState {
         self.project.read().clone()
     }
 
-    // --- Mesh face operations ---
-
-    /// Toggle face masking on a Mesh layer. Pushes undo.
-    pub fn toggle_face_mask(&self, layer_id: &str, face_indices: Vec<usize>, masked: bool) -> bool {
-        let mut proj = self.project.write();
-        if proj.layers.iter().any(|l| l.id == layer_id) {
-            let snapshot = proj.layers.clone();
-            self.history.push(snapshot);
-            let layer = proj.layers.iter_mut().find(|l| l.id == layer_id).unwrap();
-            if let LayerGeometry::Mesh { ref mut masked_faces, .. } = layer.geometry {
-                if masked {
-                    for idx in &face_indices {
-                        if !masked_faces.contains(idx) {
-                            masked_faces.push(*idx);
-                        }
-                    }
-                } else {
-                    masked_faces.retain(|f| !face_indices.contains(f));
-                }
-            }
-            drop(proj);
-            self.mark_dirty();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Create a named face group on a Mesh layer. Pushes undo.
-    pub fn create_face_group(
-        &self,
-        layer_id: &str,
-        name: String,
-        face_indices: Vec<usize>,
-        color: String,
-    ) -> bool {
-        let mut proj = self.project.write();
-        if proj.layers.iter().any(|l| l.id == layer_id) {
-            let snapshot = proj.layers.clone();
-            self.history.push(snapshot);
-            let layer = proj.layers.iter_mut().find(|l| l.id == layer_id).unwrap();
-            if let LayerGeometry::Mesh { ref mut face_groups, .. } = layer.geometry {
-                face_groups.push(FaceGroup { name, face_indices, color });
-            }
-            drop(proj);
-            self.mark_dirty();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Remove a face group by index from a Mesh layer. Pushes undo.
-    pub fn remove_face_group(&self, layer_id: &str, group_index: usize) -> bool {
-        let mut proj = self.project.write();
-        if proj.layers.iter().any(|l| l.id == layer_id) {
-            let snapshot = proj.layers.clone();
-            self.history.push(snapshot);
-            let layer = proj.layers.iter_mut().find(|l| l.id == layer_id).unwrap();
-            if let LayerGeometry::Mesh { ref mut face_groups, .. } = layer.geometry {
-                if group_index < face_groups.len() {
-                    face_groups.remove(group_index);
-                    drop(proj);
-                    self.mark_dirty();
-                    return true;
-                }
-            }
-            false
-        } else {
-            false
-        }
-    }
-
-    /// Rename a face group by index on a Mesh layer. Pushes undo.
-    pub fn rename_face_group(&self, layer_id: &str, group_index: usize, name: String) -> bool {
-        let mut proj = self.project.write();
-        if proj.layers.iter().any(|l| l.id == layer_id) {
-            let snapshot = proj.layers.clone();
-            self.history.push(snapshot);
-            let layer = proj.layers.iter_mut().find(|l| l.id == layer_id).unwrap();
-            if let LayerGeometry::Mesh { ref mut face_groups, .. } = layer.geometry {
-                if let Some(group) = face_groups.get_mut(group_index) {
-                    group.name = name;
-                    drop(proj);
-                    self.mark_dirty();
-                    return true;
-                }
-            }
-            false
-        } else {
-            false
-        }
-    }
-
     /// Set or clear the calibration target layer (for layer-level calibration overlay).
     pub fn set_calibration_target(&self, target: Option<CalibrationTarget>) {
         self.project.write().calibration.target_layer = target;
         self.mark_dirty();
     }
 
-    /// Set a per-face UV override on a Mesh layer. Does NOT push undo
-    /// (caller must call begin_interaction first for slider-based adjustments).
-    pub fn set_face_uv_override(
-        &self,
-        layer_id: &str,
-        face_index: usize,
-        adjustment: UvAdjustment,
-    ) -> bool {
-        let mut proj = self.project.write();
-        if proj.layers.iter().any(|l| l.id == layer_id) {
-            let layer = proj.layers.iter_mut().find(|l| l.id == layer_id).unwrap();
-            if let LayerGeometry::Mesh { ref mut uv_overrides, .. } = layer.geometry {
-                uv_overrides.insert(face_index, adjustment);
-                drop(proj);
-                self.mark_dirty();
-                return true;
-            }
-            false
-        } else {
-            false
-        }
-    }
-
-    /// Clear a per-face UV override on a Mesh layer. Pushes undo.
-    pub fn clear_face_uv_override(&self, layer_id: &str, face_index: usize) -> bool {
-        let mut proj = self.project.write();
-        if proj.layers.iter().any(|l| l.id == layer_id) {
-            let snapshot = proj.layers.clone();
-            self.history.push(snapshot);
-            let layer = proj.layers.iter_mut().find(|l| l.id == layer_id).unwrap();
-            if let LayerGeometry::Mesh { ref mut uv_overrides, .. } = layer.geometry {
-                let removed = uv_overrides.remove(&face_index).is_some();
-                drop(proj);
-                self.mark_dirty();
-                return removed;
-            }
-            false
-        } else {
-            false
-        }
-    }
-
-    /// Double the resolution of a Mesh layer grid, remapping all face metadata.
+    /// Double the resolution of a Mesh layer grid.
     /// Pushes undo. Returns the new geometry on success.
     pub fn subdivide_mesh(&self, layer_id: &str) -> Option<LayerGeometry> {
         // Read and clone geometry (drops read lock before write)
@@ -666,9 +524,6 @@ impl SceneState {
             cols,
             rows,
             ref points,
-            ref face_groups,
-            ref masked_faces,
-            ref uv_overrides,
         } = geometry
         {
             let new_cols = cols * 2;
@@ -728,46 +583,10 @@ impl SceneState {
                 }
             }
 
-            // Remap face index: old (r, c) → 4 new face indices
-            let remap_face = |old_face: usize| -> [usize; 4] {
-                let old_r = old_face / cols;
-                let old_c = old_face % cols;
-                let nr = old_r * 2;
-                let nc = old_c * 2;
-                [
-                    nr * new_cols_usize + nc,
-                    nr * new_cols_usize + nc + 1,
-                    (nr + 1) * new_cols_usize + nc,
-                    (nr + 1) * new_cols_usize + nc + 1,
-                ]
-            };
-
-            let new_face_groups = face_groups
-                .iter()
-                .map(|g| FaceGroup {
-                    name: g.name.clone(),
-                    color: g.color.clone(),
-                    face_indices: g.face_indices.iter().flat_map(|&f| remap_face(f)).collect(),
-                })
-                .collect();
-
-            let new_masked = masked_faces
-                .iter()
-                .flat_map(|&f| remap_face(f))
-                .collect();
-
-            let new_uv_overrides = uv_overrides
-                .iter()
-                .flat_map(|(&f, adj)| remap_face(f).map(|nf| (nf, adj.clone())))
-                .collect();
-
             LayerGeometry::Mesh {
                 cols: new_cols,
                 rows: new_rows,
                 points: new_points,
-                face_groups: new_face_groups,
-                masked_faces: new_masked,
-                uv_overrides: new_uv_overrides,
             }
         } else {
             return None; // Not a mesh layer
@@ -1017,99 +836,6 @@ mod tests {
         assert_eq!(state.get_layers_snapshot().len(), 4);
     }
 
-    // --- Mesh face operation tests ---
-
-    #[test]
-    fn toggle_face_mask() {
-        let state = SceneState::new();
-        let id = add_mesh(&state, "M", 2, 2);
-
-        assert!(state.toggle_face_mask(&id, vec![0, 1], true));
-        let layers = state.get_layers_snapshot();
-        if let LayerGeometry::Mesh { masked_faces, .. } = &layers[0].geometry {
-            assert!(masked_faces.contains(&0));
-            assert!(masked_faces.contains(&1));
-        } else {
-            panic!("Expected Mesh");
-        }
-
-        // Unmask face 0
-        assert!(state.toggle_face_mask(&id, vec![0], false));
-        let layers = state.get_layers_snapshot();
-        if let LayerGeometry::Mesh { masked_faces, .. } = &layers[0].geometry {
-            assert!(!masked_faces.contains(&0));
-            assert!(masked_faces.contains(&1));
-        } else {
-            panic!("Expected Mesh");
-        }
-    }
-
-    #[test]
-    fn create_and_remove_face_group() {
-        let state = SceneState::new();
-        let id = add_mesh(&state, "M", 2, 2);
-
-        assert!(state.create_face_group(&id, "Group1".into(), vec![0, 1], "#ff0000".into()));
-        let layers = state.get_layers_snapshot();
-        if let LayerGeometry::Mesh { face_groups, .. } = &layers[0].geometry {
-            assert_eq!(face_groups.len(), 1);
-            assert_eq!(face_groups[0].name, "Group1");
-        } else {
-            panic!("Expected Mesh");
-        }
-
-        assert!(state.remove_face_group(&id, 0));
-        let layers = state.get_layers_snapshot();
-        if let LayerGeometry::Mesh { face_groups, .. } = &layers[0].geometry {
-            assert!(face_groups.is_empty());
-        } else {
-            panic!("Expected Mesh");
-        }
-    }
-
-    #[test]
-    fn rename_face_group() {
-        let state = SceneState::new();
-        let id = add_mesh(&state, "M", 2, 2);
-        state.create_face_group(&id, "Old".into(), vec![0], "#ff0000".into());
-
-        assert!(state.rename_face_group(&id, 0, "New".into()));
-        let layers = state.get_layers_snapshot();
-        if let LayerGeometry::Mesh { face_groups, .. } = &layers[0].geometry {
-            assert_eq!(face_groups[0].name, "New");
-        } else {
-            panic!("Expected Mesh");
-        }
-    }
-
-    #[test]
-    fn set_and_clear_face_uv_override() {
-        let state = SceneState::new();
-        let id = add_mesh(&state, "M", 2, 2);
-
-        let adj = UvAdjustment {
-            offset: [0.1, 0.2],
-            rotation: 0.5,
-            scale: [1.0, 1.0],
-        };
-        assert!(state.set_face_uv_override(&id, 0, adj));
-
-        let layers = state.get_layers_snapshot();
-        if let LayerGeometry::Mesh { uv_overrides, .. } = &layers[0].geometry {
-            assert!(uv_overrides.contains_key(&0));
-        } else {
-            panic!("Expected Mesh");
-        }
-
-        assert!(state.clear_face_uv_override(&id, 0));
-        let layers = state.get_layers_snapshot();
-        if let LayerGeometry::Mesh { uv_overrides, .. } = &layers[0].geometry {
-            assert!(!uv_overrides.contains_key(&0));
-        } else {
-            panic!("Expected Mesh");
-        }
-    }
-
     #[test]
     fn subdivide_mesh_doubles_resolution() {
         let state = SceneState::new();
@@ -1127,19 +853,11 @@ mod tests {
     }
 
     #[test]
-    fn face_ops_on_non_mesh_return_false() {
+    fn subdivide_on_non_mesh_returns_none() {
         let state = SceneState::new();
         let layer = Layer::new_triangle("T", 0);
         let id = layer.id.clone();
         state.add_layer(layer);
-
-        // toggle_face_mask on a triangle does "succeed" (returns true because layer exists)
-        // but doesn't modify anything since the geometry isn't a Mesh.
-        // The important thing is it doesn't panic.
-        let _ = state.toggle_face_mask(&id, vec![0], true);
-        let _ = state.create_face_group(&id, "G".into(), vec![0], "#fff".into());
-
-        // subdivide on non-mesh returns None
         assert!(state.subdivide_mesh(&id).is_none());
     }
 }
