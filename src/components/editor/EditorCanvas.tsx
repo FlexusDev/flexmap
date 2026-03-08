@@ -948,7 +948,7 @@ function EditorCanvas() {
       }
     }
 
-    // Click on empty area — deselect layer + clear faces + clear point
+    // Click on empty area — deselect layer + clear point
     clearPointSelection();
     clearLayerSelection();
   };
