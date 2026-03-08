@@ -17,13 +17,13 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["meta", "s"],       label: "Save",       description: "Save the current project (Save As if new)",    category: "project" },
   { keys: ["meta", "shift", "s"], label: "Save As",  description: "Save the project to a new file location",     category: "project" },
   // Edit
-  { keys: ["esc"],             label: "Deselect",   description: "Clear face selection",                         category: "edit" },
+  { keys: ["esc"],             label: "Deselect",   description: "Clear selection",                              category: "edit" },
   { keys: ["meta", "z"],       label: "Undo",       description: "Undo the last layer operation",                category: "edit" },
   { keys: ["meta", "shift", "z"], label: "Redo",     description: "Redo the last undone operation",               category: "edit" },
   { keys: ["meta", "d"],       label: "Duplicate",  description: "Duplicate the selected layer",                 category: "edit" },
   { keys: ["delete"],          label: "Delete",     description: "Remove the selected layer",                    category: "edit" },
   { keys: ["backspace"],       label: "Delete",     description: "Remove the selected layer (alternate)",        category: "edit" },
-  { keys: ["tab"],             label: "Shape/Edit", description: "Toggle shape vs UV/input edit mode",            category: "edit" },
+  { keys: ["tab"],             label: "Shape/Edit", description: "Toggle shape vs input edit mode",               category: "edit" },
   // View
   { keys: ["meta", "p"],       label: "Projector",  description: "Toggle the projector output window",           category: "view" },
   // Snap
@@ -157,10 +157,9 @@ function KeyboardOverlay() {
     : selectedLayer
       ? 1
       : 0;
-  const modeIsUv = selectedCount === 1 && editorSelectionMode === "uv" && !!selectedLayer;
-  const uvLabel = selectedLayer?.geometry.type === "Mesh" ? "UV" : "Input";
+  const modeIsInput = selectedCount === 1 && editorSelectionMode === "input" && !!selectedLayer;
 
-  const setModeFromPopup = (mode: "shape" | "uv") => {
+  const setModeFromPopup = (mode: "shape" | "input") => {
     if (!selectedLayer || selectedCount !== 1) {
       setEditorSelectionMode("shape");
       return;
@@ -287,7 +286,7 @@ function KeyboardOverlay() {
                     disabled={!selectedLayer}
                     onClick={() => setModeFromPopup("shape")}
                     className={`px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider transition ${
-                      !modeIsUv
+                      !modeIsInput
                         ? "text-indigo-200 bg-indigo-500/25 border border-indigo-400/40"
                         : "text-white/55 hover:text-white/80"
                     }`}
@@ -298,17 +297,15 @@ function KeyboardOverlay() {
                   <button
                     type="button"
                     disabled={!selectedLayer}
-                    onClick={() => setModeFromPopup("uv")}
+                    onClick={() => setModeFromPopup("input")}
                     className={`px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider transition ${
-                      modeIsUv
-                        ? (selectedLayer?.geometry.type === "Mesh"
-                          ? "text-amber-200 bg-amber-500/25 border border-amber-400/40"
-                          : "text-cyan-200 bg-cyan-500/25 border border-cyan-400/40")
+                      modeIsInput
+                        ? "text-cyan-200 bg-cyan-500/25 border border-cyan-400/40"
                         : "text-white/55 hover:text-white/80"
                     }`}
-                    title={`Switch to ${uvLabel} edit mode`}
+                    title="Switch to Input edit mode"
                   >
-                    {uvLabel}
+                    Input
                   </button>
                 </div>
               </div>
@@ -327,10 +324,8 @@ function KeyboardOverlay() {
                     const cat = topMatch ? CAT_COLORS[topMatch.category] : null;
                     const widthPx = (key.w ?? 1) * 42;
                     const tabModeAccent = key.id === "tab"
-                      ? (modeIsUv
-                        ? (selectedLayer?.geometry.type === "Mesh"
-                          ? "ring-1 ring-amber-400/60 bg-amber-500/20 text-amber-200"
-                          : "ring-1 ring-cyan-400/60 bg-cyan-500/20 text-cyan-200")
+                      ? (modeIsInput
+                        ? "ring-1 ring-cyan-400/60 bg-cyan-500/20 text-cyan-200"
                         : "ring-1 ring-indigo-400/60 bg-indigo-500/20 text-indigo-200")
                       : "";
 

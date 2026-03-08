@@ -15,7 +15,6 @@ import type {
   OutputConfig,
   BlendMode,
   FramePacingMode,
-  UvAdjustment,
   InputTransform,
   Point2D,
   EditorSelectionMode,
@@ -136,13 +135,6 @@ export const EMPTY_PERF: PerfStats = {
   fps: 0, frametime: 0, pollMs: 0, decodeMs: 0, drawMs: 0, frameCount: 0, totalBytes: 0,
 };
 
-function normalizeEditorSelectionMode(
-  mode: EditorSelectionMode,
-  layer: Layer | null | undefined
-): EditorSelectionMode {
-  return layer ? mode : "shape";
-}
-
 type GeomDelta = {
   dx: number;
   dy: number;
@@ -197,7 +189,6 @@ interface AppState {
   layers: Layer[];
   selectedLayerId: string | null;
   selectedLayerIds: string[];
-  selectedFaceIndices: number[];
   selectedPointIndex: number | null;
   editorSelectionMode: EditorSelectionMode;
 
@@ -254,9 +245,6 @@ interface AppState {
   duplicateSelectedLayers: () => Promise<void>;
   setEditorSelectionMode: (mode: EditorSelectionMode) => void;
   toggleEditorSelectionMode: () => void;
-  setSelectedFaces: (indices: number[]) => void;
-  toggleFaceSelection: (index: number) => void;
-  clearFaceSelection: () => void;
   selectPoint: (index: number | null) => void;
   clearPointSelection: () => void;
   setLayerVisibility: (id: string, visible: boolean) => Promise<void>;
@@ -317,14 +305,8 @@ interface AppState {
   undo: () => Promise<void>;
   redo: () => Promise<void>;
 
-  // Face operations
-  toggleFaceMask: (layerId: string, faceIndices: number[], masked: boolean) => Promise<void>;
-  createFaceGroup: (layerId: string, name: string, faceIndices: number[], color: string) => Promise<void>;
-  removeFaceGroup: (layerId: string, groupIndex: number) => Promise<void>;
-  renameFaceGroup: (layerId: string, groupIndex: number, name: string) => Promise<void>;
+  // Calibration target
   setCalibrationTarget: (target: CalibrationTarget | null) => Promise<void>;
-  setFaceUvOverride: (layerId: string, faceIndex: number, adjustment: UvAdjustment) => Promise<void>;
-  clearFaceUvOverride: (layerId: string, faceIndex: number) => Promise<void>;
   subdivideMesh: (layerId: string) => Promise<void>;
 
   // Output
@@ -360,7 +342,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   layers: [],
   selectedLayerId: null,
   selectedLayerIds: [],
-  selectedFaceIndices: [],
   selectedPointIndex: null,
   editorSelectionMode: "shape",
   calibrationEnabled: false,
@@ -506,7 +487,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         layers: project.layers,
         selectedLayerId: null,
         selectedLayerIds: [],
-        selectedFaceIndices: [],
         editorSelectionMode: "shape",
         calibrationEnabled: project.calibration.enabled,
         calibrationPattern: project.calibration.pattern,
@@ -524,19 +504,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         const selectedLayerIds = normalizeSelectionIds(getEffectiveSelectionIds(s), layers);
         const selectedLayerId = normalizePrimaryId(selectedLayerIds, s.selectedLayerId);
         const singleSelected = selectedLayerIds.length === 1;
-        const selectedLayer = singleSelected && selectedLayerId
-          ? layers.find((l) => l.id === selectedLayerId)
-          : null;
         return {
           layers,
           selectedLayerIds,
           selectedLayerId,
-          selectedFaceIndices:
-            singleSelected && selectedLayerId === s.selectedLayerId
-              ? s.selectedFaceIndices
-              : [],
           editorSelectionMode: singleSelected
-            ? normalizeEditorSelectionMode(s.editorSelectionMode, selectedLayer)
+            ? s.editorSelectionMode
             : "shape",
         };
       });
@@ -554,8 +527,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         layers: [...s.layers, layer],
         selectedLayerId: layer.id,
         selectedLayerIds: [layer.id],
-        selectedFaceIndices: [],
-        editorSelectionMode: normalizeEditorSelectionMode(s.editorSelectionMode, layer),
+        editorSelectionMode: s.editorSelectionMode,
         isDirty: true,
         canUndo: true,
       }));
@@ -579,20 +551,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           s.selectedLayerId === id ? null : s.selectedLayerId
         );
         const singleSelected = selectedLayerIds.length === 1;
-        const selectedLayer = singleSelected && selectedLayerId
-          ? layers.find((l) => l.id === selectedLayerId)
-          : null;
         return {
           layers,
           selectedLayerIds,
           selectedLayerId,
-          selectedFaceIndices:
-            singleSelected && selectedLayerId === s.selectedLayerId
-              ? s.selectedFaceIndices
-              : [],
           selectedPointIndex: null,
           editorSelectionMode: singleSelected
-            ? normalizeEditorSelectionMode(s.editorSelectionMode, selectedLayer)
+            ? s.editorSelectionMode
             : "shape",
           isDirty: true,
           canUndo: true,
@@ -614,8 +579,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           layers: [...s.layers, layer],
           selectedLayerId: layer.id,
           selectedLayerIds: [layer.id],
-          selectedFaceIndices: [],
-          editorSelectionMode: normalizeEditorSelectionMode(s.editorSelectionMode, layer),
+          editorSelectionMode: s.editorSelectionMode,
           isDirty: true,
           canUndo: true,
         }));
@@ -638,16 +602,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectLayer: (id) =>
-    set((s) => {
-      const nextLayer = id ? s.layers.find((l) => l.id === id) : null;
-      return {
-        selectedLayerId: id,
-        selectedLayerIds: id ? [id] : [],
-        selectedFaceIndices: [],
-        selectedPointIndex: null,
-        editorSelectionMode: normalizeEditorSelectionMode(s.editorSelectionMode, nextLayer),
-      };
-    }),
+    set((s) => ({
+      selectedLayerId: id,
+      selectedLayerIds: id ? [id] : [],
+      selectedPointIndex: null,
+      editorSelectionMode: id ? s.editorSelectionMode : "shape",
+    })),
   setLayerSelection: (ids, primaryId) =>
     set((s) => {
       const selectedLayerIds = normalizeSelectionIds(ids, s.layers);
@@ -656,18 +616,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         primaryId ?? s.selectedLayerId
       );
       const singleSelected = selectedLayerIds.length === 1;
-      const selectedLayer = singleSelected && selectedLayerId
-        ? s.layers.find((l) => l.id === selectedLayerId)
-        : null;
       return {
         selectedLayerIds,
         selectedLayerId,
-        selectedFaceIndices:
-          singleSelected && selectedLayerId === s.selectedLayerId
-            ? s.selectedFaceIndices
-            : [],
         editorSelectionMode: singleSelected
-          ? normalizeEditorSelectionMode(s.editorSelectionMode, selectedLayer)
+          ? s.editorSelectionMode
           : "shape",
       };
     }),
@@ -686,18 +639,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           : id
       );
       const singleSelected = selectedLayerIds.length === 1;
-      const selectedLayer = singleSelected && selectedLayerId
-        ? s.layers.find((l) => l.id === selectedLayerId)
-        : null;
       return {
         selectedLayerIds,
         selectedLayerId,
-        selectedFaceIndices:
-          singleSelected && selectedLayerId === s.selectedLayerId
-            ? s.selectedFaceIndices
-            : [],
         editorSelectionMode: singleSelected
-          ? normalizeEditorSelectionMode(s.editorSelectionMode, selectedLayer)
+          ? s.editorSelectionMode
           : "shape",
       };
     }),
@@ -705,7 +651,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       selectedLayerId: null,
       selectedLayerIds: [],
-      selectedFaceIndices: [],
       selectedPointIndex: null,
       editorSelectionMode: "shape",
     }),
@@ -720,16 +665,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const removed = await tauriInvoke<boolean>("remove_layers", { layerIds: ids });
       if (!removed) return;
-      set((s) => ({
-        layers: s.layers.filter((l) => !ids.includes(l.id)),
+      set({
+        layers: get().layers.filter((l) => !ids.includes(l.id)),
         selectedLayerId: null,
         selectedLayerIds: [],
-        selectedFaceIndices: [],
         selectedPointIndex: null,
         editorSelectionMode: "shape",
         isDirty: true,
         canUndo: true,
-      }));
+      });
     } catch (e) {
       console.error("Failed to remove selected layers:", e);
       get().addToast("Failed to remove selected layers", "error");
@@ -755,7 +699,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         layers: [...s.layers, ...duplicated],
         selectedLayerId,
         selectedLayerIds: nextSelectedLayerIds,
-        selectedFaceIndices: [],
         editorSelectionMode: "shape",
         isDirty: true,
         canUndo: true,
@@ -770,8 +713,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const ids = getEffectiveSelectionIds(s);
       if (ids.length !== 1) {
         return s.editorSelectionMode === "shape"
-          ? { selectedFaceIndices: [] }
-          : { editorSelectionMode: "shape", selectedFaceIndices: [] };
+          ? {}
+          : { editorSelectionMode: "shape" };
       }
       return mode === s.editorSelectionMode ? s : { editorSelectionMode: mode };
     }),
@@ -780,24 +723,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const ids = getEffectiveSelectionIds(s);
       if (ids.length !== 1) {
         return s.editorSelectionMode === "shape"
-          ? { selectedFaceIndices: [] }
-          : { editorSelectionMode: "shape", selectedFaceIndices: [] };
+          ? {}
+          : { editorSelectionMode: "shape" };
       }
-      return { editorSelectionMode: s.editorSelectionMode === "shape" ? "uv" : "shape" };
+      return { editorSelectionMode: s.editorSelectionMode === "shape" ? "input" : "shape" };
     }),
-  setSelectedFaces: (indices) =>
-    set((s) => ({
-      selectedFaceIndices: getEffectiveSelectionIds(s).length === 1 ? indices : [],
-    })),
-  toggleFaceSelection: (index) =>
-    set((s) => ({
-      selectedFaceIndices: getEffectiveSelectionIds(s).length !== 1
-        ? []
-        : s.selectedFaceIndices.includes(index)
-          ? s.selectedFaceIndices.filter((i) => i !== index)
-          : [...s.selectedFaceIndices, index],
-    })),
-  clearFaceSelection: () => set({ selectedFaceIndices: [] }),
   selectPoint: (index: number | null) => set({ selectedPointIndex: index }),
   clearPointSelection: () => set({ selectedPointIndex: null }),
 
@@ -1178,7 +1108,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         isDirty: false,
         selectedLayerId: null,
         selectedLayerIds: [],
-        selectedFaceIndices: [],
         editorSelectionMode: "shape",
         canUndo: false,
         canRedo: false,
@@ -1198,7 +1127,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         layers: [],
         selectedLayerId: null,
         selectedLayerIds: [],
-        selectedFaceIndices: [],
         editorSelectionMode: "shape",
         calibrationEnabled: false,
         calibrationPattern: "grid",
@@ -1231,19 +1159,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           }), result.layers);
           const selectedLayerId = normalizePrimaryId(selectedLayerIds, s.selectedLayerId);
           const singleSelected = selectedLayerIds.length === 1;
-          const selectedLayer = singleSelected && selectedLayerId
-            ? result.layers.find((l) => l.id === selectedLayerId)
-            : null;
           return {
             layers: result.layers,
             selectedLayerIds,
             selectedLayerId,
-            selectedFaceIndices:
-              singleSelected && selectedLayerId === s.selectedLayerId
-                ? s.selectedFaceIndices
-                : [],
             editorSelectionMode: singleSelected
-              ? normalizeEditorSelectionMode(s.editorSelectionMode, selectedLayer)
+              ? s.editorSelectionMode
               : "shape",
             canUndo: result.can_undo,
             canRedo: result.can_redo,
@@ -1267,19 +1188,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           }), result.layers);
           const selectedLayerId = normalizePrimaryId(selectedLayerIds, s.selectedLayerId);
           const singleSelected = selectedLayerIds.length === 1;
-          const selectedLayer = singleSelected && selectedLayerId
-            ? result.layers.find((l) => l.id === selectedLayerId)
-            : null;
           return {
             layers: result.layers,
             selectedLayerIds,
             selectedLayerId,
-            selectedFaceIndices:
-              singleSelected && selectedLayerId === s.selectedLayerId
-                ? s.selectedFaceIndices
-                : [],
             editorSelectionMode: singleSelected
-              ? normalizeEditorSelectionMode(s.editorSelectionMode, selectedLayer)
+              ? s.editorSelectionMode
               : "shape",
             canUndo: result.can_undo,
             canRedo: result.can_redo,
@@ -1289,46 +1203,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       console.error("Failed to redo:", e);
-    }
-  },
-
-  toggleFaceMask: async (layerId, faceIndices, masked) => {
-    try {
-      await tauriInvoke<boolean>("toggle_face_mask", { layerId, faceIndices, masked });
-      const layers = await tauriInvoke<Layer[]>("get_layers");
-      set({ layers, isDirty: true, canUndo: true });
-    } catch (e) {
-      console.error("Failed to toggle face mask:", e);
-    }
-  },
-
-  createFaceGroup: async (layerId, name, faceIndices, color) => {
-    try {
-      await tauriInvoke<boolean>("create_face_group", { layerId, name, faceIndices, color });
-      const layers = await tauriInvoke<Layer[]>("get_layers");
-      set({ layers, isDirty: true, canUndo: true });
-    } catch (e) {
-      console.error("Failed to create face group:", e);
-    }
-  },
-
-  removeFaceGroup: async (layerId, groupIndex) => {
-    try {
-      await tauriInvoke<boolean>("remove_face_group", { layerId, groupIndex });
-      const layers = await tauriInvoke<Layer[]>("get_layers");
-      set({ layers, isDirty: true, canUndo: true });
-    } catch (e) {
-      console.error("Failed to remove face group:", e);
-    }
-  },
-
-  renameFaceGroup: async (layerId, groupIndex, name) => {
-    try {
-      await tauriInvoke<boolean>("rename_face_group", { layerId, groupIndex, name });
-      const layers = await tauriInvoke<Layer[]>("get_layers");
-      set({ layers, isDirty: true, canUndo: true });
-    } catch (e) {
-      console.error("Failed to rename face group:", e);
     }
   },
 
@@ -1346,33 +1220,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  setFaceUvOverride: async (layerId, faceIndex, adjustment) => {
-    try {
-      await tauriInvoke<boolean>("set_face_uv_override", { layerId, faceIndex, adjustment });
-      const layers = await tauriInvoke<Layer[]>("get_layers");
-      set({ layers, isDirty: true });
-    } catch (e) {
-      console.error("Failed to set face UV override:", e);
-    }
-  },
-
-  clearFaceUvOverride: async (layerId, faceIndex) => {
-    try {
-      await tauriInvoke<boolean>("clear_face_uv_override", { layerId, faceIndex });
-      const layers = await tauriInvoke<Layer[]>("get_layers");
-      set({ layers, isDirty: true, canUndo: true });
-    } catch (e) {
-      console.error("Failed to clear face UV override:", e);
-    }
-  },
-
   subdivideMesh: async (layerId) => {
     try {
       const newGeometry = await tauriInvoke<LayerGeometry | null>("subdivide_mesh", { layerId });
       if (newGeometry) {
         set((s) => ({
           layers: s.layers.map((l) => l.id === layerId ? { ...l, geometry: newGeometry } : l),
-          selectedFaceIndices: [],
           isDirty: true,
           canUndo: true,
         }));

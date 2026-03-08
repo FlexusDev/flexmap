@@ -154,7 +154,7 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Tab — toggle Shape vs UV/Input edit mode
+      // Tab — toggle Shape vs Input edit mode
       if ((e.key === "Tab" || e.code === "Tab") && !meta && !e.altKey) {
         if (isTypingTarget(target) || e.repeat) return;
         e.preventDefault();
@@ -211,19 +211,6 @@ export function useKeyboardShortcuts() {
         markHandled(e);
         state.toggleSnap();
         return;
-      }
-
-      // Escape — Clear face selection (when faces are selected)
-      if (e.key === "Escape" && !meta && !e.altKey && !e.shiftKey) {
-        if (isTypingTarget(target)) {
-          return;
-        }
-        if (state.selectedFaceIndices.length > 0) {
-          e.preventDefault();
-          markHandled(e);
-          state.clearFaceSelection();
-          return;
-        }
       }
 
       // Number keys 0-9 — Quick opacity for selected layer (no modifier)

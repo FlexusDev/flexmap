@@ -13,18 +13,6 @@ export interface Point2D {
   y: number;
 }
 
-export interface FaceGroup {
-  name: string;
-  face_indices: number[];
-  color: string;
-}
-
-export interface UvAdjustment {
-  offset: [number, number];
-  rotation: number;
-  scale: [number, number];
-}
-
 export interface InputTransform {
   offset: [number, number];
   rotation: number;
@@ -45,9 +33,6 @@ export type LayerGeometry =
         cols: number;
         rows: number;
         points: Point2D[];
-        face_groups?: FaceGroup[];
-        masked_faces?: number[];
-        uv_overrides?: Record<number, UvAdjustment>;
       };
     }
   | {
@@ -229,7 +214,7 @@ export interface UndoRedoResult {
 }
 
 export type FramePacingMode = "show" | "lowLatency" | "benchmark";
-export type EditorSelectionMode = "shape" | "uv";
+export type EditorSelectionMode = "shape" | "input";
 export type PerformanceProfile = "max_fps" | "balanced";
 
 export interface RenderStats {

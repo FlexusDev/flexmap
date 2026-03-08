@@ -6,15 +6,12 @@ import type {
   LayerGeometry,
   LayerProperties,
   Point2D,
-  UvAdjustment,
   BlendMode,
 } from "../../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import LayerSection from "./sections/LayerSection";
 import EditSection from "./sections/EditSection";
 
-const DEFAULT_UV: UvAdjustment = { offset: [0, 0], rotation: 0, scale: [1, 1] };
-const TWO_PI = Math.PI * 2;
 const EPS = 1e-6;
 
 function geometryCenter(geometry: LayerGeometry): Point2D {
@@ -70,9 +67,6 @@ function PropertiesPanel() {
     disconnectSourceForSelection,
     setBlendModeForSelection,
     sources,
-    selectedFaceIndices,
-    setFaceUvOverride,
-    clearFaceUvOverride,
     subdivideMesh,
     beginInteraction,
     setLayerInputTransform,
@@ -94,9 +88,6 @@ function PropertiesPanel() {
     disconnectSourceForSelection: s.disconnectSourceForSelection,
     setBlendModeForSelection: s.setBlendModeForSelection,
     sources: s.sources,
-    selectedFaceIndices: s.selectedFaceIndices,
-    setFaceUvOverride: s.setFaceUvOverride,
-    clearFaceUvOverride: s.clearFaceUvOverride,
     subdivideMesh: s.subdivideMesh,
     beginInteraction: s.beginInteraction,
     setLayerInputTransform: s.setLayerInputTransform,
@@ -179,13 +170,7 @@ function PropertiesPanel() {
     beatAmount: 0.0,
   };
 
-  const meshGeom = primaryLayer?.geometry.type === "Mesh" ? primaryLayer.geometry : null;
-  const meshData = meshGeom?.data ?? null;
   const selectionMode = isMulti ? "shape" as const : editorSelectionMode;
-
-  const firstFaceIdx = selectedFaceIndices[0] ?? -1;
-  const currentUV: UvAdjustment =
-    (firstFaceIdx >= 0 && meshData?.uv_overrides?.[firstFaceIdx]) || DEFAULT_UV;
 
   const geomCenterNorm = geometrySelectionCenter(selectedLayers);
 
@@ -440,39 +425,6 @@ function PropertiesPanel() {
     endSliderInteraction();
   }, [beginSliderInteraction, endSliderInteraction, scheduleInput]);
 
-  // --- Face UV change (key-value for EditSection) ---
-  const handleFaceUvChange = useCallback((key: string, value: number) => {
-    if (!primaryLayer || selectedFaceIndices.length === 0) return;
-    const adj = { ...currentUV };
-    switch (key) {
-      case "offsetX":
-        adj.offset = [value, adj.offset[1]];
-        break;
-      case "offsetY":
-        adj.offset = [adj.offset[0], value];
-        break;
-      case "rotation":
-        adj.rotation = (value / 360) * TWO_PI;
-        break;
-      case "scaleX":
-        adj.scale = [value, adj.scale[1]];
-        break;
-      case "scaleY":
-        adj.scale = [adj.scale[0], value];
-        break;
-    }
-    for (const faceIdx of selectedFaceIndices) {
-      void setFaceUvOverride(primaryLayer.id, faceIdx, adj);
-    }
-  }, [primaryLayer, selectedFaceIndices, currentUV, setFaceUvOverride]);
-
-  const handleFaceUvReset = useCallback(() => {
-    if (!primaryLayer) return;
-    for (const faceIdx of selectedFaceIndices) {
-      void clearFaceUvOverride(primaryLayer.id, faceIdx);
-    }
-  }, [primaryLayer, selectedFaceIndices, clearFaceUvOverride]);
-
   // --- Derived values for EditSection ---
   const centerXPx = geomCenterNorm.x * outputWidth;
   const centerYPx = geomCenterNorm.y * outputHeight;
@@ -484,17 +436,6 @@ function PropertiesPanel() {
     scaleX: inputUi.scale[0],
     scaleY: inputUi.scale[1],
   }), [inputUi]);
-
-  const faceUvFlat = useMemo(() => {
-    if (selectedFaceIndices.length === 0) return null;
-    return {
-      offsetX: currentUV.offset[0],
-      offsetY: currentUV.offset[1],
-      rotation: (currentUV.rotation / TWO_PI) * 360,
-      scaleX: currentUV.scale[0],
-      scaleY: currentUV.scale[1],
-    };
-  }, [selectedFaceIndices.length, currentUV]);
 
   // --- Render ---
   return (
@@ -572,10 +513,6 @@ function PropertiesPanel() {
               inputTransform={inputTransformFlat}
               onInputTransformChange={handleInputTransformChange}
               onInputTransformReset={handleInputTransformReset}
-              facesSelected={selectedFaceIndices.length}
-              faceUv={faceUvFlat}
-              onFaceUvChange={handleFaceUvChange}
-              onFaceUvReset={handleFaceUvReset}
               onSliderDown={beginSliderInteraction}
               onSliderUp={endSliderInteraction}
             />
