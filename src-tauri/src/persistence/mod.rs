@@ -180,4 +180,32 @@ mod tests {
             panic!("Expected Mesh geometry after deserialization");
         }
     }
+
+    #[test]
+    fn legacy_face_fields_ignored_on_load() {
+        use crate::scene::layer::LayerGeometry;
+
+        let json = r##"{
+            "type": "Mesh",
+            "data": {
+                "cols": 2, "rows": 2,
+                "points": [
+                    {"x":0.0,"y":0.0},{"x":0.5,"y":0.0},{"x":1.0,"y":0.0},
+                    {"x":0.0,"y":0.5},{"x":0.5,"y":0.5},{"x":1.0,"y":0.5},
+                    {"x":0.0,"y":1.0},{"x":0.5,"y":1.0},{"x":1.0,"y":1.0}
+                ],
+                "face_groups": [{"name":"G","face_indices":[0],"color":"#ff0000"}],
+                "masked_faces": [1],
+                "uv_overrides": {"0": {"offset":[0.1,0.2],"rotation":0.5,"scale":[1.0,1.5]}}
+            }
+        }"##;
+        let geom: LayerGeometry = serde_json::from_str(json).unwrap();
+        if let LayerGeometry::Mesh { cols, rows, points } = geom {
+            assert_eq!(cols, 2);
+            assert_eq!(rows, 2);
+            assert_eq!(points.len(), 9);
+        } else {
+            panic!("Expected Mesh");
+        }
+    }
 }
