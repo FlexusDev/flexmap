@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import { getGitHubToken, setGitHubToken } from "../../lib/shader-library";
 
@@ -17,7 +18,16 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
     setBpmConfig,
     refreshBpmState,
     tapTempo,
-  } = useAppStore();
+  } = useAppStore(useShallow((s) => ({
+    audioInputDevices: s.audioInputDevices,
+    selectedAudioInputId: s.selectedAudioInputId,
+    bpmConfig: s.bpmConfig,
+    bpmState: s.bpmState,
+    setAudioInputDevice: s.setAudioInputDevice,
+    setBpmConfig: s.setBpmConfig,
+    refreshBpmState: s.refreshBpmState,
+    tapTempo: s.tapTempo,
+  })));
 
   useEffect(() => {
     if (!open) return;

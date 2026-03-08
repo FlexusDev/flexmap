@@ -7,6 +7,7 @@ import {
   usePanelRef,
 } from "react-resizable-panels";
 import type { Layout, PanelSize } from "react-resizable-panels";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import InspectorPane from "../properties/InspectorPane";
 import LayerPanel from "../layers/LayerPanel";
@@ -30,7 +31,10 @@ const LEFT_SECTION_MIN_PX = 96;
 const LEFT_SECTION_COLLAPSED_PX = 40;
 
 function LeftPanel() {
-  const { layers, sources } = useAppStore();
+  const { layers, sources } = useAppStore(useShallow((s) => ({
+    layers: s.layers,
+    sources: s.sources,
+  })));
 
   const layersPanelRef = usePanelRef();
   const sourcesPanelRef = usePanelRef();

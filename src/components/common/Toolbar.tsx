@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import { tauriOpenDialog, tauriSaveDialog } from "../../lib/tauri-bridge";
 import OutputConfigPanel from "../output/OutputConfigPanel";
@@ -20,7 +21,20 @@ function Toolbar() {
     newProject,
     undo,
     redo,
-  } = useAppStore();
+  } = useAppStore(useShallow((s) => ({
+    isDirty: s.isDirty,
+    projectPath: s.projectPath,
+    projectorWindowOpen: s.projectorWindowOpen,
+    canUndo: s.canUndo,
+    canRedo: s.canRedo,
+    openProjector: s.openProjector,
+    closeProjector: s.closeProjector,
+    saveProject: s.saveProject,
+    loadProjectFile: s.loadProjectFile,
+    newProject: s.newProject,
+    undo: s.undo,
+    redo: s.redo,
+  })));
 
   const handleNew = async () => {
     await newProject();

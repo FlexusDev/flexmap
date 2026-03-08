@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import { tauriInvoke } from "../../lib/tauri-bridge";
 import type {
@@ -270,7 +271,32 @@ function EditorCanvas() {
     setLayerInputTransform, toggleEditorSelectionMode,
     performanceProfile,
     selectedPointIndex, selectPoint, clearPointSelection,
-  } = useAppStore();
+  } = useAppStore(useShallow((s) => ({
+    project: s.project,
+    layers: s.layers,
+    selectedLayerId: s.selectedLayerId,
+    selectedLayerIds: s.selectedLayerIds,
+    selectedFaceIndices: s.selectedFaceIndices,
+    setLayerSelection: s.setLayerSelection,
+    toggleLayerSelection: s.toggleLayerSelection,
+    clearLayerSelection: s.clearLayerSelection,
+    setSelectedFaces: s.setSelectedFaces,
+    toggleFaceSelection: s.toggleFaceSelection,
+    clearFaceSelection: s.clearFaceSelection,
+    updateLayerPoint: s.updateLayerPoint,
+    applyGeometryTransformDelta: s.applyGeometryTransformDelta,
+    beginInteraction: s.beginInteraction,
+    setEditorPerf: s.setEditorPerf,
+    snapEnabled: s.snapEnabled,
+    magnifierEnabled: s.magnifierEnabled,
+    editorSelectionMode: s.editorSelectionMode,
+    setLayerInputTransform: s.setLayerInputTransform,
+    toggleEditorSelectionMode: s.toggleEditorSelectionMode,
+    performanceProfile: s.performanceProfile,
+    selectedPointIndex: s.selectedPointIndex,
+    selectPoint: s.selectPoint,
+    clearPointSelection: s.clearPointSelection,
+  })));
   const editorPreviewIntervalMs = performanceProfile === "max_fps" ? 66 : 100;
   const effectiveSelectedIds = selectedLayerIds.length > 0
     ? selectedLayerIds

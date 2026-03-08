@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import type {
   InputTransform,
@@ -83,7 +84,31 @@ function PropertiesPanel() {
     updateLayerPoint,
     setLayerVisibility,
     setLayerLocked,
-  } = useAppStore();
+  } = useAppStore(useShallow((s) => ({
+    project: s.project,
+    layers: s.layers,
+    selectedLayerId: s.selectedLayerId,
+    selectedLayerIds: s.selectedLayerIds,
+    updatePropertiesForSelection: s.updatePropertiesForSelection,
+    connectSourceForSelection: s.connectSourceForSelection,
+    disconnectSourceForSelection: s.disconnectSourceForSelection,
+    setBlendModeForSelection: s.setBlendModeForSelection,
+    sources: s.sources,
+    selectedFaceIndices: s.selectedFaceIndices,
+    setFaceUvOverride: s.setFaceUvOverride,
+    clearFaceUvOverride: s.clearFaceUvOverride,
+    subdivideMesh: s.subdivideMesh,
+    beginInteraction: s.beginInteraction,
+    setLayerInputTransform: s.setLayerInputTransform,
+    applyGeometryDeltaToSelection: s.applyGeometryDeltaToSelection,
+    editorSelectionMode: s.editorSelectionMode,
+    selectedPointIndex: s.selectedPointIndex,
+    snapEnabled: s.snapEnabled,
+    toggleSnap: s.toggleSnap,
+    updateLayerPoint: s.updateLayerPoint,
+    setLayerVisibility: s.setLayerVisibility,
+    setLayerLocked: s.setLayerLocked,
+  })));
 
   const effectiveSelectedIds = selectedLayerIds.length > 0
     ? selectedLayerIds
@@ -133,6 +158,12 @@ function PropertiesPanel() {
     }
     interactionActiveRef.current = false;
   }, [selectedLayerId, selectedCount]);
+
+  // Sync from store when not actively dragging (handles undo/redo, project load)
+  useEffect(() => {
+    if (!selectedLayer || interactionActiveRef.current) return;
+    setInputUi(selectedLayer.input_transform ?? DEFAULT_INPUT_TRANSFORM);
+  }, [selectedLayer?.input_transform]);
 
   // --- Primary layer alias ---
   const primaryLayer = selectedLayer ?? null;

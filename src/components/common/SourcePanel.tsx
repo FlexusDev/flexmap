@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useAppStore } from "../../store/useAppStore";
+import { useShallow } from "zustand/react/shallow";
 import { isTauri, tauriInvoke } from "../../lib/tauri-bridge";
 import ShaderLibraryModal from "./ShaderLibraryModal";
 
@@ -20,7 +21,16 @@ function SourcePanel() {
     addMediaFile,
     connectSourceForSelection,
     disconnectSourceForSelection,
-  } = useAppStore();
+  } = useAppStore(useShallow((s) => ({
+    sources: s.sources,
+    layers: s.layers,
+    selectedLayerId: s.selectedLayerId,
+    selectedLayerIds: s.selectedLayerIds,
+    refreshSources: s.refreshSources,
+    addMediaFile: s.addMediaFile,
+    connectSourceForSelection: s.connectSourceForSelection,
+    disconnectSourceForSelection: s.disconnectSourceForSelection,
+  })));
 
   const [syphonStatus, setSyphonStatus] = useState<SyphonStatus | null>(null);
   const [shaderLibraryOpen, setShaderLibraryOpen] = useState(false);
