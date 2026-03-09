@@ -30,6 +30,10 @@ pub struct RenderState {
     /// Monotonically increasing counter, bumped by update_layers().
     /// The projector uses this to skip prepare_all_buffers when layers haven't changed.
     pub layer_generation: AtomicU64,
+    /// BPM phase (0.0-1.0), updated by frame pump each tick
+    pub bpm_phase: RwLock<f32>,
+    /// BPM multiplier (0.25, 0.5, 1.0, 2.0, 4.0)
+    pub bpm_multiplier: RwLock<f32>,
 }
 
 impl RenderState {
@@ -42,6 +46,8 @@ impl RenderState {
             output_height: RwLock::new(1080),
             frame_pacing: RwLock::new(FramePacingMode::default()),
             layer_generation: AtomicU64::new(0),
+            bpm_phase: RwLock::new(0.0),
+            bpm_multiplier: RwLock::new(1.0),
         }
     }
 
@@ -71,6 +77,11 @@ impl RenderState {
         let val = *flag;
         *flag = false;
         val
+    }
+
+    pub fn update_bpm(&self, phase: f32, multiplier: f32) {
+        *self.bpm_phase.write() = phase;
+        *self.bpm_multiplier.write() = multiplier;
     }
 }
 
