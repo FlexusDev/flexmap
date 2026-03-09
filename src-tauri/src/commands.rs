@@ -1321,6 +1321,21 @@ impl PreviewCache {
     }
 }
 
+/// Cached composited scene preview (GPU-rendered)
+pub struct CompositedPreviewCache {
+    pub frame: parking_lot::RwLock<Option<Arc<FrameSnapshot>>>,
+    pub version: AtomicU64,
+}
+
+impl CompositedPreviewCache {
+    pub fn new() -> Self {
+        Self {
+            frame: parking_lot::RwLock::new(None),
+            version: AtomicU64::new(0),
+        }
+    }
+}
+
 /// Downsample RGBA frame using nearest-neighbor. Fast, no deps needed.
 pub(crate) fn downsample_rgba(
     src: &[u8],
@@ -1475,6 +1490,28 @@ pub async fn set_preview_consumers(
     // Keep frame/versions cache warm when consumers toggle off.
     // Stale entry cleanup is handled by the frame pump using current layer bindings.
     Ok(*cache.consumers.read())
+}
+
+#[tauri::command]
+pub async fn set_preview_quality(
+    quality: f32,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<(), String> {
+    render.set_preview_quality(quality);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_composited_preview(
+    cursor: u64,
+    cache: State<'_, Arc<CompositedPreviewCache>>,
+) -> Result<Option<(u64, FrameSnapshot)>, String> {
+    let current = cache.version.load(Ordering::Acquire);
+    if current <= cursor {
+        return Ok(None); // No new frame
+    }
+    let frame = cache.frame.read().clone();
+    Ok(frame.map(|f| (current, (*f).clone())))
 }
 
 #[derive(Serialize, Clone)]
