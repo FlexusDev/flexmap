@@ -945,6 +945,9 @@ const mockCommands: Record<string, (args: any) => any> = {
   set_bpm_multiplier: (_args: { multiplier: number }) => null,
   set_bpm_source: (_args: { source: string }) => null,
   tap_bpm: (): BpmState => ({ ...mockBpmState }),
+
+  set_preview_quality: (_args: { quality: number }) => null,
+  get_composited_preview: (_args: { cursor: number }) => null, // No composited preview in browser mode
 };
 
 /**

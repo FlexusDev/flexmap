@@ -350,6 +350,10 @@ interface AppState {
   setBpmSource: (source: 'auto' | 'manual') => Promise<void>;
   tapBpm: () => Promise<void>;
 
+  // Preview quality
+  previewQuality: number; // 0.1 - 1.0
+  setPreviewQuality: (quality: number) => Promise<void>;
+
   // Performance panel
   performancePanelOpen: boolean;
   togglePerformancePanel: () => void;
@@ -1403,6 +1407,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) {
       console.error("Failed to tap BPM:", e);
     }
+  },
+
+  previewQuality: 0.5,
+  setPreviewQuality: async (quality: number) => {
+    await tauriInvoke("set_preview_quality", { quality });
+    set({ previewQuality: quality });
   },
 
   performancePanelOpen: false,
