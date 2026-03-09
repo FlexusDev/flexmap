@@ -25,6 +25,12 @@ struct LayerUniforms {
     input_scale: vec4<f32>,
     // cos, sin, pad, pad
     input_rot: vec4<f32>,
+    // Pixel mapping
+    pxmap_config: vec4<f32>,     // enabled, pattern, coord_mode, intensity
+    pxmap_anim: vec4<f32>,       // phase, speed, width, direction_rad
+    pxmap_transform: vec4<f32>,  // offset_x, offset_y, scale_x, scale_y
+    pxmap_world: vec4<f32>,      // world_box x, y, w, h
+    pxmap_flags: vec4<f32>,      // invert, 0, 0, 0
 };
 
 @group(0) @binding(0) var t_source: texture_2d<f32>;
