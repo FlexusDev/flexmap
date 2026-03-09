@@ -18,6 +18,9 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
     setBpmConfig,
     refreshBpmState,
     tapTempo,
+    previewQuality,
+    setPreviewQuality,
+    project,
   } = useAppStore(useShallow((s) => ({
     audioInputDevices: s.audioInputDevices,
     selectedAudioInputId: s.selectedAudioInputId,
@@ -27,6 +30,9 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
     setBpmConfig: s.setBpmConfig,
     refreshBpmState: s.refreshBpmState,
     tapTempo: s.tapTempo,
+    previewQuality: s.previewQuality,
+    setPreviewQuality: s.setPreviewQuality,
+    project: s.project,
   })));
 
   useEffect(() => {
@@ -67,7 +73,7 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
         <div className="flex items-center justify-between px-4 py-3 border-b border-aura-border">
           <div>
             <div className="text-sm font-semibold text-aura-text">Settings</div>
-            <div className="text-[11px] text-aura-text-dim">Audio / BPM</div>
+            <div className="text-[11px] text-aura-text-dim">Display / Audio / BPM</div>
           </div>
           <button className="btn-ghost text-xs px-3 py-1" onClick={onClose}>
             Close
@@ -75,6 +81,13 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
         </div>
 
         <div className="p-4 space-y-4">
+          <PreviewQualitySection
+            quality={previewQuality}
+            onChange={(q) => void setPreviewQuality(q)}
+            outputWidth={project?.output.width ?? 1920}
+            outputHeight={project?.output.height ?? 1080}
+          />
+
           <div className="grid grid-cols-2 gap-3">
             <label className="text-xs text-aura-text-dim">
               Input Device
@@ -214,6 +227,59 @@ function RangeControl({ label, min, max, step, value, onChange }: RangeControlPr
         onChange={(event) => onChange(parseFloat(event.target.value))}
       />
     </label>
+  );
+}
+
+const QUALITY_PRESETS = [
+  { value: 0.25, label: "25%", tag: "Low" },
+  { value: 0.5, label: "50%", tag: "Medium" },
+  { value: 0.75, label: "75%", tag: "High" },
+  { value: 1.0, label: "100%", tag: "Full" },
+] as const;
+
+interface PreviewQualitySectionProps {
+  quality: number;
+  onChange: (quality: number) => void;
+  outputWidth: number;
+  outputHeight: number;
+}
+
+function PreviewQualitySection({
+  quality,
+  onChange,
+  outputWidth,
+  outputHeight,
+}: PreviewQualitySectionProps) {
+  const previewWidth = Math.round(outputWidth * quality);
+  const previewHeight = Math.round(outputHeight * quality);
+  const pct = Math.round(quality * 100);
+
+  return (
+    <div className="border border-aura-border rounded p-3 bg-aura-bg/40">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs text-aura-text">Preview Quality</div>
+        <div className="text-[11px] text-aura-text-dim font-mono">
+          {previewWidth}x{previewHeight} ({pct}%)
+        </div>
+      </div>
+      <div className="flex gap-2">
+        {QUALITY_PRESETS.map((preset) => (
+          <button
+            key={preset.value}
+            type="button"
+            className={`flex-1 px-2 py-1.5 rounded text-[11px] transition-colors ${
+              quality === preset.value
+                ? "bg-emerald-600 text-white"
+                : "bg-aura-hover text-aura-text-dim hover:text-aura-text"
+            }`}
+            onClick={() => onChange(preset.value)}
+          >
+            <div className="font-medium">{preset.label}</div>
+            <div className="text-[10px] opacity-70">{preset.tag}</div>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
