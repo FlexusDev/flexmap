@@ -1,5 +1,5 @@
 use super::shaders;
-use crate::scene::layer::{BlendMode, Layer, LayerGeometry};
+use crate::scene::layer::{BlendMode, Layer, LayerGeometry, PatternCoordMode, PixelMapPattern};
 use bytemuck::{Pod, Zeroable};
 
 /// Vertex format for layer rendering
@@ -45,10 +45,39 @@ pub struct LayerUniforms {
     pub input_scale: [f32; 4],
     /// input rotation cos/sin, pad, pad
     pub input_rot: [f32; 4],
+    // -- Pixel mapping uniforms --
+    /// enabled, pattern_type (0-5), coord_mode (0-1), intensity
+    pub pxmap_config: [f32; 4],
+    /// phase (animated by BPM), speed, width, direction_radians
+    pub pxmap_anim: [f32; 4],
+    /// offset_x, offset_y, scale_x, scale_y (per-shape transform)
+    pub pxmap_transform: [f32; 4],
+    /// world_box: x, y, w, h
+    pub pxmap_world: [f32; 4],
+    /// invert, pad, pad, pad
+    pub pxmap_flags: [f32; 4],
+}
+
+fn pattern_to_f32(p: PixelMapPattern) -> f32 {
+    match p {
+        PixelMapPattern::Chase => 0.0,
+        PixelMapPattern::Stripes => 1.0,
+        PixelMapPattern::Gradient => 2.0,
+        PixelMapPattern::Wave => 3.0,
+        PixelMapPattern::Strobe => 4.0,
+        PixelMapPattern::Radial => 5.0,
+    }
+}
+
+fn coord_mode_to_f32(m: PatternCoordMode) -> f32 {
+    match m {
+        PatternCoordMode::PerShape => 0.0,
+        PatternCoordMode::WorldSpace => 1.0,
+    }
 }
 
 impl LayerUniforms {
-    pub fn from_layer(layer: &Layer) -> Self {
+    pub fn from_layer(layer: &Layer, bpm_phase: f32, bpm_multiplier: f32) -> Self {
         let props = &layer.properties;
         let input = &layer.input_transform;
         let shape_kind = if layer.layer_type == "circle" {
@@ -57,6 +86,59 @@ impl LayerUniforms {
             0.0
         };
         let rot = input.rotation as f32;
+
+        // Pixel mapping
+        let (pm_config, pm_anim, pm_transform, pm_world, pm_flags) =
+            if let Some(ref pm) = layer.pixel_map {
+                if pm.enabled {
+                    let animated_phase =
+                        (bpm_phase * bpm_multiplier * pm.speed as f32).fract();
+                    (
+                        [
+                            1.0,
+                            pattern_to_f32(pm.pattern),
+                            coord_mode_to_f32(pm.coord_mode),
+                            pm.intensity as f32,
+                        ],
+                        [
+                            animated_phase,
+                            pm.speed as f32,
+                            pm.width as f32,
+                            (pm.direction as f32).to_radians(),
+                        ],
+                        [
+                            pm.offset_x as f32,
+                            pm.offset_y as f32,
+                            pm.scale_x as f32,
+                            pm.scale_y as f32,
+                        ],
+                        [
+                            pm.world_box[0] as f32,
+                            pm.world_box[1] as f32,
+                            pm.world_box[2] as f32,
+                            pm.world_box[3] as f32,
+                        ],
+                        [if pm.invert { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+                    )
+                } else {
+                    (
+                        [0.0; 4],
+                        [0.0; 4],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [0.0, 0.0, 1.0, 1.0],
+                        [0.0; 4],
+                    )
+                }
+            } else {
+                (
+                    [0.0; 4],
+                    [0.0; 4],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0; 4],
+                )
+            };
+
         Self {
             color_adjust: [
                 props.brightness as f32,
@@ -68,6 +150,11 @@ impl LayerUniforms {
             input_offset: [input.offset[0] as f32, input.offset[1] as f32, 0.0, 0.0],
             input_scale: [input.scale[0] as f32, input.scale[1] as f32, 0.0, 0.0],
             input_rot: [rot.cos(), rot.sin(), 0.0, 0.0],
+            pxmap_config: pm_config,
+            pxmap_anim: pm_anim,
+            pxmap_transform: pm_transform,
+            pxmap_world: pm_world,
+            pxmap_flags: pm_flags,
         }
     }
 }

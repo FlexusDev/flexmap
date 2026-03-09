@@ -299,7 +299,7 @@ impl RenderEngine {
 
     /// Pre-populate the buffer cache for all visible layers.
     /// Must be called before render_scene (needs &mut self, which render_scene doesn't).
-    pub fn prepare_all_buffers(&mut self, layers: &[Layer]) {
+    pub fn prepare_all_buffers(&mut self, layers: &[Layer], bpm_phase: f32, bpm_multiplier: f32) {
         let layer_ids: Vec<String> = layers.iter().map(|l| l.id.clone()).collect();
         self.buffer_cache.retain_layers(&layer_ids);
 
@@ -317,6 +317,8 @@ impl RenderEngine {
                 texture_view,
                 &self.texture_manager,
                 layer,
+                bpm_phase,
+                bpm_multiplier,
             );
         }
     }
@@ -325,10 +327,13 @@ impl RenderEngine {
     /// Uses multi-pass ping-pong compositing for complex blend modes.
     /// Returns the command buffer ready for submission.
     /// Call prepare_all_buffers() first if you want cache benefits.
+    /// `bpm_phase` and `bpm_multiplier` drive pixel mapping animation.
     pub fn render_scene(
         &self,
         layers: &[Layer],
         calibration: &CalibrationConfig,
+        bpm_phase: f32,
+        bpm_multiplier: f32,
     ) -> wgpu::CommandBuffer {
         let mut encoder = self
             .gpu
@@ -340,7 +345,7 @@ impl RenderEngine {
         if calibration.enabled {
             if let Some(ref target) = calibration.target_layer {
                 // Layer-level calibration: render scene normally then overlay pattern on target layer
-                self.render_layers_multipass(&mut encoder, layers);
+                self.render_layers_multipass(&mut encoder, layers, bpm_phase, bpm_multiplier);
                 if let Some(target_layer) = layers.iter().find(|l| l.id == target.layer_id && l.visible) {
                     let (verts, idxs) = generate_layer_calibration_mesh(&target_layer.geometry);
                     if !verts.is_empty() {
@@ -368,7 +373,7 @@ impl RenderEngine {
             }
         } else {
             // Layer compositing with blend modes
-            self.render_layers_multipass(&mut encoder, layers);
+            self.render_layers_multipass(&mut encoder, layers, bpm_phase, bpm_multiplier);
         }
 
         encoder.finish()
@@ -386,6 +391,8 @@ impl RenderEngine {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         layers: &[Layer],
+        bpm_phase: f32,
+        bpm_multiplier: f32,
     ) {
         let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
         sorted.sort_by_key(|l| l.z_index);
@@ -412,7 +419,7 @@ impl RenderEngine {
             });
 
             for layer in &sorted {
-                self.render_single_layer_hw(&mut pass, layer);
+                self.render_single_layer_hw(&mut pass, layer, bpm_phase, bpm_multiplier);
             }
             return;
         }
@@ -466,7 +473,7 @@ impl RenderEngine {
                 });
 
                 while i < sorted.len() && Self::is_hw_blend(&sorted[i].blend_mode) {
-                    self.render_single_layer_hw(&mut hw_pass, sorted[i]);
+                    self.render_single_layer_hw(&mut hw_pass, sorted[i], bpm_phase, bpm_multiplier);
                     i += 1;
                 }
                 // Pass is dropped here (submitted)
@@ -490,7 +497,7 @@ impl RenderEngine {
                         occlusion_query_set: None,
                     });
                     // Render layer with Normal alpha blending to temp
-                    self.render_single_layer_to_pass(&mut temp_pass, layer, true);
+                    self.render_single_layer_to_pass(&mut temp_pass, layer, true, bpm_phase, bpm_multiplier);
                 }
 
                 // Step 2: Blend composite — read layer_temp + offscreen → ping_pong
@@ -623,12 +630,14 @@ impl RenderEngine {
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
         layer: &Layer,
+        bpm_phase: f32,
+        bpm_multiplier: f32,
     ) {
         match layer.blend_mode {
             BlendMode::Additive => pass.set_pipeline(&self.pipeline.additive_pipeline),
             _ => pass.set_pipeline(&self.pipeline.layer_pipeline),
         }
-        self.render_single_layer_to_pass(pass, layer, false);
+        self.render_single_layer_to_pass(pass, layer, false, bpm_phase, bpm_multiplier);
     }
 
     /// Render a single layer's geometry into the current render pass.
@@ -639,6 +648,8 @@ impl RenderEngine {
         pass: &mut wgpu::RenderPass<'a>,
         layer: &Layer,
         force_normal: bool,
+        bpm_phase: f32,
+        bpm_multiplier: f32,
     ) {
         if force_normal {
             pass.set_pipeline(&self.pipeline.layer_pipeline);
@@ -666,7 +677,7 @@ impl RenderEngine {
             .unwrap_or(&self.white_texture_view);
 
         // Create per-layer uniform buffer
-        let uniforms = LayerUniforms::from_layer(layer);
+        let uniforms = LayerUniforms::from_layer(layer, bpm_phase, bpm_multiplier);
         let uniform_buffer =
             self.gpu
                 .device
@@ -730,12 +741,14 @@ impl RenderEngine {
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
         layers: &[Layer],
+        bpm_phase: f32,
+        bpm_multiplier: f32,
     ) {
         let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
         sorted.sort_by_key(|l| l.z_index);
 
         for layer in sorted {
-            self.render_single_layer_hw(pass, layer);
+            self.render_single_layer_hw(pass, layer, bpm_phase, bpm_multiplier);
         }
     }
 
@@ -795,6 +808,8 @@ impl RenderEngine {
         surface: &wgpu::Surface,
         layers: &[Layer],
         calibration: &CalibrationConfig,
+        bpm_phase: f32,
+        bpm_multiplier: f32,
     ) -> Result<(), String> {
         let output = surface
             .get_current_texture()
@@ -804,7 +819,7 @@ impl RenderEngine {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         // First, render the scene to the offscreen texture using multi-pass compositing
-        let scene_cmd = self.render_scene(layers, calibration);
+        let scene_cmd = self.render_scene(layers, calibration, bpm_phase, bpm_multiplier);
 
         // Then blit the offscreen result to the surface
         let mut blit_encoder = self
@@ -1026,8 +1041,10 @@ impl RenderEngine {
         &self,
         layers: &[Layer],
         calibration: &CalibrationConfig,
+        bpm_phase: f32,
+        bpm_multiplier: f32,
     ) -> Vec<u8> {
-        let cmd = self.render_scene(layers, calibration);
+        let cmd = self.render_scene(layers, calibration, bpm_phase, bpm_multiplier);
         self.gpu.queue.submit(std::iter::once(cmd));
 
         // For now return empty — full readback would need a staging buffer
