@@ -557,6 +557,8 @@ pub fn run() {
                         s
                     };
 
+                    render_state.update_bpm(bpm_snapshot.phase, bpm_snapshot.multiplier);
+
                     let engine_state = app_handle_pump
                         .try_state::<Arc<parking_lot::RwLock<renderer::engine::RenderEngine>>>();
 

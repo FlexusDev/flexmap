@@ -61,6 +61,7 @@ pub struct BpmRuntimeSnapshot {
     pub beat: f32,
     pub level: f32,
     pub phase: f32,
+    pub multiplier: f32,
 }
 
 impl Default for BpmRuntimeSnapshot {
@@ -70,6 +71,7 @@ impl Default for BpmRuntimeSnapshot {
             beat: 0.0,
             level: 0.0,
             phase: 0.0,
+            multiplier: 1.0,
         }
     }
 }

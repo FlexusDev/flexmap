@@ -45,6 +45,23 @@ impl Default for BpmConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum BpmSource {
+    Auto,
+    Manual,
+}
+
+impl Default for BpmSource {
+    fn default() -> Self {
+        BpmSource::Auto
+    }
+}
+
+fn default_multiplier() -> f32 {
+    1.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BpmState {
@@ -56,6 +73,10 @@ pub struct BpmState {
     pub selected_device_id: Option<String>,
     pub selected_device_name: Option<String>,
     pub last_beat_ms: u64,
+    #[serde(default = "default_multiplier")]
+    pub multiplier: f32,
+    #[serde(default)]
+    pub source: BpmSource,
 }
 
 impl Default for BpmState {
@@ -69,6 +90,8 @@ impl Default for BpmState {
             selected_device_id: None,
             selected_device_name: None,
             last_beat_ms: 0,
+            multiplier: 1.0,
+            source: BpmSource::default(),
         }
     }
 }
@@ -93,6 +116,14 @@ enum WorkerCommand {
     },
     RuntimeSnapshot {
         reply: mpsc::Sender<BpmRuntimeSnapshot>,
+    },
+    SetMultiplier {
+        multiplier: f32,
+        reply: mpsc::Sender<BpmState>,
+    },
+    SetManualMode {
+        manual: bool,
+        reply: mpsc::Sender<BpmState>,
     },
 }
 
@@ -147,6 +178,16 @@ impl BpmEngine {
 
     pub fn runtime_snapshot(&self) -> BpmRuntimeSnapshot {
         self.request(|reply| WorkerCommand::RuntimeSnapshot { reply })
+            .unwrap_or_default()
+    }
+
+    pub fn set_multiplier(&self, multiplier: f32) -> BpmState {
+        self.request(|reply| WorkerCommand::SetMultiplier { multiplier, reply })
+            .unwrap_or_default()
+    }
+
+    pub fn set_manual_mode(&self, manual: bool) -> BpmState {
+        self.request(|reply| WorkerCommand::SetManualMode { manual, reply })
             .unwrap_or_default()
     }
 
@@ -227,6 +268,12 @@ impl WorkerState {
             WorkerCommand::RuntimeSnapshot { reply } => {
                 let _ = reply.send(self.runtime_snapshot());
             }
+            WorkerCommand::SetMultiplier { multiplier, reply } => {
+                let _ = reply.send(self.set_multiplier(multiplier));
+            }
+            WorkerCommand::SetManualMode { manual, reply } => {
+                let _ = reply.send(self.set_manual_mode(manual));
+            }
         }
     }
 
@@ -301,8 +348,8 @@ impl WorkerState {
     fn tap_tempo(&mut self) -> BpmState {
         let now = Instant::now();
         self.tap_history.push(now);
-        if self.tap_history.len() > 6 {
-            let remove = self.tap_history.len() - 6;
+        if self.tap_history.len() > 8 {
+            let remove = self.tap_history.len() - 8;
             self.tap_history.drain(0..remove);
         }
 
@@ -319,11 +366,29 @@ impl WorkerState {
                 let bpm = (60.0 / avg).clamp(40.0, 220.0);
                 self.config.manual_bpm = bpm;
                 self.state.bpm = bpm;
+                self.state.source = BpmSource::Manual;
                 self.last_beat_instant = Some(now);
                 self.state.last_beat_ms = unix_ms_now();
                 self.beat_decay = 1.0;
             }
         }
+        self.get_bpm_state()
+    }
+
+    fn set_multiplier(&mut self, multiplier: f32) -> BpmState {
+        const VALID: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
+        if VALID.iter().any(|v| (v - multiplier).abs() < f32::EPSILON) {
+            self.state.multiplier = multiplier;
+        }
+        self.get_bpm_state()
+    }
+
+    fn set_manual_mode(&mut self, manual: bool) -> BpmState {
+        self.state.source = if manual {
+            BpmSource::Manual
+        } else {
+            BpmSource::Auto
+        };
         self.get_bpm_state()
     }
 
@@ -334,6 +399,7 @@ impl WorkerState {
             beat: state.beat.clamp(0.0, 1.0),
             level: state.level.clamp(0.0, 1.0),
             phase: state.phase.fract(),
+            multiplier: state.multiplier,
         }
     }
 
