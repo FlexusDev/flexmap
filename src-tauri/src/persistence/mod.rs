@@ -182,6 +182,24 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_layer_without_pixel_map() {
+        let json = r#"{
+            "id": "test-1",
+            "name": "Test",
+            "type": "quad",
+            "visible": true,
+            "locked": false,
+            "zIndex": 0,
+            "source": null,
+            "geometry": {"type":"Quad","data":{"corners":[{"x":0.1,"y":0.1},{"x":0.4,"y":0.1},{"x":0.4,"y":0.4},{"x":0.1,"y":0.4}]}},
+            "properties": {"brightness":1.0,"contrast":1.0,"gamma":1.0,"opacity":1.0,"feather":0.0,"beatReactive":false,"beatAmount":0.0}
+        }"#;
+        let layer: crate::scene::layer::Layer = serde_json::from_str(json).unwrap();
+        assert!(layer.pixel_map.is_none());
+        assert!(layer.group_id.is_none());
+    }
+
+    #[test]
     fn legacy_face_fields_ignored_on_load() {
         use crate::scene::layer::LayerGeometry;
 

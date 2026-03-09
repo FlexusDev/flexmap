@@ -325,6 +325,83 @@ impl Default for BlendMode {
     }
 }
 
+/// Pattern type for pixel mapping effect
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum PixelMapPattern {
+    Chase,
+    Stripes,
+    Gradient,
+    Wave,
+    Strobe,
+    Radial,
+}
+
+impl Default for PixelMapPattern {
+    fn default() -> Self {
+        PixelMapPattern::Chase
+    }
+}
+
+/// Coordinate mode for pixel mapping pattern
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum PatternCoordMode {
+    PerShape,
+    WorldSpace,
+}
+
+impl Default for PatternCoordMode {
+    fn default() -> Self {
+        PatternCoordMode::PerShape
+    }
+}
+
+/// Pixel mapping effect — B&W pattern that modulates layer opacity
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PixelMapEffect {
+    pub enabled: bool,
+    pub pattern: PixelMapPattern,
+    pub coord_mode: PatternCoordMode,
+    /// BPM-relative speed multiplier
+    pub speed: f64,
+    /// Band width / frequency (0.0-1.0)
+    pub width: f64,
+    /// Effect strength (0.0-1.0)
+    pub intensity: f64,
+    /// Direction angle in degrees
+    pub direction: f64,
+    pub invert: bool,
+    // Per-shape transform
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub scale_x: f64,
+    pub scale_y: f64,
+    // World-space box (normalized projection coords)
+    pub world_box: [f64; 4],
+}
+
+impl Default for PixelMapEffect {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pattern: PixelMapPattern::default(),
+            coord_mode: PatternCoordMode::default(),
+            speed: 1.0,
+            width: 0.5,
+            intensity: 1.0,
+            direction: 0.0,
+            invert: false,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            world_box: [0.0, 0.0, 1.0, 1.0],
+        }
+    }
+}
+
 /// Source assignment for a layer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceAssignment {
@@ -351,6 +428,10 @@ pub struct Layer {
     pub properties: LayerProperties,
     #[serde(default)]
     pub blend_mode: BlendMode,
+    #[serde(default, rename = "pixelMap")]
+    pub pixel_map: Option<PixelMapEffect>,
+    #[serde(default, rename = "groupId")]
+    pub group_id: Option<String>,
 }
 
 impl Layer {
@@ -367,6 +448,8 @@ impl Layer {
             input_transform: InputTransform::default(),
             properties: LayerProperties::default(),
             blend_mode: BlendMode::default(),
+            pixel_map: None,
+            group_id: None,
         }
     }
 
@@ -383,6 +466,8 @@ impl Layer {
             input_transform: InputTransform::default(),
             properties: LayerProperties::default(),
             blend_mode: BlendMode::default(),
+            pixel_map: None,
+            group_id: None,
         }
     }
 
@@ -399,6 +484,8 @@ impl Layer {
             input_transform: InputTransform::default(),
             properties: LayerProperties::default(),
             blend_mode: BlendMode::default(),
+            pixel_map: None,
+            group_id: None,
         }
     }
 
@@ -415,6 +502,8 @@ impl Layer {
             input_transform: InputTransform::default(),
             properties: LayerProperties::default(),
             blend_mode: BlendMode::default(),
+            pixel_map: None,
+            group_id: None,
         }
     }
 }
