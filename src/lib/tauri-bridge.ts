@@ -27,6 +27,8 @@ import type {
   AudioInputDevice,
   BpmConfig,
   BpmState,
+  PixelMapEffect,
+  LayerGroup,
 } from "../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../types";
 
@@ -99,6 +101,7 @@ const mockAudioDevices: AudioInputDevice[] = [
     isDefault: false,
   },
 ];
+let mockGroups: LayerGroup[] = [];
 let mockPreviewLayerIds = new Set<string>();
 const mockPendingRemovedLayerIds = new Set<string>();
 const mockFrameSnapshotCache = new Map<string, FrameSnapshot>();
@@ -430,6 +433,8 @@ const mockCommands: Record<string, (args: any) => any> = {
         beatAmount: 0,
       },
       blend_mode: "normal",
+      pixelMap: null,
+      groupId: null,
     };
     mockProject.layers.push(layer);
     touchMockProject({ previewChanged: true });
@@ -884,6 +889,62 @@ const mockCommands: Record<string, (args: any) => any> = {
   }),
 
   install_syphon_framework: () => "Syphon.framework loaded successfully. Refresh sources to see Syphon servers.",
+
+  // Pixel mapping & layer group mocks
+  set_layer_pixel_map: (_args: { layerId: string; pixelMap: PixelMapEffect | null }) => {
+    const layer = mockProject.layers.find((l) => l.id === _args.layerId);
+    if (layer) {
+      layer.pixelMap = _args.pixelMap;
+      touchMockProject();
+    }
+    return true;
+  },
+
+  create_layer_group: (args: { name: string; layerIds: string[] }): LayerGroup => {
+    const group: LayerGroup = {
+      id: makeId(),
+      name: args.name,
+      layerIds: [...args.layerIds],
+      visible: true,
+      locked: false,
+      pixelMap: null,
+    };
+    mockGroups.push(group);
+    for (const lid of args.layerIds) {
+      const layer = mockProject.layers.find((l) => l.id === lid);
+      if (layer) layer.groupId = group.id;
+    }
+    touchMockProject();
+    return group;
+  },
+
+  delete_layer_group: (args: { groupId: string }) => {
+    const group = mockGroups.find((g) => g.id === args.groupId);
+    if (group) {
+      for (const lid of group.layerIds) {
+        const layer = mockProject.layers.find((l) => l.id === lid);
+        if (layer) layer.groupId = null;
+      }
+      mockGroups = mockGroups.filter((g) => g.id !== args.groupId);
+      touchMockProject();
+    }
+    return true;
+  },
+
+  set_group_pixel_map: (args: { groupId: string; pixelMap: PixelMapEffect | null }) => {
+    const group = mockGroups.find((g) => g.id === args.groupId);
+    if (group) {
+      group.pixelMap = args.pixelMap;
+      touchMockProject();
+    }
+    return true;
+  },
+
+  get_groups: (): LayerGroup[] => [...mockGroups],
+
+  set_bpm_multiplier: (_args: { multiplier: number }) => null,
+  set_bpm_source: (_args: { source: string }) => null,
+  tap_bpm: (): BpmState => ({ ...mockBpmState }),
 };
 
 /**
