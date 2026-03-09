@@ -3,6 +3,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::scene::layer::*;
+use crate::scene::group::LayerGroup;
+use crate::scene::layer::PixelMapEffect;
 use crate::scene::project::*;
 use crate::scene::state::SceneState;
 use crate::audio::{AudioInputDevice, BpmConfig, BpmState, BpmEngine};
@@ -1658,6 +1660,96 @@ pub async fn subdivide_mesh(
     let new_geometry = state.subdivide_mesh(&layer_id);
     if new_geometry.is_some() { sync_render_state(&state, &render); }
     Ok(new_geometry)
+}
+
+// =============================================================================
+// Pixel mapping + Groups
+// =============================================================================
+
+#[tauri::command]
+pub async fn set_layer_pixel_map(
+    layer_id: String,
+    pixel_map: Option<PixelMapEffect>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let result = state.set_layer_pixel_map(&layer_id, pixel_map);
+    if result {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn create_layer_group(
+    name: String,
+    layer_ids: Vec<String>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<LayerGroup, String> {
+    let group = state.create_group(&name, layer_ids);
+    sync_render_state(&state, &render);
+    Ok(group)
+}
+
+#[tauri::command]
+pub async fn delete_layer_group(
+    group_id: String,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let result = state.delete_group(&group_id);
+    if result {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn set_group_pixel_map(
+    group_id: String,
+    pixel_map: Option<PixelMapEffect>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let result = state.set_group_pixel_map(&group_id, pixel_map);
+    if result {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_groups(
+    state: State<'_, SceneState>,
+) -> Result<Vec<LayerGroup>, String> {
+    Ok(state.get_groups())
+}
+
+#[tauri::command]
+pub async fn set_bpm_multiplier(
+    multiplier: f32,
+    bpm_engine: State<'_, Arc<parking_lot::Mutex<BpmEngine>>>,
+) -> Result<(), String> {
+    bpm_engine.lock().set_multiplier(multiplier);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_bpm_source(
+    source: String,
+    bpm_engine: State<'_, Arc<parking_lot::Mutex<BpmEngine>>>,
+) -> Result<(), String> {
+    let is_manual = source == "manual";
+    bpm_engine.lock().set_manual_mode(is_manual);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tap_bpm(
+    bpm_engine: State<'_, Arc<parking_lot::Mutex<BpmEngine>>>,
+) -> Result<BpmState, String> {
+    Ok(bpm_engine.lock().tap_tempo())
 }
 
 // =============================================================================

@@ -454,6 +454,16 @@ pub fn run() {
             // Mesh operations
             commands::set_calibration_target,
             commands::subdivide_mesh,
+            // Pixel mapping + Groups
+            commands::set_layer_pixel_map,
+            commands::create_layer_group,
+            commands::delete_layer_group,
+            commands::set_group_pixel_map,
+            commands::get_groups,
+            // BPM control
+            commands::set_bpm_multiplier,
+            commands::set_bpm_source,
+            commands::tap_bpm,
         ])
         .setup(|app| {
             log::info!("FlexMap setup complete");
