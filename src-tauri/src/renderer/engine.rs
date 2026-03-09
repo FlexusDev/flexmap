@@ -34,6 +34,8 @@ pub struct RenderState {
     pub bpm_phase: RwLock<f32>,
     /// BPM multiplier (0.25, 0.5, 1.0, 2.0, 4.0)
     pub bpm_multiplier: RwLock<f32>,
+    /// Preview quality as fraction of output resolution (0.25, 0.5, 0.75, 1.0)
+    pub preview_quality: RwLock<f32>,
 }
 
 impl RenderState {
@@ -48,6 +50,7 @@ impl RenderState {
             layer_generation: AtomicU64::new(0),
             bpm_phase: RwLock::new(0.0),
             bpm_multiplier: RwLock::new(1.0),
+            preview_quality: RwLock::new(0.5),
         }
     }
 
@@ -82,6 +85,11 @@ impl RenderState {
     pub fn update_bpm(&self, phase: f32, multiplier: f32) {
         *self.bpm_phase.write() = phase;
         *self.bpm_multiplier.write() = multiplier;
+    }
+
+    pub fn set_preview_quality(&self, quality: f32) {
+        *self.preview_quality.write() = quality.clamp(0.1, 1.0);
+        *self.needs_redraw.write() = true;
     }
 }
 
@@ -130,6 +138,22 @@ mod tests {
     }
 
     #[test]
+    fn preview_quality_defaults_and_clamps() {
+        let rs = RenderState::new();
+        assert_eq!(*rs.preview_quality.read(), 0.5);
+
+        rs.set_preview_quality(0.75);
+        assert_eq!(*rs.preview_quality.read(), 0.75);
+        assert!(*rs.needs_redraw.read());
+
+        // Clamp to [0.1, 1.0]
+        rs.set_preview_quality(0.0);
+        assert_eq!(*rs.preview_quality.read(), 0.1);
+        rs.set_preview_quality(2.0);
+        assert_eq!(*rs.preview_quality.read(), 1.0);
+    }
+
+    #[test]
     fn update_calibration_does_not_panic() {
         let rs = RenderState::new();
         let config = CalibrationConfig::default();
@@ -162,6 +186,19 @@ pub struct RenderEngine {
     pub buffer_cache: BufferCache,
     /// Cached blit bind groups + uniform buffer (rebuilt only on offscreen resize)
     blit_cache: Option<BlitCache>,
+    /// Preview offscreen (smaller resolution for editor)
+    pub preview_texture: wgpu::Texture,
+    pub preview_view: wgpu::TextureView,
+    pub preview_ping_pong: wgpu::Texture,
+    pub preview_ping_pong_view: wgpu::TextureView,
+    pub preview_layer_temp: wgpu::Texture,
+    pub preview_layer_temp_view: wgpu::TextureView,
+    pub preview_width: u32,
+    pub preview_height: u32,
+    /// Staging buffer for GPU->CPU readback
+    pub preview_staging_buffer: wgpu::Buffer,
+    pub preview_staging_size: u64,
+    preview_blit_cache: Option<BlitCache>,
 }
 
 /// Cached GPU objects for the blit pass (offscreen → surface).
@@ -221,6 +258,32 @@ impl RenderEngine {
             &white_texture_view,
         );
 
+        // Create preview offscreen at 50% default (960x540 for 1920x1080)
+        let preview_width = (width / 2).max(64);
+        let preview_height = (height / 2).max(64);
+        let (preview_texture, preview_view) =
+            Self::create_offscreen_target(&gpu.device, preview_width, preview_height, surface_format);
+        let (preview_ping_pong, preview_ping_pong_view) =
+            Self::create_offscreen_target(&gpu.device, preview_width, preview_height, surface_format);
+        let (preview_layer_temp, preview_layer_temp_view) =
+            Self::create_offscreen_target(&gpu.device, preview_width, preview_height, surface_format);
+
+        let preview_bytes_per_row = (preview_width * 4).next_multiple_of(256);
+        let preview_staging_size = (preview_bytes_per_row * preview_height) as u64;
+        let preview_staging_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Preview Staging"),
+            size: preview_staging_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let preview_blit_cache = Self::build_blit_cache(
+            &gpu.device,
+            &pipeline,
+            &preview_view,
+            &white_texture_view,
+        );
+
         Self {
             gpu,
             pipeline,
@@ -237,6 +300,17 @@ impl RenderEngine {
             layer_temp_view,
             buffer_cache: BufferCache::new(),
             blit_cache: Some(blit_cache),
+            preview_texture,
+            preview_view,
+            preview_ping_pong,
+            preview_ping_pong_view,
+            preview_layer_temp,
+            preview_layer_temp_view,
+            preview_width,
+            preview_height,
+            preview_staging_buffer,
+            preview_staging_size,
+            preview_blit_cache: Some(preview_blit_cache),
         }
     }
 
@@ -295,6 +369,202 @@ impl RenderEngine {
             &self.offscreen_view,
             &self.white_texture_view,
         ));
+    }
+
+    /// Resize the preview offscreen target and staging buffer.
+    pub fn resize_preview(&mut self, width: u32, height: u32) {
+        if width == self.preview_width && height == self.preview_height {
+            return;
+        }
+        #[cfg(windows)]
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        #[cfg(not(windows))]
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+
+        let (tex, view) = Self::create_offscreen_target(&self.gpu.device, width, height, format);
+        self.preview_texture = tex;
+        self.preview_view = view;
+        let (pp_tex, pp_view) =
+            Self::create_offscreen_target(&self.gpu.device, width, height, format);
+        self.preview_ping_pong = pp_tex;
+        self.preview_ping_pong_view = pp_view;
+        let (lt_tex, lt_view) =
+            Self::create_offscreen_target(&self.gpu.device, width, height, format);
+        self.preview_layer_temp = lt_tex;
+        self.preview_layer_temp_view = lt_view;
+        self.preview_width = width;
+        self.preview_height = height;
+
+        let bytes_per_row = (width * 4).next_multiple_of(256);
+        self.preview_staging_size = (bytes_per_row * height) as u64;
+        self.preview_staging_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Preview Staging"),
+            size: self.preview_staging_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        self.preview_blit_cache = Some(Self::build_blit_cache(
+            &self.gpu.device,
+            &self.pipeline,
+            &self.preview_view,
+            &self.white_texture_view,
+        ));
+    }
+
+    /// Render the full scene at preview resolution to the preview offscreen texture,
+    /// then copy to the staging buffer for CPU readback.
+    /// Returns the bytes_per_row for the staging buffer layout.
+    pub fn render_preview(
+        &self,
+        layers: &[Layer],
+        calibration: &CalibrationConfig,
+        bpm_phase: f32,
+        bpm_multiplier: f32,
+    ) -> u32 {
+        let bytes_per_row = (self.preview_width * 4).next_multiple_of(256);
+
+        // Render the scene into the preview offscreen using the preview-sized textures.
+        // We temporarily use preview_texture/preview_ping_pong/preview_layer_temp as
+        // the render targets by calling a dedicated preview scene render method.
+        let scene_cmd = self.render_scene_to_preview(layers, calibration, bpm_phase, bpm_multiplier);
+
+        let mut encoder = self.gpu.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("Preview Readback") },
+        );
+
+        // Copy preview texture -> staging buffer
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.preview_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.preview_staging_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(self.preview_height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.preview_width,
+                height: self.preview_height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.gpu.queue.submit([scene_cmd, encoder.finish()]);
+        bytes_per_row
+    }
+
+    /// Render the full scene directly into the preview-sized textures.
+    /// This mirrors render_scene but targets preview_texture instead of offscreen_texture.
+    fn render_scene_to_preview(
+        &self,
+        layers: &[Layer],
+        calibration: &CalibrationConfig,
+        bpm_phase: f32,
+        bpm_multiplier: f32,
+    ) -> wgpu::CommandBuffer {
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Preview Scene Render Encoder"),
+            });
+
+        if calibration.enabled {
+            if let Some(ref target) = calibration.target_layer {
+                self.render_layers_multipass_to(
+                    &mut encoder,
+                    layers,
+                    bpm_phase,
+                    bpm_multiplier,
+                    &self.preview_texture,
+                    &self.preview_view,
+                    &self.preview_ping_pong,
+                    &self.preview_ping_pong_view,
+                    &self.preview_layer_temp_view,
+                    self.preview_width,
+                    self.preview_height,
+                );
+                if let Some(target_layer) = layers.iter().find(|l| l.id == target.layer_id && l.visible) {
+                    let (verts, idxs) = generate_layer_calibration_mesh(&target_layer.geometry);
+                    if !verts.is_empty() {
+                        self.render_face_calibration_pass_to(&mut encoder, calibration, &verts, &idxs, &self.preview_view);
+                    }
+                }
+            } else {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Preview Calibration Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.preview_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                self.render_calibration_pass(&mut pass, calibration);
+            }
+        } else {
+            self.render_layers_multipass_to(
+                &mut encoder,
+                layers,
+                bpm_phase,
+                bpm_multiplier,
+                &self.preview_texture,
+                &self.preview_view,
+                &self.preview_ping_pong,
+                &self.preview_ping_pong_view,
+                &self.preview_layer_temp_view,
+                self.preview_width,
+                self.preview_height,
+            );
+        }
+
+        encoder.finish()
+    }
+
+    /// Read back the preview staging buffer. Call after render_preview + queue.submit.
+    /// Returns RGBA pixels ready for the frontend.
+    pub fn read_preview_pixels(&self, bytes_per_row: u32) -> Vec<u8> {
+        let buffer_slice = self.preview_staging_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        let _ = self.gpu.device.poll(wgpu::PollType::Wait);
+        rx.recv().unwrap().unwrap();
+
+        let data = buffer_slice.get_mapped_range();
+        let w = self.preview_width as usize;
+        let h = self.preview_height as usize;
+        let bpr = bytes_per_row as usize;
+        let mut pixels = Vec::with_capacity(w * h * 4);
+
+        for row in 0..h {
+            let start = row * bpr;
+            let end = start + w * 4;
+            pixels.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        self.preview_staging_buffer.unmap();
+
+        // BGRA -> RGBA swizzle
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
+
+        pixels
     }
 
     /// Pre-populate the buffer cache for all visible layers.
@@ -800,6 +1070,314 @@ impl RenderEngine {
         pass.draw(0..3, 0..1); // Fullscreen triangle
     }
 
+    /// Render all visible layers to an arbitrary set of render targets (parameterized).
+    /// Used by the preview render to target preview-sized textures.
+    fn render_layers_multipass_to(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        layers: &[Layer],
+        bpm_phase: f32,
+        bpm_multiplier: f32,
+        target_texture: &wgpu::Texture,
+        target_view: &wgpu::TextureView,
+        ping_pong_texture: &wgpu::Texture,
+        ping_pong_view: &wgpu::TextureView,
+        layer_temp_view: &wgpu::TextureView,
+        target_width: u32,
+        target_height: u32,
+    ) {
+        let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
+        sorted.sort_by_key(|l| l.z_index);
+
+        let needs_shader_blend = sorted.iter().any(|l| !Self::is_hw_blend(&l.blend_mode));
+
+        if !needs_shader_blend {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Layer Pass (HW blend only)"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            for layer in &sorted {
+                self.render_single_layer_hw(&mut pass, layer, bpm_phase, bpm_multiplier);
+            }
+            return;
+        }
+
+        // Clear the target to black
+        {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Clear Target"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+
+        let mut i = 0;
+        while i < sorted.len() {
+            let layer = sorted[i];
+
+            if Self::is_hw_blend(&layer.blend_mode) {
+                let mut hw_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("HW Blend Batch"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                while i < sorted.len() && Self::is_hw_blend(&sorted[i].blend_mode) {
+                    self.render_single_layer_hw(&mut hw_pass, sorted[i], bpm_phase, bpm_multiplier);
+                    i += 1;
+                }
+            } else {
+                {
+                    let mut temp_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Layer Temp Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: layer_temp_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    self.render_single_layer_to_pass(&mut temp_pass, layer, true, bpm_phase, bpm_multiplier);
+                }
+
+                {
+                    let blend_uniforms = BlendUniforms {
+                        blend_mode: blend_mode_to_u32(&layer.blend_mode),
+                        opacity: 1.0,
+                        _pad0: 0.0,
+                        _pad1: 0.0,
+                    };
+                    let uniform_buffer =
+                        self.gpu
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("Blend Uniform Buffer"),
+                                contents: bytemuck::cast_slice(&[blend_uniforms]),
+                                usage: wgpu::BufferUsages::UNIFORM,
+                            });
+
+                    let source_bg =
+                        self.gpu
+                            .device
+                            .create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("Blend Source BG"),
+                                layout: &self.pipeline.blend_source_bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(layer_temp_view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
+                                    },
+                                ],
+                            });
+
+                    let dest_bg =
+                        self.gpu
+                            .device
+                            .create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("Blend Dest BG"),
+                                layout: &self.pipeline.blend_dest_bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(target_view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
+                                    },
+                                ],
+                            });
+
+                    let uniform_bg =
+                        self.gpu
+                            .device
+                            .create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("Blend Uniform BG"),
+                                layout: &self.pipeline.blend_uniform_bind_group_layout,
+                                entries: &[wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: uniform_buffer.as_entire_binding(),
+                                }],
+                            });
+
+                    let mut blend_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Blend Composite Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: ping_pong_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+
+                    blend_pass.set_pipeline(&self.pipeline.blend_composite_pipeline);
+                    blend_pass.set_bind_group(0, &source_bg, &[]);
+                    blend_pass.set_bind_group(1, &dest_bg, &[]);
+                    blend_pass.set_bind_group(2, &uniform_bg, &[]);
+                    blend_pass.draw(0..3, 0..1);
+                }
+
+                // Copy ping_pong -> target
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: ping_pong_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: target_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: target_width,
+                        height: target_height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+
+                i += 1;
+            }
+        }
+    }
+
+    /// Render face calibration overlay to an arbitrary target view.
+    fn render_face_calibration_pass_to(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        calibration: &CalibrationConfig,
+        vertices: &[LayerVertex],
+        indices: &[u16],
+        target_view: &wgpu::TextureView,
+    ) {
+        let pattern_id: u32 = match calibration.pattern {
+            CalibrationPattern::Grid => 0,
+            CalibrationPattern::Crosshair => 1,
+            CalibrationPattern::Checkerboard => 2,
+            CalibrationPattern::FullWhite => 3,
+            CalibrationPattern::ColorBars => 4,
+            CalibrationPattern::Black => 5,
+        };
+
+        let uniforms = CalibrationUniforms {
+            pattern: pattern_id,
+            line_width: 0.005,
+            grid_divisions: 10.0,
+            brightness: 1.0,
+        };
+
+        let uniform_buffer =
+            self.gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Face Calibration Uniform Buffer"),
+                    contents: bytemuck::cast_slice(&[uniforms]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+
+        let bind_group = self
+            .gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Face Calibration Bind Group"),
+                layout: &self.pipeline.calibration_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }],
+            });
+
+        let vertex_buffer =
+            self.gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Face Calib Vertex Buffer"),
+                    contents: bytemuck::cast_slice(vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+
+        let index_buffer =
+            self.gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Face Calib Index Buffer"),
+                    contents: bytemuck::cast_slice(indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Face Calibration Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_pipeline(&self.pipeline.face_calibration_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+    }
+
     /// Render scene and present to a surface.
     /// Uses the multi-pass compositor for proper blend modes, then blits
     /// the offscreen result to the surface.
@@ -1036,7 +1614,7 @@ impl RenderEngine {
         pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
     }
 
-    /// Render scene to the offscreen texture and read pixels back (for preview/screenshot)
+    /// Render scene at preview resolution and read pixels back as RGBA.
     pub fn render_to_pixels(
         &self,
         layers: &[Layer],
@@ -1044,11 +1622,7 @@ impl RenderEngine {
         bpm_phase: f32,
         bpm_multiplier: f32,
     ) -> Vec<u8> {
-        let cmd = self.render_scene(layers, calibration, bpm_phase, bpm_multiplier);
-        self.gpu.queue.submit(std::iter::once(cmd));
-
-        // For now return empty — full readback would need a staging buffer
-        // This is a future optimization for editor preview thumbnails
-        Vec::new()
+        let bpr = self.render_preview(layers, calibration, bpm_phase, bpm_multiplier);
+        self.read_preview_pixels(bpr)
     }
 }
