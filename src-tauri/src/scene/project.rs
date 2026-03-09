@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use super::group::LayerGroup;
 use super::layer::Layer;
 
 pub const SCHEMA_VERSION: u32 = 2;
@@ -78,6 +79,8 @@ pub struct ProjectFile {
     pub output: OutputConfig,
     pub calibration: CalibrationConfig,
     pub layers: Vec<Layer>,
+    #[serde(default)]
+    pub groups: Vec<LayerGroup>,
     /// Non-critical editor UI state (viewport zoom, scroll position, etc.)
     #[serde(rename = "uiState", default)]
     pub ui_state: serde_json::Value,
@@ -93,6 +96,7 @@ impl ProjectFile {
             output: OutputConfig::default(),
             calibration: CalibrationConfig::default(),
             layers: Vec::new(),
+            groups: Vec::new(),
             ui_state: serde_json::Value::Null,
         }
     }

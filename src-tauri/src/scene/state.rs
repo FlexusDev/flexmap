@@ -1,6 +1,7 @@
 use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
+use super::group::LayerGroup;
 use super::history::History;
 use super::layer::*;
 use super::project::*;
@@ -163,31 +164,41 @@ impl SceneState {
         self.revision.load(Ordering::Acquire)
     }
 
-    /// Push current layer state to undo stack before mutating
+    /// Push current layer + group state to undo stack before mutating
     fn push_undo(&self) {
-        let layers = self.project.read().layers.clone();
-        self.history.push(layers);
+        let proj = self.project.read();
+        self.history.push((proj.layers.clone(), proj.groups.clone()));
     }
 
     // --- Undo / Redo ---
 
     pub fn undo(&self) -> Option<Vec<Layer>> {
-        let current = self.project.read().layers.clone();
-        if let Some(prev) = self.history.undo(current) {
-            self.project.write().layers = prev.clone();
+        let proj = self.project.read();
+        let current = (proj.layers.clone(), proj.groups.clone());
+        drop(proj);
+        if let Some((prev_layers, prev_groups)) = self.history.undo(current) {
+            let mut proj = self.project.write();
+            proj.layers = prev_layers.clone();
+            proj.groups = prev_groups;
+            drop(proj);
             self.mark_dirty();
-            Some(prev)
+            Some(prev_layers)
         } else {
             None
         }
     }
 
     pub fn redo(&self) -> Option<Vec<Layer>> {
-        let current = self.project.read().layers.clone();
-        if let Some(next) = self.history.redo(current) {
-            self.project.write().layers = next.clone();
+        let proj = self.project.read();
+        let current = (proj.layers.clone(), proj.groups.clone());
+        drop(proj);
+        if let Some((next_layers, next_groups)) = self.history.redo(current) {
+            let mut proj = self.project.write();
+            proj.layers = next_layers.clone();
+            proj.groups = next_groups;
+            drop(proj);
             self.mark_dirty();
-            Some(next)
+            Some(next_layers)
         } else {
             None
         }
@@ -212,7 +223,7 @@ impl SceneState {
     pub fn remove_layer(&self, layer_id: &str) -> Option<Layer> {
         let mut proj = self.project.write();
         if let Some(idx) = proj.layers.iter().position(|l| l.id == layer_id) {
-            self.history.push(proj.layers.clone());
+            self.history.push((proj.layers.clone(), proj.groups.clone()));
             let removed = proj.layers.remove(idx);
             drop(proj);
             self.mark_dirty();
@@ -235,7 +246,7 @@ impl SceneState {
             return false;
         }
 
-        self.history.push(proj.layers.clone());
+        self.history.push((proj.layers.clone(), proj.groups.clone()));
         let before_len = proj.layers.len();
         proj.layers.retain(|l| !id_set.contains(l.id.as_str()));
         let removed = proj.layers.len() != before_len;
@@ -287,7 +298,7 @@ impl SceneState {
             return Vec::new();
         }
 
-        self.history.push(proj.layers.clone());
+        self.history.push((proj.layers.clone(), proj.groups.clone()));
 
         let mut next_z = proj.layers.iter().map(|l| l.z_index).max().unwrap_or(-1) + 1;
         let mut duplicates = Vec::with_capacity(originals.len());
@@ -341,7 +352,7 @@ impl SceneState {
     pub fn set_layer_source(&self, layer_id: &str, source: Option<SourceAssignment>) -> bool {
         let mut proj = self.project.write();
         if proj.layers.iter().any(|l| l.id == layer_id) {
-            let snapshot = proj.layers.clone();
+            let snapshot = (proj.layers.clone(), proj.groups.clone());
             let layer = proj.layers.iter_mut().find(|l| l.id == layer_id).unwrap();
             self.history.push(snapshot);
             layer.source = source;
@@ -497,6 +508,70 @@ impl SceneState {
         }
     }
 
+    // --- Group operations ---
+
+    pub fn create_group(&self, name: &str, layer_ids: Vec<String>) -> LayerGroup {
+        self.push_undo();
+        let group = LayerGroup::new(name, layer_ids.clone());
+        let mut proj = self.project.write();
+        for layer in proj.layers.iter_mut() {
+            if layer_ids.contains(&layer.id) {
+                layer.group_id = Some(group.id.clone());
+            }
+        }
+        proj.groups.push(group.clone());
+        drop(proj);
+        self.mark_dirty();
+        group
+    }
+
+    pub fn delete_group(&self, group_id: &str) -> bool {
+        self.push_undo();
+        let mut proj = self.project.write();
+        if let Some(idx) = proj.groups.iter().position(|g| g.id == group_id) {
+            for layer in proj.layers.iter_mut() {
+                if layer.group_id.as_deref() == Some(group_id) {
+                    layer.group_id = None;
+                }
+            }
+            proj.groups.remove(idx);
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            drop(proj);
+            false
+        }
+    }
+
+    pub fn get_groups(&self) -> Vec<LayerGroup> {
+        self.project.read().groups.clone()
+    }
+
+    pub fn set_group_pixel_map(&self, group_id: &str, pixel_map: Option<PixelMapEffect>) -> bool {
+        let mut proj = self.project.write();
+        if let Some(group) = proj.groups.iter_mut().find(|g| g.id == group_id) {
+            group.pixel_map = pixel_map;
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_layer_pixel_map(&self, layer_id: &str, pixel_map: Option<PixelMapEffect>) -> bool {
+        let mut proj = self.project.write();
+        if let Some(layer) = proj.layers.iter_mut().find(|l| l.id == layer_id) {
+            layer.pixel_map = pixel_map;
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn get_layers_snapshot(&self) -> Vec<Layer> {
         self.project.read().layers.clone()
     }
@@ -594,7 +669,7 @@ impl SceneState {
 
         // Apply with undo
         let mut proj = self.project.write();
-        let snapshot = proj.layers.clone();
+        let snapshot = (proj.layers.clone(), proj.groups.clone());
         self.history.push(snapshot);
         if let Some(layer) = proj.layers.iter_mut().find(|l| l.id == layer_id) {
             layer.geometry = new_geometry.clone();
