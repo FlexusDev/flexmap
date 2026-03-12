@@ -1220,9 +1220,26 @@ function EditorCanvas() {
     canvas.height = canvasSize.h * dpr;
     ctx.scale(dpr, dpr);
 
-    // Clear + letterbox bars
-    ctx.fillStyle = "#000";
+    // Non-projector area: dark fill + crosshatch pattern
+    ctx.fillStyle = "#111";
     ctx.fillRect(0, 0, canvasSize.w, canvasSize.h);
+    ctx.strokeStyle = GRID_COLOR;
+    ctx.lineWidth = 0.5;
+    const hatchStep = 12;
+    const w = canvasSize.w;
+    const h = canvasSize.h;
+    ctx.beginPath();
+    for (let i = -h; i < w; i += hatchStep) {
+      ctx.moveTo(i, 0);
+      ctx.lineTo(i + h, h);
+    }
+    for (let i = hatchStep; i < w + h; i += hatchStep) {
+      ctx.moveTo(i, 0);
+      ctx.lineTo(i - h, h);
+    }
+    ctx.stroke();
+
+    // Viewport area (projector output)
     ctx.fillStyle = "#0a0a0a";
     ctx.fillRect(viewRect.x, viewRect.y, viewRect.w, viewRect.h);
 
