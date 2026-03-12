@@ -2,8 +2,10 @@ import { expect } from 'chai';
 
 describe('FlexMap App Launch', () => {
   it('should display the main window', async () => {
-    const title = await browser.getTitle();
-    expect(title).to.include('FlexMap');
+    await browser.waitUntil(
+      async () => (await browser.getTitle()).includes('FlexMap'),
+      { timeout: 5000, timeoutMsg: 'Window title never included "FlexMap"' }
+    );
   });
 
   it('should render the editor canvas', async () => {
