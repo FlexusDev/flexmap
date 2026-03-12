@@ -1,6 +1,7 @@
 use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
+use super::group::LayerGroup;
 use super::history::History;
 use super::layer::*;
 use super::project::*;
@@ -163,31 +164,41 @@ impl SceneState {
         self.revision.load(Ordering::Acquire)
     }
 
-    /// Push current layer state to undo stack before mutating
+    /// Push current layer + group state to undo stack before mutating
     fn push_undo(&self) {
-        let layers = self.project.read().layers.clone();
-        self.history.push(layers);
+        let proj = self.project.read();
+        self.history.push((proj.layers.clone(), proj.groups.clone()));
     }
 
     // --- Undo / Redo ---
 
     pub fn undo(&self) -> Option<Vec<Layer>> {
-        let current = self.project.read().layers.clone();
-        if let Some(prev) = self.history.undo(current) {
-            self.project.write().layers = prev.clone();
+        let proj = self.project.read();
+        let current = (proj.layers.clone(), proj.groups.clone());
+        drop(proj);
+        if let Some((prev_layers, prev_groups)) = self.history.undo(current) {
+            let mut proj = self.project.write();
+            proj.layers = prev_layers.clone();
+            proj.groups = prev_groups;
+            drop(proj);
             self.mark_dirty();
-            Some(prev)
+            Some(prev_layers)
         } else {
             None
         }
     }
 
     pub fn redo(&self) -> Option<Vec<Layer>> {
-        let current = self.project.read().layers.clone();
-        if let Some(next) = self.history.redo(current) {
-            self.project.write().layers = next.clone();
+        let proj = self.project.read();
+        let current = (proj.layers.clone(), proj.groups.clone());
+        drop(proj);
+        if let Some((next_layers, next_groups)) = self.history.redo(current) {
+            let mut proj = self.project.write();
+            proj.layers = next_layers.clone();
+            proj.groups = next_groups;
+            drop(proj);
             self.mark_dirty();
-            Some(next)
+            Some(next_layers)
         } else {
             None
         }
@@ -212,7 +223,7 @@ impl SceneState {
     pub fn remove_layer(&self, layer_id: &str) -> Option<Layer> {
         let mut proj = self.project.write();
         if let Some(idx) = proj.layers.iter().position(|l| l.id == layer_id) {
-            self.history.push(proj.layers.clone());
+            self.history.push((proj.layers.clone(), proj.groups.clone()));
             let removed = proj.layers.remove(idx);
             drop(proj);
             self.mark_dirty();
@@ -235,7 +246,7 @@ impl SceneState {
             return false;
         }
 
-        self.history.push(proj.layers.clone());
+        self.history.push((proj.layers.clone(), proj.groups.clone()));
         let before_len = proj.layers.len();
         proj.layers.retain(|l| !id_set.contains(l.id.as_str()));
         let removed = proj.layers.len() != before_len;
@@ -287,7 +298,7 @@ impl SceneState {
             return Vec::new();
         }
 
-        self.history.push(proj.layers.clone());
+        self.history.push((proj.layers.clone(), proj.groups.clone()));
 
         let mut next_z = proj.layers.iter().map(|l| l.z_index).max().unwrap_or(-1) + 1;
         let mut duplicates = Vec::with_capacity(originals.len());
@@ -341,7 +352,7 @@ impl SceneState {
     pub fn set_layer_source(&self, layer_id: &str, source: Option<SourceAssignment>) -> bool {
         let mut proj = self.project.write();
         if proj.layers.iter().any(|l| l.id == layer_id) {
-            let snapshot = proj.layers.clone();
+            let snapshot = (proj.layers.clone(), proj.groups.clone());
             let layer = proj.layers.iter_mut().find(|l| l.id == layer_id).unwrap();
             self.history.push(snapshot);
             layer.source = source;
@@ -497,6 +508,69 @@ impl SceneState {
         }
     }
 
+    // --- Group operations ---
+
+    pub fn create_group(&self, name: &str, layer_ids: Vec<String>) -> LayerGroup {
+        self.push_undo();
+        let group = LayerGroup::new(name, layer_ids.clone());
+        let mut proj = self.project.write();
+        for layer in proj.layers.iter_mut() {
+            if layer_ids.contains(&layer.id) {
+                layer.group_id = Some(group.id.clone());
+            }
+        }
+        proj.groups.push(group.clone());
+        drop(proj);
+        self.mark_dirty();
+        group
+    }
+
+    pub fn delete_group(&self, group_id: &str) -> bool {
+        let mut proj = self.project.write();
+        if let Some(idx) = proj.groups.iter().position(|g| g.id == group_id) {
+            self.history.push((proj.layers.clone(), proj.groups.clone()));
+            for layer in proj.layers.iter_mut() {
+                if layer.group_id.as_deref() == Some(group_id) {
+                    layer.group_id = None;
+                }
+            }
+            proj.groups.remove(idx);
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_groups(&self) -> Vec<LayerGroup> {
+        self.project.read().groups.clone()
+    }
+
+    pub fn set_group_pixel_map(&self, group_id: &str, pixel_map: Option<PixelMapEffect>) -> bool {
+        let mut proj = self.project.write();
+        if let Some(group) = proj.groups.iter_mut().find(|g| g.id == group_id) {
+            group.pixel_map = pixel_map;
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_layer_pixel_map(&self, layer_id: &str, pixel_map: Option<PixelMapEffect>) -> bool {
+        let mut proj = self.project.write();
+        if let Some(layer) = proj.layers.iter_mut().find(|l| l.id == layer_id) {
+            layer.pixel_map = pixel_map;
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn get_layers_snapshot(&self) -> Vec<Layer> {
         self.project.read().layers.clone()
     }
@@ -594,7 +668,7 @@ impl SceneState {
 
         // Apply with undo
         let mut proj = self.project.write();
-        let snapshot = proj.layers.clone();
+        let snapshot = (proj.layers.clone(), proj.groups.clone());
         self.history.push(snapshot);
         if let Some(layer) = proj.layers.iter_mut().find(|l| l.id == layer_id) {
             layer.geometry = new_geometry.clone();
@@ -859,5 +933,144 @@ mod tests {
         let id = layer.id.clone();
         state.add_layer(layer);
         assert!(state.subdivide_mesh(&id).is_none());
+    }
+
+    // --- Group operation tests ---
+
+    #[test]
+    fn create_group_sets_group_id_on_members() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let id2 = add_quad(&state, "B");
+        let _id3 = add_quad(&state, "C");
+
+        let group = state.create_group("G1", vec![id1.clone(), id2.clone()]);
+
+        let layers = state.get_layers_snapshot();
+        let l1 = layers.iter().find(|l| l.id == id1).unwrap();
+        let l2 = layers.iter().find(|l| l.id == id2).unwrap();
+        let l3 = layers.iter().find(|l| l.id == _id3).unwrap();
+
+        assert_eq!(l1.group_id.as_deref(), Some(group.id.as_str()));
+        assert_eq!(l2.group_id.as_deref(), Some(group.id.as_str()));
+        assert!(l3.group_id.is_none(), "non-member layer should not have group_id");
+    }
+
+    #[test]
+    fn delete_group_clears_group_id_on_members() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let id2 = add_quad(&state, "B");
+
+        let group = state.create_group("G1", vec![id1.clone(), id2.clone()]);
+        assert!(state.delete_group(&group.id));
+
+        let layers = state.get_layers_snapshot();
+        for layer in &layers {
+            assert!(layer.group_id.is_none(), "group_id should be cleared after delete_group");
+        }
+        assert!(state.get_groups().is_empty());
+    }
+
+    #[test]
+    fn delete_nonexistent_group_returns_false_without_undo() {
+        let state = SceneState::new();
+        let id = add_quad(&state, "A");
+
+        // add_layer pushed one undo entry. Now attempt to delete a bogus group.
+        assert!(!state.delete_group("bogus-id"));
+
+        // If delete_group did NOT push a spurious undo, then one undo should
+        // revert the add_layer (leaving us with 0 layers). If it did push,
+        // the first undo would be a no-op snapshot (still 1 layer).
+        state.undo();
+        assert!(
+            state.get_layers_snapshot().is_empty(),
+            "undo should revert add_layer, not a no-op from delete_group"
+        );
+    }
+
+    #[test]
+    fn undo_after_create_group_restores_previous_state() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let id2 = add_quad(&state, "B");
+
+        let group = state.create_group("G1", vec![id1.clone(), id2.clone()]);
+        assert_eq!(state.get_groups().len(), 1);
+
+        // Undo should revert both the group creation and group_id assignments
+        state.undo();
+
+        assert!(state.get_groups().is_empty(), "group should be removed after undo");
+        let layers = state.get_layers_snapshot();
+        let l1 = layers.iter().find(|l| l.id == id1).unwrap();
+        let l2 = layers.iter().find(|l| l.id == id2).unwrap();
+        assert!(l1.group_id.is_none(), "group_id should be cleared after undo");
+        assert!(l2.group_id.is_none(), "group_id should be cleared after undo");
+
+        // Redo should restore the group
+        state.redo();
+        assert_eq!(state.get_groups().len(), 1);
+        assert_eq!(state.get_groups()[0].id, group.id);
+    }
+
+    #[test]
+    fn get_groups_returns_created_groups() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let id2 = add_quad(&state, "B");
+        let id3 = add_quad(&state, "C");
+
+        assert!(state.get_groups().is_empty());
+
+        let g1 = state.create_group("Group 1", vec![id1.clone()]);
+        let g2 = state.create_group("Group 2", vec![id2.clone(), id3.clone()]);
+
+        let groups = state.get_groups();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].id, g1.id);
+        assert_eq!(groups[0].name, "Group 1");
+        assert_eq!(groups[1].id, g2.id);
+        assert_eq!(groups[1].name, "Group 2");
+    }
+
+    #[test]
+    fn set_group_pixel_map_valid_and_invalid() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let group = state.create_group("G1", vec![id1]);
+
+        let effect = PixelMapEffect::default();
+        assert!(state.set_group_pixel_map(&group.id, Some(effect.clone())));
+
+        let groups = state.get_groups();
+        assert!(groups[0].pixel_map.is_some());
+
+        // Clear it
+        assert!(state.set_group_pixel_map(&group.id, None));
+        assert!(state.get_groups()[0].pixel_map.is_none());
+
+        // Invalid group ID
+        assert!(!state.set_group_pixel_map("nonexistent", Some(PixelMapEffect::default())));
+    }
+
+    #[test]
+    fn set_layer_pixel_map_valid_and_invalid() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+
+        let effect = PixelMapEffect::default();
+        assert!(state.set_layer_pixel_map(&id1, Some(effect)));
+
+        let layers = state.get_layers_snapshot();
+        assert!(layers[0].pixel_map.is_some());
+
+        // Clear it
+        assert!(state.set_layer_pixel_map(&id1, None));
+        assert!(state.get_layers_snapshot()[0].pixel_map.is_none());
+
+        // Invalid layer ID
+        assert!(!state.set_layer_pixel_map("nonexistent", Some(PixelMapEffect::default())));
     }
 }

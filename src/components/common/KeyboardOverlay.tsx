@@ -26,6 +26,9 @@ const SHORTCUTS: Shortcut[] = [
   { keys: ["tab"],             label: "Shape/Edit", description: "Toggle shape vs input edit mode",               category: "edit" },
   // View
   { keys: ["meta", "p"],       label: "Projector",  description: "Toggle the projector output window",           category: "view" },
+  // Group / Ungroup
+  { keys: ["meta", "g"],       label: "Group",      description: "Group selected layers",                          category: "layer" },
+  { keys: ["meta", "shift", "g"], label: "Ungroup",  description: "Ungroup selected layers",                       category: "layer" },
   // Snap
   { keys: ["g"],               label: "Snap",       description: "Toggle snap-to-grid for point dragging",         category: "edit" },
   // Magnifier

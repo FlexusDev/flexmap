@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 import { tauriOpenDialog, tauriSaveDialog } from "../../lib/tauri-bridge";
 import OutputConfigPanel from "../output/OutputConfigPanel";
+import { BpmWidget } from "./BpmWidget";
 import SettingsModal from "./SettingsModal";
 import pkg from "../../../package.json";
 
@@ -132,6 +133,11 @@ function Toolbar() {
 
       {/* Output config */}
       <OutputConfigPanel />
+
+      <div className="w-px h-5 bg-aura-border mx-2" />
+
+      {/* BPM widget */}
+      <BpmWidget />
 
       {/* Spacer */}
       <div className="flex-1" />

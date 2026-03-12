@@ -24,6 +24,8 @@ import type {
   AudioInputDevice,
   BpmConfig,
   BpmState,
+  PixelMapEffect,
+  LayerGroup,
 } from "../types";
 
 export interface Toast {
@@ -213,6 +215,11 @@ interface AppState {
   bpmConfig: BpmConfig;
   bpmState: BpmState;
 
+  // Pixel mapping & groups
+  groups: LayerGroup[];
+  bpmMultiplier: number;
+  bpmSource: 'auto' | 'manual';
+
   // Toasts
   toasts: Toast[];
   addToast: (message: string, type: Toast["type"]) => void;
@@ -330,6 +337,23 @@ interface AppState {
   refreshBpmState: () => Promise<void>;
   tapTempo: () => Promise<void>;
 
+  // Pixel mapping
+  setLayerPixelMap: (layerId: string, pixelMap: PixelMapEffect | null) => Promise<void>;
+
+  // Groups
+  createGroup: (name: string, layerIds: string[]) => Promise<LayerGroup>;
+  deleteGroup: (groupId: string) => Promise<void>;
+  setGroupPixelMap: (groupId: string, pixelMap: PixelMapEffect | null) => Promise<void>;
+
+  // BPM control
+  setBpmMultiplier: (multiplier: number) => Promise<void>;
+  setBpmSource: (source: 'auto' | 'manual') => Promise<void>;
+  tapBpm: () => Promise<void>;
+
+  // Preview quality
+  previewQuality: number; // 0.1 - 1.0
+  setPreviewQuality: (quality: number) => Promise<void>;
+
   // Performance panel
   performancePanelOpen: boolean;
   togglePerformancePanel: () => void;
@@ -357,6 +381,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedAudioInputId: readSelectedAudioDeviceId(),
   bpmConfig: readBpmConfig(),
   bpmState: { ...DEFAULT_BPM_STATE },
+
+  groups: [],
+  bpmMultiplier: 1,
+  bpmSource: 'auto',
 
   toasts: [],
   addToast: (message, type) => {
@@ -482,9 +510,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadProject: async () => {
     try {
       const project = await tauriInvoke<ProjectFile>("get_project");
+      let groups: LayerGroup[] = [];
+      try {
+        groups = await tauriInvoke<LayerGroup[]>("get_groups");
+      } catch {
+        // groups command may not exist on older backends
+      }
       set({
         project,
         layers: project.layers,
+        groups,
         selectedLayerId: null,
         selectedLayerIds: [],
         editorSelectionMode: "shape",
@@ -1099,10 +1134,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadProjectFile: async (path: string) => {
     try {
       const project = await tauriInvoke<ProjectFile>("load_project", { path });
+      let groups: LayerGroup[] = [];
+      try {
+        groups = await tauriInvoke<LayerGroup[]>("get_groups");
+      } catch {
+        // groups command may not exist on older backends
+      }
       set({
         project,
         projectPath: path,
         layers: project.layers,
+        groups,
         calibrationEnabled: project.calibration.enabled,
         calibrationPattern: project.calibration.pattern,
         isDirty: false,
@@ -1125,6 +1167,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         project,
         projectPath: null,
         layers: [],
+        groups: [],
         selectedLayerId: null,
         selectedLayerIds: [],
         editorSelectionMode: "shape",
@@ -1268,6 +1311,108 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error("Failed to set frame pacing:", e);
       get().addToast("Failed to set frame pacing", "error");
     }
+  },
+
+  // Pixel mapping
+  setLayerPixelMap: async (layerId, pixelMap) => {
+    try {
+      await tauriInvoke("set_layer_pixel_map", { layerId, pixelMap });
+      set((s) => ({
+        layers: s.layers.map((l) =>
+          l.id === layerId ? { ...l, pixelMap } : l
+        ),
+        isDirty: true,
+      }));
+    } catch (e) {
+      console.error("Failed to set layer pixel map:", e);
+      get().addToast("Failed to set pixel map", "error");
+    }
+  },
+
+  // Groups
+  createGroup: async (name, layerIds) => {
+    try {
+      const group = await tauriInvoke<LayerGroup>("create_layer_group", { name, layerIds });
+      set((s) => ({
+        groups: [...s.groups, group],
+        layers: s.layers.map((l) =>
+          layerIds.includes(l.id) ? { ...l, groupId: group.id } : l
+        ),
+        isDirty: true,
+      }));
+      return group;
+    } catch (e) {
+      console.error("Failed to create group:", e);
+      get().addToast("Failed to create group", "error");
+      throw e;
+    }
+  },
+
+  deleteGroup: async (groupId) => {
+    try {
+      await tauriInvoke("delete_layer_group", { groupId });
+      set((s) => ({
+        groups: s.groups.filter((g) => g.id !== groupId),
+        layers: s.layers.map((l) =>
+          l.groupId === groupId ? { ...l, groupId: null } : l
+        ),
+        isDirty: true,
+      }));
+    } catch (e) {
+      console.error("Failed to delete group:", e);
+      get().addToast("Failed to delete group", "error");
+    }
+  },
+
+  setGroupPixelMap: async (groupId, pixelMap) => {
+    try {
+      await tauriInvoke("set_group_pixel_map", { groupId, pixelMap });
+      set((s) => ({
+        groups: s.groups.map((g) =>
+          g.id === groupId ? { ...g, pixelMap } : g
+        ),
+        isDirty: true,
+      }));
+    } catch (e) {
+      console.error("Failed to set group pixel map:", e);
+      get().addToast("Failed to set group pixel map", "error");
+    }
+  },
+
+  // BPM control
+  setBpmMultiplier: async (multiplier) => {
+    try {
+      await tauriInvoke("set_bpm_multiplier", { multiplier });
+      set({ bpmMultiplier: multiplier });
+    } catch (e) {
+      console.error("Failed to set BPM multiplier:", e);
+      get().addToast("Failed to set BPM multiplier", "error");
+    }
+  },
+
+  setBpmSource: async (source) => {
+    try {
+      await tauriInvoke("set_bpm_source", { source });
+      set({ bpmSource: source });
+    } catch (e) {
+      console.error("Failed to set BPM source:", e);
+      get().addToast("Failed to set BPM source", "error");
+    }
+  },
+
+  tapBpm: async () => {
+    try {
+      const bpmState = await tauriInvoke<BpmState>("tap_bpm", {});
+      set({ bpmState });
+    } catch (e) {
+      console.error("Failed to tap BPM:", e);
+    }
+  },
+
+  previewQuality: 0.5,
+  setPreviewQuality: async (quality: number) => {
+    await tauriInvoke("set_preview_quality", { quality });
+    set({ previewQuality: quality });
   },
 
   performancePanelOpen: false,

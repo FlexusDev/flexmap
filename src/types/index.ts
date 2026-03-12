@@ -92,6 +92,60 @@ export const BLEND_MODES: { value: BlendMode; label: string }[] = [
   { value: "additive", label: "Additive" },
 ];
 
+export type PixelMapPattern = "chase" | "stripes" | "gradient" | "wave" | "strobe" | "radial";
+
+export const PIXEL_MAP_PATTERNS: { value: PixelMapPattern; label: string }[] = [
+  { value: "chase", label: "Chase" },
+  { value: "stripes", label: "Stripes" },
+  { value: "gradient", label: "Gradient" },
+  { value: "wave", label: "Wave" },
+  { value: "strobe", label: "Strobe" },
+  { value: "radial", label: "Radial" },
+];
+
+export type PatternCoordMode = "perShape" | "worldSpace";
+
+export interface PixelMapEffect {
+  enabled: boolean;
+  pattern: PixelMapPattern;
+  coordMode: PatternCoordMode;
+  speed: number;
+  width: number;
+  intensity: number;
+  direction: number;
+  invert: boolean;
+  offsetX: number;
+  offsetY: number;
+  scaleX: number;
+  scaleY: number;
+  worldBox: [number, number, number, number];
+}
+
+export const DEFAULT_PIXEL_MAP_EFFECT: PixelMapEffect = {
+  enabled: true,
+  pattern: "chase",
+  coordMode: "perShape",
+  speed: 1.0,
+  width: 0.5,
+  intensity: 1.0,
+  direction: 0,
+  invert: false,
+  offsetX: 0,
+  offsetY: 0,
+  scaleX: 1,
+  scaleY: 1,
+  worldBox: [0, 0, 1, 1],
+};
+
+export interface LayerGroup {
+  id: string;
+  name: string;
+  layerIds: string[];
+  visible: boolean;
+  locked: boolean;
+  pixelMap: PixelMapEffect | null;
+}
+
 export interface Layer {
   id: string;
   name: string;
@@ -104,6 +158,8 @@ export interface Layer {
   input_transform: InputTransform;
   properties: LayerProperties;
   blend_mode: BlendMode;
+  pixelMap: PixelMapEffect | null;
+  groupId: string | null;
 }
 
 export interface OutputConfig {
