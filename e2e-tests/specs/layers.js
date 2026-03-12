@@ -6,8 +6,10 @@ describe('Layer CRUD', () => {
     await addBtn.click();
 
     const quadOption = await browser.$('[data-testid="add-quad"]');
+    await quadOption.waitForDisplayed({ timeout: 3000 });
     await quadOption.click();
 
+    await browser.$('[data-testid="layer-item"]').waitForExist({ timeout: 3000 });
     const layerItems = await browser.$$('[data-testid="layer-item"]');
     expect(layerItems.length).to.be.greaterThan(0);
   });
