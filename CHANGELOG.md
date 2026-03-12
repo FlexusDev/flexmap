@@ -2,6 +2,27 @@
 
 All notable changes to FlexMap are documented here.
 
+## [0.4.0] - 2026-03-12
+
+### Added
+
+- **Pixel mapping**: per-layer pattern effects (chase, stripes, gradient, wave, strobe, radial) with speed, width, intensity, direction, and invert controls; supports per-shape and world-space coordinate modes
+- **Layer groups**: group/ungroup layers with Ctrl+G/Ctrl+Shift+G; groups appear in the layer panel with expand/collapse, drag reordering, and shared pixel mapping
+- **BPM widget**: toolbar beat counter with tap tempo, multiplier, and phase display; beat phase pipes into the GPU renderer for tempo-synced effects
+- **GPU composited preview**: editor canvas displays a real-time GPU-rendered preview of the composited output with configurable quality setting
+- **Keyboard shortcuts**: added group/ungroup shortcuts (Ctrl+G, Ctrl+Shift+G) with keyboard overlay entries
+
+### Changed
+
+- **Pixel mapping panel**: replaced hidden accordion with always-visible section, toggle switch, pattern pill grid, and indigo accent border when active
+- **Editor canvas**: non-projector area now shows a crosshatch pattern instead of solid black, making the viewport boundary clearer
+
+### Fixed
+
+- **Group delete undo**: fixed undo guard when deleting groups so undo correctly restores group state
+
+---
+
 ## [0.3.1] - 2026-03-07
 
 ### Added
@@ -164,6 +185,7 @@ All notable changes to FlexMap are documented here.
 - Input routing: InputBackend trait, test pattern, media file, Spout, Syphon.
 - Persistence: save/load .flexmap JSON, autosave, crash recovery.
 
+[0.4.0]: https://github.com/FlexusDev/flexmap/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/FlexusDev/flexmap/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/FlexusDev/flexmap/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/FlexusDev/flexmap/compare/v0.2.3...v0.2.4
