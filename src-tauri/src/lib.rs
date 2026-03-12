@@ -188,7 +188,7 @@ use renderer::engine::RenderState;
 use renderer::projector::GpuProjector;
 use input::adapter::InputManager;
 use audio::BpmEngine;
-use commands::PreviewCache;
+use commands::{PreviewCache, CompositedPreviewCache};
 
 fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -371,6 +371,7 @@ pub fn run() {
         .manage(input_manager)
         .manage(Arc::new(parking_lot::Mutex::new(BpmEngine::new())))
         .manage(Arc::new(PreviewCache::new()))
+        .manage(Arc::new(CompositedPreviewCache::new()))
         .manage(Arc::new(parking_lot::Mutex::new(sysinfo::System::new_all())))
         .manage(Arc::new(parking_lot::Mutex::new(GpuProjector::new())))
         .invoke_handler(tauri::generate_handler![
@@ -454,6 +455,19 @@ pub fn run() {
             // Mesh operations
             commands::set_calibration_target,
             commands::subdivide_mesh,
+            // Pixel mapping + Groups
+            commands::set_layer_pixel_map,
+            commands::create_layer_group,
+            commands::delete_layer_group,
+            commands::set_group_pixel_map,
+            commands::get_groups,
+            // BPM control
+            commands::set_bpm_multiplier,
+            commands::set_bpm_source,
+            commands::tap_bpm,
+            // GPU composited preview
+            commands::set_preview_quality,
+            commands::get_composited_preview,
         ])
         .setup(|app| {
             log::info!("FlexMap setup complete");
@@ -556,6 +570,8 @@ pub fn run() {
                         let s = bpm_engine.lock().runtime_snapshot();
                         s
                     };
+
+                    render_state.update_bpm(bpm_snapshot.phase, bpm_snapshot.multiplier);
 
                     let engine_state = app_handle_pump
                         .try_state::<Arc<parking_lot::RwLock<renderer::engine::RenderEngine>>>();
@@ -746,17 +762,55 @@ pub fn run() {
                         }
                         let preview_ms = t_preview.elapsed().as_secs_f64() * 1000.0;
 
+                        // PHASE 5: GPU composited preview — render scene at preview
+                        // resolution and cache for the editor canvas.
+                        let t_composited = std::time::Instant::now();
+                        {
+                            let preview_quality = *render_state.preview_quality.read();
+                            let out_w = *render_state.output_width.read();
+                            let out_h = *render_state.output_height.read();
+                            let pw = ((out_w as f32 * preview_quality) as u32).max(64);
+                            let ph = ((out_h as f32 * preview_quality) as u32).max(64);
+
+                            let bpm_phase = *render_state.bpm_phase.read();
+                            let bpm_mult = *render_state.bpm_multiplier.read();
+                            let calibration = render_state.calibration.read().clone();
+
+                            let mut eng = engine_lock.write();
+                            if eng.preview_width != pw || eng.preview_height != ph {
+                                eng.resize_preview(pw, ph);
+                            }
+                            eng.prepare_all_buffers(&layer_snapshot, bpm_phase, bpm_mult);
+                            let bpr = eng.render_preview(&layer_snapshot, &calibration, bpm_phase, bpm_mult);
+                            let pixels = eng.read_preview_pixels(bpr);
+                            drop(eng);
+
+                            // Encode and cache
+                            use base64::Engine as _;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&pixels);
+                            let snapshot = Arc::new(commands::FrameSnapshot {
+                                width: pw,
+                                height: ph,
+                                data_b64: b64,
+                            });
+                            let composited_cache = app_handle_pump.state::<Arc<CompositedPreviewCache>>();
+                            *composited_cache.frame.write() = Some(snapshot);
+                            composited_cache.version.fetch_add(1, std::sync::atomic::Ordering::Release);
+                        }
+                        let composited_ms = t_composited.elapsed().as_secs_f64() * 1000.0;
+
                         // Debounced logging: every ~5 seconds (150 ticks at 30fps)
                         log_counter += 1;
                         if log_counter % 150 == 0 {
                             let total_ms = start.elapsed().as_secs_f64() * 1000.0;
                             log::debug!(
-                                "Frame pump: {} layers, {} sources, poll={:.1}ms upload={:.1}ms preview={:.1}ms total={:.1}ms",
+                                "Frame pump: {} layers, {} sources, poll={:.1}ms upload={:.1}ms preview={:.1}ms composited={:.1}ms total={:.1}ms",
                                 bound_ids.len(),
                                 source_to_layers.len(),
                                 poll_ms,
                                 upload_ms,
                                 preview_ms,
+                                composited_ms,
                                 total_ms
                             );
                         }

@@ -202,6 +202,32 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // Cmd+Shift+G — Ungroup selected layers
+      if (meta && e.shiftKey && matchesKey("g", "KeyG")) {
+        e.preventDefault();
+        markHandled(e);
+        const uniqueGroupIds = new Set<string>();
+        for (const group of state.groups) {
+          if (selectedIds.some((id) => group.layerIds.includes(id))) {
+            uniqueGroupIds.add(group.id);
+          }
+        }
+        for (const groupId of uniqueGroupIds) {
+          state.deleteGroup(groupId);
+        }
+        return;
+      }
+
+      // Cmd+G — Group selected layers
+      if (meta && !e.shiftKey && matchesKey("g", "KeyG")) {
+        if (selectedIds.length >= 2) {
+          e.preventDefault();
+          markHandled(e);
+          state.createGroup("Group", selectedIds);
+        }
+        return;
+      }
+
       // G — Toggle snap to grid
       if (!meta && !e.altKey && matchesKey("g", "KeyG")) {
         if (isTypingTarget(target)) {

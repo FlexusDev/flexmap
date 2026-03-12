@@ -11,6 +11,7 @@ import type {
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import LayerSection from "./sections/LayerSection";
 import EditSection from "./sections/EditSection";
+import PixelMapSection from "./sections/PixelMapSection";
 
 const EPS = 1e-6;
 
@@ -78,6 +79,7 @@ function PropertiesPanel() {
     updateLayerPoint,
     setLayerVisibility,
     setLayerLocked,
+    setLayerPixelMap,
   } = useAppStore(useShallow((s) => ({
     project: s.project,
     layers: s.layers,
@@ -99,6 +101,7 @@ function PropertiesPanel() {
     updateLayerPoint: s.updateLayerPoint,
     setLayerVisibility: s.setLayerVisibility,
     setLayerLocked: s.setLayerLocked,
+    setLayerPixelMap: s.setLayerPixelMap,
   })));
 
   const effectiveSelectedIds = selectedLayerIds.length > 0
@@ -516,6 +519,26 @@ function PropertiesPanel() {
               onSliderDown={beginSliderInteraction}
               onSliderUp={endSliderInteraction}
             />
+
+            {/* Pixel Mapping */}
+            <div
+              className={`border-b border-aura-border ${
+                primaryLayer.pixelMap?.enabled
+                  ? "border-l-2 border-l-indigo-500"
+                  : ""
+              }`}
+            >
+              <PixelMapSection
+                pixelMap={primaryLayer.pixelMap}
+                onPixelMapChange={(pm) => {
+                  for (const id of effectiveSelectedIds) {
+                    void setLayerPixelMap(id, pm);
+                  }
+                }}
+                onSliderDown={beginSliderInteraction}
+                onSliderUp={endSliderInteraction}
+              />
+            </div>
           </>
         ) : (
           <div className="flex items-center justify-center h-full text-zinc-500 text-sm">

@@ -25,6 +25,12 @@ struct LayerUniforms {
     input_scale: vec4<f32>,
     // cos, sin, pad, pad
     input_rot: vec4<f32>,
+    // Pixel mapping
+    pxmap_config: vec4<f32>,     // enabled, pattern, coord_mode, intensity
+    pxmap_anim: vec4<f32>,       // phase, speed, width, direction_rad
+    pxmap_transform: vec4<f32>,  // offset_x, offset_y, scale_x, scale_y
+    pxmap_world: vec4<f32>,      // world_box x, y, w, h
+    pxmap_flags: vec4<f32>,      // invert, 0, 0, 0
 };
 
 @group(0) @binding(0) var t_source: texture_2d<f32>;
@@ -53,6 +59,93 @@ fn transform_uv(base_uv: vec2<f32>) -> vec2<f32> {
         p.x * uniforms.input_rot.y + p.y * uniforms.input_rot.x
     );
     return r + center + uniforms.input_offset.xy;
+}
+
+// --- Pixel Mapping Patterns ---
+
+fn pxmap_rotate(p: vec2<f32>, angle: f32) -> vec2<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec2<f32>(p.x * c - p.y * s, p.x * s + p.y * c);
+}
+
+fn pattern_chase(t: f32, width: f32) -> f32 {
+    let pos = fract(t);
+    let w = max(width, 0.01);
+    return smoothstep(0.0, w * 0.25, pos) * (1.0 - smoothstep(w * 0.75, w, pos));
+}
+
+fn pattern_stripes(t: f32, width: f32) -> f32 {
+    let freq = max(1.0, 1.0 / max(width, 0.01));
+    return abs(sin(t * freq * 3.14159));
+}
+
+fn pattern_gradient(t: f32) -> f32 {
+    return fract(t);
+}
+
+fn pattern_wave(t: f32, width: f32) -> f32 {
+    let freq = max(1.0, 1.0 / max(width, 0.01));
+    return sin(t * freq * 6.28318) * 0.5 + 0.5;
+}
+
+fn pattern_strobe(t: f32) -> f32 {
+    return step(0.5, fract(t));
+}
+
+fn pattern_radial(p: vec2<f32>, phase: f32) -> f32 {
+    let dist = length(p - vec2<f32>(0.5, 0.5));
+    return fract(dist * 2.0 - phase);
+}
+
+fn compute_pixel_map(base_uv: vec2<f32>) -> f32 {
+    let enabled = uniforms.pxmap_config.x;
+    if enabled < 0.5 {
+        return 1.0;
+    }
+
+    let pattern_type = u32(uniforms.pxmap_config.y);
+    let coord_mode = u32(uniforms.pxmap_config.z);
+    let intensity = uniforms.pxmap_config.w;
+    let phase = uniforms.pxmap_anim.x;
+    let width = uniforms.pxmap_anim.z;
+    let direction = uniforms.pxmap_anim.w;
+    let invert = uniforms.pxmap_flags.x;
+
+    // Choose coordinate space
+    var p: vec2<f32>;
+    if coord_mode == 0u {
+        // PerShape: use base_uv with transform (offset + scale)
+        p = (base_uv - vec2<f32>(0.5)) * uniforms.pxmap_transform.zw; // scale
+        p = p + vec2<f32>(0.5) + uniforms.pxmap_transform.xy;         // offset
+    } else {
+        // WorldSpace: remap UV through world box
+        let wb = uniforms.pxmap_world;
+        p = (base_uv - wb.xy) / max(wb.zw, vec2<f32>(0.001));
+    }
+
+    // Rotate by direction
+    let centered = p - vec2<f32>(0.5);
+    let rotated = pxmap_rotate(centered, direction) + vec2<f32>(0.5);
+
+    // Compute pattern value using rotated.x + phase for linear patterns
+    let t = rotated.x + phase;
+    var mask: f32;
+    switch pattern_type {
+        case 0u: { mask = pattern_chase(t, width); }
+        case 1u: { mask = pattern_stripes(t, width); }
+        case 2u: { mask = pattern_gradient(t); }
+        case 3u: { mask = pattern_wave(t, width); }
+        case 4u: { mask = pattern_strobe(t); }
+        case 5u: { mask = pattern_radial(p, phase); }
+        default: { mask = 1.0; }
+    }
+
+    if invert > 0.5 {
+        mask = 1.0 - mask;
+    }
+
+    return mix(1.0, mask, intensity);
 }
 
 @fragment
@@ -100,6 +193,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let feather_alpha = 1.0 - smoothstep(feather_start, 1.0, dist);
         color = vec4<f32>(color.rgb, color.a * feather_alpha);
     }
+
+    // Apply pixel mapping pattern
+    let pxmap_mask = compute_pixel_map(base_uv);
+    color = vec4<f32>(color.rgb, color.a * pxmap_mask);
 
     // Apply opacity
     color = vec4<f32>(color.rgb, color.a * uniforms.color_adjust.w);

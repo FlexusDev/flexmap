@@ -358,6 +358,8 @@ function EditorCanvas() {
   const deltaFallbackWarnedRef = useRef(false);
   const activeGuidesRef = useRef<AlignmentGuide[]>([]);
   const previewCursorRef = useRef(0);
+  // Composited GPU preview
+  const compositedRef = useRef<{ img: ImageBitmap | null; cursor: number }>({ img: null, cursor: 0 });
 
   // Poll source frames at ~15fps for editor preview (delta transport + consumer gating)
   useEffect(() => {
@@ -505,6 +507,46 @@ function EditorCanvas() {
       );
     };
   }, [setEditorPerf, editorPreviewIntervalMs]);
+
+  // Poll GPU composited preview at ~15Hz
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      while (active) {
+        try {
+          const result = await tauriInvoke<[number, { width: number; height: number; data_b64: string }] | null>(
+            "get_composited_preview",
+            { cursor: compositedRef.current.cursor }
+          );
+          if (result && active) {
+            const [version, snapshot] = result;
+            const bytes = await decodeBase64Fast(snapshot.data_b64);
+            const imageData = new ImageData(bytes, snapshot.width, snapshot.height);
+            const bitmap = await createImageBitmap(imageData);
+            // Revoke old bitmap to free memory
+            if (compositedRef.current.img) {
+              compositedRef.current.img.close();
+            }
+            compositedRef.current = { img: bitmap, cursor: version };
+            // Trigger re-render via frameTick
+            frameTick.current += 1;
+            setFrameTickState((t) => t + 1);
+          }
+        } catch {
+          // ignore — backend may not support composited preview yet
+        }
+        await new Promise((r) => setTimeout(r, editorPreviewIntervalMs));
+      }
+    };
+    poll();
+    return () => {
+      active = false;
+      if (compositedRef.current.img) {
+        compositedRef.current.img.close();
+        compositedRef.current = { img: null, cursor: 0 };
+      }
+    };
+  }, [editorPreviewIntervalMs]);
 
   useEffect(() => {
     return () => {
@@ -1178,9 +1220,26 @@ function EditorCanvas() {
     canvas.height = canvasSize.h * dpr;
     ctx.scale(dpr, dpr);
 
-    // Clear + letterbox bars
-    ctx.fillStyle = "#000";
+    // Non-projector area: dark fill + crosshatch pattern
+    ctx.fillStyle = "#111";
     ctx.fillRect(0, 0, canvasSize.w, canvasSize.h);
+    ctx.strokeStyle = GRID_COLOR;
+    ctx.lineWidth = 0.5;
+    const hatchStep = 12;
+    const w = canvasSize.w;
+    const h = canvasSize.h;
+    ctx.beginPath();
+    for (let i = -h; i < w; i += hatchStep) {
+      ctx.moveTo(i, 0);
+      ctx.lineTo(i + h, h);
+    }
+    for (let i = hatchStep; i < w + h; i += hatchStep) {
+      ctx.moveTo(i, 0);
+      ctx.lineTo(i - h, h);
+    }
+    ctx.stroke();
+
+    // Viewport area (projector output)
     ctx.fillStyle = "#0a0a0a";
     ctx.fillRect(viewRect.x, viewRect.y, viewRect.w, viewRect.h);
 
@@ -1206,6 +1265,15 @@ function EditorCanvas() {
     }
     ctx.stroke();
 
+    // Draw GPU composited preview as background (replaces per-layer texture fill)
+    const composited = compositedRef.current.img;
+    const hasComposited = !!composited;
+    if (composited) {
+      ctx.save();
+      ctx.drawImage(composited, viewRect.x, viewRect.y, viewRect.w, viewRect.h);
+      ctx.restore();
+    }
+
     // Draw layers (bottom to top)
     const sorted = [...layers]
       .filter((l) => l.visible)
@@ -1226,7 +1294,8 @@ function EditorCanvas() {
       ctx.lineWidth = isSelected ? (isPrimary ? 2 : 1.5) : 1;
 
       // --- Paint source frame (or fallback fill) inside the shape ---
-      if (frame) {
+      // Skip per-layer texture drawing when GPU composited preview is available
+      if (!hasComposited && frame) {
         // Get or create dedicated offscreen canvas for this layer
         let tmpC = tmpCanvasMap.current.get(layer.id);
         if (!tmpC) {
@@ -1492,8 +1561,8 @@ function EditorCanvas() {
         }
 
         ctx.restore();
-      } else {
-        // No source — use default fill
+      } else if (!hasComposited) {
+        // No source and no composited preview — use default fill
         ctx.fillStyle = isSelected ? SELECTED_FILL : LAYER_FILL;
       }
 
@@ -1506,7 +1575,7 @@ function EditorCanvas() {
           ctx.lineTo(pts[i].x, pts[i].y);
         }
         ctx.closePath();
-        if (!frame) ctx.fill();
+        if (!frame && !hasComposited) ctx.fill();
         ctx.stroke();
       } else if (layer.type === "circle") {
         // Circle layers are stored as 1x1 Mesh — derive display params from corners
@@ -1518,7 +1587,7 @@ function EditorCanvas() {
         const rotation = cp.rotation;
         ctx.beginPath();
         ctx.ellipse(center.x, center.y, rx, ry, rotation, 0, TWO_PI);
-        if (!frame) ctx.fill();
+        if (!frame && !hasComposited) ctx.fill();
         ctx.strokeStyle = isSelected ? "#fbbf24" : "#d97706";
         ctx.stroke();
       } else if (layer.geometry.type === "Triangle") {
@@ -1527,7 +1596,7 @@ function EditorCanvas() {
         ctx.lineTo(points[1].x, points[1].y);
         ctx.lineTo(points[2].x, points[2].y);
         ctx.closePath();
-        if (!frame) ctx.fill();
+        if (!frame && !hasComposited) ctx.fill();
         ctx.stroke();
       } else if (layer.geometry.type === "Mesh") {
         const { cols, rows } = layer.geometry.data;
