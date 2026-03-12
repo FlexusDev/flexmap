@@ -521,7 +521,13 @@ function PropertiesPanel() {
             />
 
             {/* Pixel Mapping */}
-            <div className="border-b border-aura-border">
+            <div
+              className={`border-b border-aura-border ${
+                primaryLayer.pixelMap?.enabled
+                  ? "border-l-2 border-l-indigo-500"
+                  : ""
+              }`}
+            >
               <PixelMapSection
                 pixelMap={primaryLayer.pixelMap}
                 onPixelMapChange={(pm) => {
