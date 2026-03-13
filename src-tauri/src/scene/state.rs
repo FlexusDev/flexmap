@@ -559,6 +559,22 @@ impl SceneState {
         }
     }
 
+    pub fn set_group_shared_input(
+        &self,
+        group_id: &str,
+        shared_input: Option<SharedInputMapping>,
+    ) -> bool {
+        let mut proj = self.project.write();
+        if let Some(group) = proj.groups.iter_mut().find(|g| g.id == group_id) {
+            group.shared_input = shared_input;
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn set_layer_pixel_map(&self, layer_id: &str, pixel_map: Option<PixelMapEffect>) -> bool {
         let mut proj = self.project.write();
         if let Some(layer) = proj.layers.iter_mut().find(|l| l.id == layer_id) {
@@ -975,7 +991,7 @@ mod tests {
     #[test]
     fn delete_nonexistent_group_returns_false_without_undo() {
         let state = SceneState::new();
-        let id = add_quad(&state, "A");
+        let _id = add_quad(&state, "A");
 
         // add_layer pushed one undo entry. Now attempt to delete a bogus group.
         assert!(!state.delete_group("bogus-id"));
@@ -1053,6 +1069,24 @@ mod tests {
 
         // Invalid group ID
         assert!(!state.set_group_pixel_map("nonexistent", Some(PixelMapEffect::default())));
+    }
+
+    #[test]
+    fn set_group_shared_input_valid_and_invalid() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let group = state.create_group("G1", vec![id1]);
+
+        let mapping = SharedInputMapping::default();
+        assert!(state.set_group_shared_input(&group.id, Some(mapping.clone())));
+
+        let groups = state.get_groups();
+        assert_eq!(groups[0].shared_input, Some(mapping));
+
+        assert!(state.set_group_shared_input(&group.id, None));
+        assert!(state.get_groups()[0].shared_input.is_none());
+
+        assert!(!state.set_group_shared_input("nonexistent", Some(SharedInputMapping::default())));
     }
 
     #[test]

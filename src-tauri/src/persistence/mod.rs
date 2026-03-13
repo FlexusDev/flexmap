@@ -200,6 +200,26 @@ mod tests {
     }
 
     #[test]
+    fn project_groups_roundtrip_shared_input() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("groups.flexmap");
+
+        let mut proj = ProjectFile::new("Groups");
+        let layer = Layer::new_quad("Q", 0);
+        let layer_id = layer.id.clone();
+        proj.layers.push(layer);
+        let mut group = crate::scene::group::LayerGroup::new("G", vec![layer_id]);
+        group.shared_input = Some(SharedInputMapping::default());
+        proj.groups.push(group);
+
+        save_project(&proj, &path).unwrap();
+        let loaded = load_project(&path).unwrap();
+
+        assert_eq!(loaded.groups.len(), 1);
+        assert!(loaded.groups[0].shared_input.is_some());
+    }
+
+    #[test]
     fn legacy_face_fields_ignored_on_load() {
         use crate::scene::layer::LayerGeometry;
 

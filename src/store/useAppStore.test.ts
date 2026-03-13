@@ -27,6 +27,7 @@ beforeEach(() => {
     projectorGpuNative: false,
     canUndo: false,
     canRedo: false,
+    groups: [],
     toasts: [],
     snapEnabled: false,
   });
@@ -212,6 +213,48 @@ describe("toggleSnap", () => {
       getState().toggleSnap();
     });
     expect(getState().snapEnabled).toBe(false);
+  });
+});
+
+describe("setGroupSharedInput", () => {
+  it("updates the targeted group shared input mapping", async () => {
+    await act(async () => {
+      await getState().addLayer("A", "quad");
+      await getState().addLayer("B", "quad");
+    });
+    await tick();
+
+    const layerIds = getState().layers.map((layer) => layer.id);
+    let groupId = "";
+    await act(async () => {
+      const group = await getState().createGroup("Group", layerIds);
+      groupId = group.id;
+    });
+    await tick();
+
+    await act(async () => {
+      await getState().setGroupSharedInput(groupId, {
+        enabled: true,
+        box: [0.1, 0.2, 0.3, 0.4],
+        offsetX: 0.5,
+        offsetY: -0.25,
+        rotation: 0.1,
+        scaleX: 2,
+        scaleY: 3,
+      });
+    });
+    await tick();
+
+    const group = getState().groups.find((entry) => entry.id === groupId);
+    expect(group?.sharedInput).toEqual({
+      enabled: true,
+      box: [0.1, 0.2, 0.3, 0.4],
+      offsetX: 0.5,
+      offsetY: -0.25,
+      rotation: 0.1,
+      scaleX: 2,
+      scaleY: 3,
+    });
   });
 });
 

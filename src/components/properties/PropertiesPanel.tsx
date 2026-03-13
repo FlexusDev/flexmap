@@ -12,6 +12,8 @@ import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import LayerSection from "./sections/LayerSection";
 import EditSection from "./sections/EditSection";
 import PixelMapSection from "./sections/PixelMapSection";
+import SharedInputSection from "./sections/SharedInputSection";
+import { defaultSharedInputForLayers, groupUsesMixedSources } from "../../lib/shared-input";
 
 const EPS = 1e-6;
 
@@ -61,6 +63,7 @@ function PropertiesPanel() {
   const {
     project,
     layers,
+    groups,
     selectedLayerId,
     selectedLayerIds,
     updatePropertiesForSelection,
@@ -80,9 +83,11 @@ function PropertiesPanel() {
     setLayerVisibility,
     setLayerLocked,
     setLayerPixelMap,
+    setGroupSharedInput,
   } = useAppStore(useShallow((s) => ({
     project: s.project,
     layers: s.layers,
+    groups: s.groups,
     selectedLayerId: s.selectedLayerId,
     selectedLayerIds: s.selectedLayerIds,
     updatePropertiesForSelection: s.updatePropertiesForSelection,
@@ -102,6 +107,7 @@ function PropertiesPanel() {
     setLayerVisibility: s.setLayerVisibility,
     setLayerLocked: s.setLayerLocked,
     setLayerPixelMap: s.setLayerPixelMap,
+    setGroupSharedInput: s.setGroupSharedInput,
   })));
 
   const effectiveSelectedIds = selectedLayerIds.length > 0
@@ -116,6 +122,26 @@ function PropertiesPanel() {
   const selectedLayers = useMemo(
     () => layers.filter((l) => selectedSet.has(l.id)),
     [layers, selectedSet]
+  );
+  const selectedGroup = useMemo(() => {
+    if (effectiveSelectedIds.length === 0) return null;
+    if (selectedLayers.some((layer) => !layer.groupId)) return null;
+    const groupIds = new Set(
+      selectedLayers
+        .map((layer) => layer.groupId)
+        .filter((groupId): groupId is string => !!groupId)
+    );
+    if (groupIds.size !== 1 || selectedLayers.length !== effectiveSelectedIds.length) {
+      return null;
+    }
+    const [groupId] = [...groupIds];
+    return groups.find((group) => group.id === groupId) ?? null;
+  }, [effectiveSelectedIds.length, groups, selectedLayers]);
+  const selectedGroupLayers = useMemo(
+    () => selectedGroup
+      ? layers.filter((layer) => selectedGroup.layerIds.includes(layer.id))
+      : [],
+    [layers, selectedGroup]
   );
   const selectedLayer = selectedLayerId
     ? selectedLayers.find((l) => l.id === selectedLayerId)
@@ -211,6 +237,14 @@ function PropertiesPanel() {
 
   // Beat
   const beatEligible = selectedLayers.every((layer) => layer.source?.protocol === "shader");
+  const sharedInputDefault = useMemo(
+    () => defaultSharedInputForLayers(selectedGroupLayers),
+    [selectedGroupLayers]
+  );
+  const sharedInputHasMixedSources = useMemo(
+    () => selectedGroup ? groupUsesMixedSources(selectedGroup, layers) : false,
+    [layers, selectedGroup]
+  );
   // Visibility / Lock mixed
   const visibleMixed = selectedLayers.some((l) => l.visible !== primaryLayer?.visible);
   const lockedMixed = selectedLayers.some((l) => l.locked !== primaryLayer?.locked);
@@ -539,6 +573,27 @@ function PropertiesPanel() {
                 onSliderUp={endSliderInteraction}
               />
             </div>
+
+            {selectedGroup && (
+              <div
+                className={`border-b border-aura-border ${
+                  selectedGroup.sharedInput?.enabled
+                    ? "border-l-2 border-l-cyan-500"
+                    : ""
+                }`}
+              >
+                <SharedInputSection
+                  sharedInput={selectedGroup.sharedInput}
+                  defaultMapping={sharedInputDefault}
+                  hasMixedSources={sharedInputHasMixedSources}
+                  onSharedInputChange={(mapping) => {
+                    void setGroupSharedInput(selectedGroup.id, mapping);
+                  }}
+                  onSliderDown={beginSliderInteraction}
+                  onSliderUp={endSliderInteraction}
+                />
+              </div>
+            )}
           </>
         ) : (
           <div className="flex items-center justify-center h-full text-zinc-500 text-sm">

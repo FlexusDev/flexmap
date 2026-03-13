@@ -29,6 +29,7 @@ import type {
   BpmState,
   PixelMapEffect,
   LayerGroup,
+  SharedInputMapping,
 } from "../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../types";
 
@@ -51,6 +52,7 @@ function newProject(name: string): ProjectFile {
     output: { width: 3840, height: 2160, framerate: 60, monitor_preference: null },
     calibration: { enabled: false, pattern: "grid" },
     layers: [],
+    groups: [],
     uiState: null,
   };
 }
@@ -186,6 +188,7 @@ function markMockPreviewTopologyChanged(): void {
 }
 
 function touchMockProject(options?: { previewChanged?: boolean }): void {
+  mockProject.groups = [...mockGroups];
   mockProjectRevision += 1;
   if (options?.previewChanged) {
     markMockPreviewTopologyChanged();
@@ -806,12 +809,14 @@ const mockCommands: Record<string, (args: any) => any> = {
   },
 
   load_project: () => {
+    mockGroups = mockProject.groups ? [...mockProject.groups] : [];
     touchMockProject({ previewChanged: true });
     return mockProject;
   },
 
   new_project: () => {
     mockProject = newProject("Untitled Project");
+    mockGroups = [];
     nextZIndex = 0;
     touchMockProject({ previewChanged: true });
     return mockProject;
@@ -908,6 +913,7 @@ const mockCommands: Record<string, (args: any) => any> = {
       visible: true,
       locked: false,
       pixelMap: null,
+      sharedInput: null,
     };
     mockGroups.push(group);
     for (const lid of args.layerIds) {
@@ -935,6 +941,18 @@ const mockCommands: Record<string, (args: any) => any> = {
     const group = mockGroups.find((g) => g.id === args.groupId);
     if (group) {
       group.pixelMap = args.pixelMap;
+      touchMockProject();
+    }
+    return true;
+  },
+
+  set_group_shared_input: (args: {
+    groupId: string;
+    sharedInput: SharedInputMapping | null;
+  }) => {
+    const group = mockGroups.find((g) => g.id === args.groupId);
+    if (group) {
+      group.sharedInput = args.sharedInput;
       touchMockProject();
     }
     return true;

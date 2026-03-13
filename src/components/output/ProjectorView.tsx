@@ -3,6 +3,7 @@ import { tauriInvoke, isTauri } from "../../lib/tauri-bridge";
 import type {
   CalibrationConfig,
   Layer,
+  LayerGroup,
   FrameSnapshot,
   PreviewDelta,
   ProjectSnapshotWithRevision,
@@ -12,7 +13,9 @@ import type {
   PerformanceProfile,
 } from "../../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
+import { drawTriangleTextured } from "../../lib/math";
 import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
+import { applySharedInputMapping, resolveLayerSharedInput } from "../../lib/shared-input";
 import { PERFORMANCE_PROFILE_KEY } from "../../store/useAppStore";
 
 /** Fast base64→Uint8ClampedArray decode using fetch + data URI (avoids byte-by-byte loop) */
@@ -46,6 +49,7 @@ function readPerformanceProfile(): PerformanceProfile {
 function ProjectorView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [layers, setLayers] = useState<Layer[]>([]);
+  const [groups, setGroups] = useState<LayerGroup[]>([]);
   const [sceneReady, setSceneReady] = useState(false);
   const [calibration, setCalibration] = useState<CalibrationConfig>({
     enabled: false,
@@ -159,6 +163,7 @@ function ProjectorView() {
           if (next) {
             projectRevisionRef.current = next.revision;
             setLayers(next.project.layers);
+            setGroups(next.project.groups ?? []);
             setCalibration(next.project.calibration);
             setOutput(next.project.output);
             setUiState(next.project.uiState ?? null);
@@ -327,11 +332,11 @@ function ProjectorView() {
       if (calibration.enabled) {
         drawCalibration(ctx, viewRect.w, viewRect.h, calibration.pattern);
       } else {
-        drawLayers(ctx, viewRect.w, viewRect.h, layers, frameCache.current, tmpCanvasMap.current);
+        drawLayers(ctx, viewRect.w, viewRect.h, layers, groups, frameCache.current, tmpCanvasMap.current);
       }
       ctx.restore();
     }
-  }, [layers, calibration, sceneReady, frameTick, output, uiState, viewport]);
+  }, [layers, groups, calibration, sceneReady, frameTick, output, uiState, viewport]);
 
   return (
     <canvas
@@ -434,6 +439,7 @@ function drawLayers(
   w: number,
   h: number,
   layers: Layer[],
+  groups: LayerGroup[],
   frameCache: Map<string, ImageData>,
   tmpCanvasMap: Map<string, HTMLCanvasElement>
 ) {
@@ -447,25 +453,39 @@ function drawLayers(
     ctx.globalCompositeOperation = blendModeToComposite(layer.blend_mode);
 
     const frame = frameCache.get(layer.id);
-    const geom = layer.geometry;
     const inputTransform = layer.input_transform ?? DEFAULT_INPUT_TRANSFORM;
+    const sharedInput = resolveLayerSharedInput(layer, groups);
 
     if (frame) {
-      drawFrameInShape(
-        ctx,
-        w,
-        h,
-        geom,
-        frame,
-        layer.id,
-        layer.properties.brightness,
-        inputTransform,
-        tmpCanvasMap
-      );
+      if (sharedInput) {
+        drawFrameInShapeSharedInput(
+          ctx,
+          w,
+          h,
+          layer,
+          frame,
+          layer.id,
+          layer.properties.brightness,
+          sharedInput,
+          tmpCanvasMap
+        );
+      } else {
+        drawFrameInShape(
+          ctx,
+          w,
+          h,
+          layer,
+          frame,
+          layer.id,
+          layer.properties.brightness,
+          inputTransform,
+          tmpCanvasMap
+        );
+      }
     } else {
       // No frame — white fill
       ctx.fillStyle = `rgba(255, 255, 255, ${alpha * layer.properties.brightness})`;
-      drawShapePath(ctx, w, h, geom);
+      drawLayerPath(ctx, w, h, layer);
       ctx.fill();
     }
 
@@ -508,7 +528,7 @@ function drawFrameInShape(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
-  geom: Layer["geometry"],
+  layer: Layer,
   frame: ImageData,
   layerId: string,
   brightness: number,
@@ -518,14 +538,80 @@ function drawFrameInShape(
   ctx.save();
 
   // Build clip path and find bounding box
-  drawShapePath(ctx, w, h, geom);
+  drawLayerPath(ctx, w, h, layer);
   ctx.clip();
 
   const tmpCanvas = frameToCanvas(frame, layerId, brightness, canvasMap);
 
   // Get bounding box of the shape
-  const bbox = getShapeBBox(w, h, geom);
+  const bbox = getLayerBBox(w, h, layer);
   drawImageWithInputTransform(ctx, tmpCanvas, bbox, inputTransform);
+
+  ctx.restore();
+}
+
+function drawFrameInShapeSharedInput(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  layer: Layer,
+  frame: ImageData,
+  layerId: string,
+  brightness: number,
+  sharedInput: NonNullable<ReturnType<typeof resolveLayerSharedInput>>,
+  canvasMap: Map<string, HTMLCanvasElement>
+) {
+  const tmpCanvas = frameToCanvas(frame, layerId, brightness, canvasMap);
+  const fw = frame.width;
+  const fh = frame.height;
+  const geom = layer.geometry;
+
+  ctx.save();
+  drawLayerPath(ctx, w, h, layer);
+  ctx.clip();
+
+  if (geom.type === "Mesh") {
+    const { cols, rows, points } = geom.data;
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const tl = points[row * (cols + 1) + col];
+        const tr = points[row * (cols + 1) + col + 1];
+        const br = points[(row + 1) * (cols + 1) + col + 1];
+        const bl = points[(row + 1) * (cols + 1) + col];
+        const screenPts = [tl, tr, br, bl].map((p) => ({ x: p.x * w, y: p.y * h }));
+        const samplePts = [tl, tr, br, bl].map((p) => {
+          const uv = applySharedInputMapping({ u: p.x, v: p.y }, sharedInput);
+          return { x: uv.u * fw, y: uv.v * fh };
+        });
+        drawTriangleTextured(ctx, tmpCanvas, [samplePts[0], samplePts[1], samplePts[2]], [screenPts[0], screenPts[1], screenPts[2]]);
+        drawTriangleTextured(ctx, tmpCanvas, [samplePts[0], samplePts[2], samplePts[3]], [screenPts[0], screenPts[2], screenPts[3]]);
+      }
+    }
+  } else if (geom.type === "Triangle") {
+    const screenPts = geom.data.vertices.map((p) => ({ x: p.x * w, y: p.y * h })) as [
+      { x: number; y: number },
+      { x: number; y: number },
+      { x: number; y: number }
+    ];
+    const samplePts = geom.data.vertices.map((p) => {
+      const uv = applySharedInputMapping({ u: p.x, v: p.y }, sharedInput);
+      return { x: uv.u * fw, y: uv.v * fh };
+    }) as [
+      { x: number; y: number },
+      { x: number; y: number },
+      { x: number; y: number }
+    ];
+    drawTriangleTextured(ctx, tmpCanvas, samplePts, screenPts);
+  } else {
+    const corners = getLayerBBoxCorners(layer);
+    const screenPts = corners.map((p) => ({ x: p.x * w, y: p.y * h }));
+    const samplePts = corners.map((p) => {
+      const uv = applySharedInputMapping({ u: p.x, v: p.y }, sharedInput);
+      return { x: uv.u * fw, y: uv.v * fh };
+    });
+    drawTriangleTextured(ctx, tmpCanvas, [samplePts[0], samplePts[1], samplePts[2]], [screenPts[0], screenPts[1], screenPts[2]]);
+    drawTriangleTextured(ctx, tmpCanvas, [samplePts[0], samplePts[2], samplePts[3]], [screenPts[0], screenPts[2], screenPts[3]]);
+  }
 
   ctx.restore();
 }
@@ -553,14 +639,70 @@ function drawImageWithInputTransform(
   ctx.restore();
 }
 
+function meshToCircleParams(points: Array<{ x: number; y: number }>) {
+  if (points.length < 4) {
+    return { center: { x: 0.5, y: 0.5 }, radius_x: 0.3, radius_y: 0.3, rotation: 0 };
+  }
+  const tl = points[0];
+  const tr = points[1];
+  const bl = points[2];
+  const cx = (points[0].x + points[1].x + points[2].x + points[3].x) / 4;
+  const cy = (points[0].y + points[1].y + points[2].y + points[3].y) / 4;
+  const rx = Math.hypot(tr.x - tl.x, tr.y - tl.y) / 2;
+  const ry = Math.hypot(bl.x - tl.x, bl.y - tl.y) / 2;
+  const rotation = Math.atan2(tr.y - tl.y, tr.x - tl.x);
+  return { center: { x: cx, y: cy }, radius_x: rx, radius_y: ry, rotation };
+}
+
+function getLayerBBoxCorners(layer: Layer) {
+  if (layer.geometry.type === "Quad") {
+    return layer.geometry.data.corners;
+  }
+  if (layer.geometry.type === "Circle") {
+    const { center, radius_x, radius_y, rotation } = layer.geometry.data;
+    const c = Math.cos(rotation);
+    const s = Math.sin(rotation);
+    return [
+      { x: center.x - radius_x * c + radius_y * s, y: center.y - radius_x * s - radius_y * c },
+      { x: center.x + radius_x * c + radius_y * s, y: center.y + radius_x * s - radius_y * c },
+      { x: center.x + radius_x * c - radius_y * s, y: center.y + radius_x * s + radius_y * c },
+      { x: center.x - radius_x * c - radius_y * s, y: center.y - radius_x * s + radius_y * c },
+    ];
+  }
+  if (layer.type === "circle" && layer.geometry.type === "Mesh") {
+    const cp = meshToCircleParams(layer.geometry.data.points);
+    const c = Math.cos(cp.rotation);
+    const s = Math.sin(cp.rotation);
+    return [
+      { x: cp.center.x - cp.radius_x * c + cp.radius_y * s, y: cp.center.y - cp.radius_x * s - cp.radius_y * c },
+      { x: cp.center.x + cp.radius_x * c + cp.radius_y * s, y: cp.center.y + cp.radius_x * s - cp.radius_y * c },
+      { x: cp.center.x + cp.radius_x * c - cp.radius_y * s, y: cp.center.y + cp.radius_x * s + cp.radius_y * c },
+      { x: cp.center.x - cp.radius_x * c - cp.radius_y * s, y: cp.center.y - cp.radius_x * s + cp.radius_y * c },
+    ];
+  }
+  const bbox = getLayerBBox(1, 1, layer);
+  return [
+    { x: bbox.x, y: bbox.y },
+    { x: bbox.x + bbox.w, y: bbox.y },
+    { x: bbox.x + bbox.w, y: bbox.y + bbox.h },
+    { x: bbox.x, y: bbox.y + bbox.h },
+  ];
+}
+
 /** Draw a shape's path (does not fill or stroke) */
-function drawShapePath(
+function drawLayerPath(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
-  geom: Layer["geometry"]
+  layer: Layer
 ) {
+  const geom = layer.geometry;
   ctx.beginPath();
+  if (layer.type === "circle" && geom.type === "Mesh") {
+    const cp = meshToCircleParams(geom.data.points);
+    ctx.ellipse(cp.center.x * w, cp.center.y * h, cp.radius_x * w, cp.radius_y * h, cp.rotation, 0, Math.PI * 2);
+    return;
+  }
   if (geom.type === "Quad") {
     const pts = geom.data.corners.map((p) => ({ x: p.x * w, y: p.y * h }));
     ctx.moveTo(pts[0].x, pts[0].y);
@@ -582,6 +724,7 @@ function drawShapePath(
     const pts = geom.data.points.map((p) => ({ x: p.x * w, y: p.y * h }));
     const { cols, rows } = geom.data;
     // Outer boundary
+    ctx.moveTo(pts[0].x, pts[0].y);
     for (let c = 0; c <= cols; c++) ctx.lineTo(pts[c].x, pts[c].y);
     for (let r = 1; r <= rows; r++)
       ctx.lineTo(pts[r * (cols + 1) + cols].x, pts[r * (cols + 1) + cols].y);
@@ -594,12 +737,26 @@ function drawShapePath(
 }
 
 /** Get axis-aligned bounding box for a shape */
-function getShapeBBox(
+function getLayerBBox(
   w: number,
   h: number,
-  geom: Layer["geometry"]
+  layer: Layer
 ): { x: number; y: number; w: number; h: number } {
+  const geom = layer.geometry;
   let pts: { x: number; y: number }[];
+
+  if (layer.type === "circle" && geom.type === "Mesh") {
+    const cp = meshToCircleParams(geom.data.points);
+    const cx = cp.center.x * w;
+    const cy = cp.center.y * h;
+    const rx = cp.radius_x * w;
+    const ry = cp.radius_y * h;
+    const c = Math.cos(cp.rotation);
+    const s = Math.sin(cp.rotation);
+    const hw = Math.sqrt((rx * c) * (rx * c) + (ry * s) * (ry * s));
+    const hh = Math.sqrt((rx * s) * (rx * s) + (ry * c) * (ry * c));
+    return { x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 };
+  }
 
   if (geom.type === "Quad") {
     pts = geom.data.corners.map((p) => ({ x: p.x * w, y: p.y * h }));

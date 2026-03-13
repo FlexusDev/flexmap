@@ -1,5 +1,8 @@
 use super::shaders;
-use crate::scene::layer::{BlendMode, Layer, LayerGeometry, PatternCoordMode, PixelMapPattern};
+use crate::scene::group::LayerGroup;
+use crate::scene::layer::{
+    BlendMode, Layer, LayerGeometry, PatternCoordMode, PixelMapPattern, SharedInputMapping,
+};
 use bytemuck::{Pod, Zeroable};
 
 /// Vertex format for layer rendering
@@ -56,6 +59,12 @@ pub struct LayerUniforms {
     pub pxmap_world: [f32; 4],
     /// invert, pad, pad, pad
     pub pxmap_flags: [f32; 4],
+    /// shared input box x, y, w, h
+    pub shared_input_box: [f32; 4],
+    /// shared input offset x/y and scale x/y
+    pub shared_input_transform: [f32; 4],
+    /// cos, sin, enabled, pad
+    pub shared_input_rot: [f32; 4],
 }
 
 fn pattern_to_f32(p: PixelMapPattern) -> f32 {
@@ -76,8 +85,25 @@ fn coord_mode_to_f32(m: PatternCoordMode) -> f32 {
     }
 }
 
+pub fn resolve_shared_input_for_layer<'a>(
+    layer: &Layer,
+    groups: &'a [LayerGroup],
+) -> Option<&'a SharedInputMapping> {
+    let group_id = layer.group_id.as_deref()?;
+    groups
+        .iter()
+        .find(|group| group.id == group_id)
+        .and_then(|group| group.shared_input.as_ref())
+        .filter(|mapping| mapping.enabled)
+}
+
 impl LayerUniforms {
-    pub fn from_layer(layer: &Layer, bpm_phase: f32, bpm_multiplier: f32) -> Self {
+    pub fn from_layer(
+        layer: &Layer,
+        shared_input: Option<&SharedInputMapping>,
+        bpm_phase: f32,
+        bpm_multiplier: f32,
+    ) -> Self {
         let props = &layer.properties;
         let input = &layer.input_transform;
         let shape_kind = if layer.layer_type == "circle" {
@@ -86,6 +112,28 @@ impl LayerUniforms {
             0.0
         };
         let rot = input.rotation as f32;
+        let (shared_input_box, shared_input_transform, shared_input_rot) = if let Some(mapping) =
+            shared_input.filter(|mapping| mapping.enabled)
+        {
+            let rotation = mapping.rotation as f32;
+            (
+                [
+                    mapping.r#box[0] as f32,
+                    mapping.r#box[1] as f32,
+                    mapping.r#box[2] as f32,
+                    mapping.r#box[3] as f32,
+                ],
+                [
+                    mapping.offset_x as f32,
+                    mapping.offset_y as f32,
+                    mapping.scale_x as f32,
+                    mapping.scale_y as f32,
+                ],
+                [rotation.cos(), rotation.sin(), 1.0, 0.0],
+            )
+        } else {
+            ([0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 0.0])
+        };
 
         // Pixel mapping
         let (pm_config, pm_anim, pm_transform, pm_world, pm_flags) =
@@ -155,6 +203,9 @@ impl LayerUniforms {
             pxmap_transform: pm_transform,
             pxmap_world: pm_world,
             pxmap_flags: pm_flags,
+            shared_input_box,
+            shared_input_transform,
+            shared_input_rot,
         }
     }
 }
@@ -195,6 +246,56 @@ pub fn blend_mode_to_u32(mode: &BlendMode) -> u32 {
         BlendMode::Difference => 10,
         BlendMode::Exclusion => 11,
         BlendMode::Additive => 12,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::group::LayerGroup;
+
+    #[test]
+    fn layer_uniforms_disable_shared_input_without_mapping() {
+        let layer = Layer::new_quad("Q", 0);
+        let uniforms = LayerUniforms::from_layer(&layer, None, 0.25, 1.0);
+        assert_eq!(uniforms.shared_input_rot[2], 0.0);
+        assert_eq!(uniforms.shared_input_box, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn layer_uniforms_include_shared_input_mapping() {
+        let layer = Layer::new_quad("Q", 0);
+        let mapping = SharedInputMapping {
+            enabled: true,
+            r#box: [0.1, 0.2, 0.3, 0.4],
+            offset_x: 0.5,
+            offset_y: -0.25,
+            rotation: 0.75,
+            scale_x: 2.0,
+            scale_y: 3.0,
+        };
+        let uniforms = LayerUniforms::from_layer(&layer, Some(&mapping), 0.25, 1.0);
+        assert_eq!(uniforms.shared_input_box, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(uniforms.shared_input_transform, [0.5, -0.25, 2.0, 3.0]);
+        assert_eq!(uniforms.shared_input_rot[2], 1.0);
+    }
+
+    #[test]
+    fn resolve_shared_input_for_layer_uses_group_mapping() {
+        let mut layer = Layer::new_quad("Q", 0);
+        layer.group_id = Some("group-1".to_string());
+        let group = LayerGroup {
+            id: "group-1".to_string(),
+            name: "Group".to_string(),
+            layer_ids: vec![layer.id.clone()],
+            visible: true,
+            locked: false,
+            pixel_map: None,
+            shared_input: Some(SharedInputMapping::default()),
+        };
+        let groups = [group];
+        let resolved = resolve_shared_input_for_layer(&layer, &groups);
+        assert!(resolved.is_some());
     }
 }
 

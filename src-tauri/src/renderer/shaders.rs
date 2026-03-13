@@ -11,6 +11,7 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) tex_coord: vec3<f32>,
+    @location(1) world_position: vec2<f32>,
 };
 
 // Per-layer uniforms
@@ -31,6 +32,9 @@ struct LayerUniforms {
     pxmap_transform: vec4<f32>,  // offset_x, offset_y, scale_x, scale_y
     pxmap_world: vec4<f32>,      // world_box x, y, w, h
     pxmap_flags: vec4<f32>,      // invert, 0, 0, 0
+    shared_input_box: vec4<f32>,
+    shared_input_transform: vec4<f32>,
+    shared_input_rot: vec4<f32>, // cos, sin, enabled, 0
 };
 
 @group(0) @binding(0) var t_source: texture_2d<f32>;
@@ -48,6 +52,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         1.0
     );
     out.tex_coord = in.tex_coord;
+    out.world_position = in.position;
     return out;
 }
 
@@ -59,6 +64,18 @@ fn transform_uv(base_uv: vec2<f32>) -> vec2<f32> {
         p.x * uniforms.input_rot.y + p.y * uniforms.input_rot.x
     );
     return r + center + uniforms.input_offset.xy;
+}
+
+fn transform_shared_uv(world_position: vec2<f32>) -> vec2<f32> {
+    let box_uv = (world_position - uniforms.shared_input_box.xy)
+        / max(uniforms.shared_input_box.zw, vec2<f32>(0.0001, 0.0001));
+    let center = vec2<f32>(0.5, 0.5);
+    let p = (box_uv - center) * uniforms.shared_input_transform.zw;
+    let r = vec2<f32>(
+        p.x * uniforms.shared_input_rot.x - p.y * uniforms.shared_input_rot.y,
+        p.x * uniforms.shared_input_rot.y + p.y * uniforms.shared_input_rot.x
+    );
+    return r + center + uniforms.shared_input_transform.xy;
 }
 
 // --- Pixel Mapping Patterns ---
@@ -151,7 +168,12 @@ fn compute_pixel_map(base_uv: vec2<f32>) -> f32 {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let base_uv = in.tex_coord.xy / in.tex_coord.z;
-    let sample_uv = transform_uv(base_uv);
+    var sample_uv: vec2<f32>;
+    if uniforms.shared_input_rot.z > 0.5 {
+        sample_uv = transform_shared_uv(in.world_position);
+    } else {
+        sample_uv = transform_uv(base_uv);
+    }
     var color = textureSample(t_source, s_source, sample_uv);
 
     let feather = uniforms.feather_and_shape.x;

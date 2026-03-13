@@ -26,6 +26,7 @@ import type {
   BpmState,
   PixelMapEffect,
   LayerGroup,
+  SharedInputMapping,
 } from "../types";
 
 export interface Toast {
@@ -179,6 +180,11 @@ function normalizePrimaryId(
     return preferredPrimary;
   }
   return ids[ids.length - 1] ?? null;
+}
+
+function syncProjectGroups(project: ProjectFile | null, groups: LayerGroup[]): ProjectFile | null {
+  if (!project) return project;
+  return { ...project, groups };
 }
 
 interface AppState {
@@ -344,6 +350,7 @@ interface AppState {
   createGroup: (name: string, layerIds: string[]) => Promise<LayerGroup>;
   deleteGroup: (groupId: string) => Promise<void>;
   setGroupPixelMap: (groupId: string, pixelMap: PixelMapEffect | null) => Promise<void>;
+  setGroupSharedInput: (groupId: string, sharedInput: SharedInputMapping | null) => Promise<void>;
 
   // BPM control
   setBpmMultiplier: (multiplier: number) => Promise<void>;
@@ -510,14 +517,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadProject: async () => {
     try {
       const project = await tauriInvoke<ProjectFile>("get_project");
-      let groups: LayerGroup[] = [];
-      try {
-        groups = await tauriInvoke<LayerGroup[]>("get_groups");
-      } catch {
-        // groups command may not exist on older backends
+      let groups: LayerGroup[] = project.groups ?? [];
+      if (groups.length === 0) {
+        try {
+          groups = await tauriInvoke<LayerGroup[]>("get_groups");
+        } catch {
+          // groups command may not exist on older backends
+        }
       }
       set({
-        project,
+        project: syncProjectGroups(project, groups),
         layers: project.layers,
         groups,
         selectedLayerId: null,
@@ -1134,14 +1143,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadProjectFile: async (path: string) => {
     try {
       const project = await tauriInvoke<ProjectFile>("load_project", { path });
-      let groups: LayerGroup[] = [];
-      try {
-        groups = await tauriInvoke<LayerGroup[]>("get_groups");
-      } catch {
-        // groups command may not exist on older backends
+      let groups: LayerGroup[] = project.groups ?? [];
+      if (groups.length === 0) {
+        try {
+          groups = await tauriInvoke<LayerGroup[]>("get_groups");
+        } catch {
+          // groups command may not exist on older backends
+        }
       }
       set({
-        project,
+        project: syncProjectGroups(project, groups),
         projectPath: path,
         layers: project.layers,
         groups,
@@ -1164,7 +1175,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const project = await tauriInvoke<ProjectFile>("new_project");
       set({
-        project,
+        project: syncProjectGroups(project, []),
         projectPath: null,
         layers: [],
         groups: [],
@@ -1335,6 +1346,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const group = await tauriInvoke<LayerGroup>("create_layer_group", { name, layerIds });
       set((s) => ({
         groups: [...s.groups, group],
+        project: syncProjectGroups(s.project, [...s.groups, group]),
         layers: s.layers.map((l) =>
           layerIds.includes(l.id) ? { ...l, groupId: group.id } : l
         ),
@@ -1353,6 +1365,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       await tauriInvoke("delete_layer_group", { groupId });
       set((s) => ({
         groups: s.groups.filter((g) => g.id !== groupId),
+        project: syncProjectGroups(
+          s.project,
+          s.groups.filter((g) => g.id !== groupId)
+        ),
         layers: s.layers.map((l) =>
           l.groupId === groupId ? { ...l, groupId: null } : l
         ),
@@ -1371,11 +1387,34 @@ export const useAppStore = create<AppState>((set, get) => ({
         groups: s.groups.map((g) =>
           g.id === groupId ? { ...g, pixelMap } : g
         ),
+        project: syncProjectGroups(
+          s.project,
+          s.groups.map((g) => (g.id === groupId ? { ...g, pixelMap } : g))
+        ),
         isDirty: true,
       }));
     } catch (e) {
       console.error("Failed to set group pixel map:", e);
       get().addToast("Failed to set group pixel map", "error");
+    }
+  },
+
+  setGroupSharedInput: async (groupId, sharedInput) => {
+    try {
+      await tauriInvoke("set_group_shared_input", { groupId, sharedInput });
+      set((s) => ({
+        groups: s.groups.map((g) =>
+          g.id === groupId ? { ...g, sharedInput } : g
+        ),
+        project: syncProjectGroups(
+          s.project,
+          s.groups.map((g) => (g.id === groupId ? { ...g, sharedInput } : g))
+        ),
+        isDirty: true,
+      }));
+    } catch (e) {
+      console.error("Failed to set group shared input:", e);
+      get().addToast("Failed to set shared input", "error");
     }
   },
 
