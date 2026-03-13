@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../store/useAppStore";
 
@@ -45,30 +45,35 @@ export function BpmWidget() {
   const beat = bpmState?.beat ?? 0;
   const phase = bpmState?.phase ?? 0;
   const bpm = bpmState?.bpm ?? 120;
+  const [hovered, setHovered] = useState(false);
 
-  // Metronome pulse: sharp flash at start of each beat cycle (phase=0),
-  // decays over first 15% of the cycle. Blend with audio beat envelope
-  // so detected beats reinforce the visual.
+  // Metronome pulse from phase — subtle by default, full on hover
   const metronomePulse = Math.max(0, 1 - phase / 0.15);
   const pulse = Math.max(beat, metronomePulse);
+  // Subtle: just a gentle opacity throb. Hovered: full metronome effect.
+  const intensity = hovered ? pulse : pulse * 0.3;
 
   return (
-    <div className="flex items-center gap-1 px-1.5">
+    <div
+      className="flex items-center gap-1 px-1.5"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {/* BPM display */}
       <div className="flex items-center gap-1 text-xs font-mono text-aura-text-dim">
         <span className="opacity-60">♩</span>
         <span className="w-10 text-right">{bpm.toFixed(1)}</span>
       </div>
 
-      {/* Beat indicator — optical metronome dot */}
+      {/* Beat indicator — subtle throb, full metronome on hover */}
       <div
-        className="w-3 h-3 rounded-full"
+        className="w-2.5 h-2.5 rounded-full"
         style={{
-          backgroundColor: `rgba(34, 197, 94, ${0.15 + pulse * 0.85})`,
-          transform: `scale(${0.7 + pulse * 0.6})`,
+          backgroundColor: `rgba(34, 197, 94, ${0.12 + intensity * 0.88})`,
+          transform: hovered ? `scale(${0.7 + pulse * 0.6})` : "scale(1)",
           boxShadow:
-            pulse > 0.15
-              ? `0 0 ${4 + pulse * 8}px rgba(34, 197, 94, ${pulse * 0.7})`
+            hovered && pulse > 0.15
+              ? `0 0 ${4 + pulse * 8}px rgba(34, 197, 94, ${pulse * 0.6})`
               : "none",
           transition: "transform 50ms ease-out, box-shadow 50ms ease-out",
         }}
