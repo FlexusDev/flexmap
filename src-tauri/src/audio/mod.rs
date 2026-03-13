@@ -382,10 +382,7 @@ impl WorkerState {
     }
 
     fn set_multiplier(&mut self, multiplier: f32) -> BpmState {
-        const VALID: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
-        if VALID.iter().any(|v| (v - multiplier).abs() < f32::EPSILON) {
-            self.state.multiplier = multiplier;
-        }
+        self.state.multiplier = multiplier.clamp(0.0625, 4.0);
         self.get_bpm_state()
     }
 
