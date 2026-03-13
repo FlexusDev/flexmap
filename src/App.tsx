@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "./store/useAppStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -57,6 +57,7 @@ function App() {
     }))
   );
   const [showRecovery, setShowRecovery] = useState(false);
+  const liveControlsPanelRef = usePanelRef();
 
   useKeyboardShortcuts();
 
@@ -157,12 +158,13 @@ function App() {
             <Separator />
             <Panel
               id="live-controls"
+              panelRef={liveControlsPanelRef}
               defaultSize={160}
               minSize={28}
               collapsible
               collapsedSize={28}
             >
-              <LiveControlsPanel />
+              <LiveControlsPanel panelRef={liveControlsPanelRef} />
             </Panel>
           </Group>
         </Panel>
