@@ -6,8 +6,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const FFT_WINDOW: usize = 512;
-const FFT_LOW_BIN_START: usize = 2;
-const FFT_LOW_BIN_END: usize = 28;
+// Bins 1-12 at 512/48kHz ≈ 94-1125 Hz — covers kick drums through bass guitar.
+// Old range (2-28 = 187-2625 Hz) missed bass entirely.
+const FFT_LOW_BIN_START: usize = 1;
+const FFT_LOW_BIN_END: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -367,8 +369,10 @@ impl WorkerState {
                 let avg = intervals.iter().sum::<f32>() / intervals.len() as f32;
                 let bpm = (60.0 / avg).clamp(40.0, 220.0);
                 self.config.manual_bpm = bpm;
-                self.state.bpm = bpm;
-                self.state.source = BpmSource::Manual;
+                // Only override current BPM if in manual mode
+                if self.state.source == BpmSource::Manual {
+                    self.state.bpm = bpm;
+                }
                 self.last_beat_instant = Some(now);
                 self.state.last_beat_ms = unix_ms_now();
                 self.beat_decay = 1.0;
@@ -588,10 +592,11 @@ impl WorkerState {
             self.state.beat = (self.state.beat * (1.0 - attack) + attack).clamp(0.0, 1.0);
             self.beat_decay = 1.0;
         } else {
-            // Frame-rate-independent decay: raise decay-per-tick (tuned for 60Hz)
-            // to a dt-proportional exponent so behaviour is consistent regardless
-            // of actual tick rate.  At 60Hz dt≈0.0167 → exponent≈1.0.
-            self.beat_decay *= decay.powf(dt * 60.0);
+            // Frame-rate-independent decay: derive per-second rate from the
+            // decay knob, then raise to dt. Worker ticks at ~25Hz (40ms) not
+            // 60Hz, so the old `decay.powf(dt * 60.0)` decayed ~70% too fast.
+            let per_second = decay.powf(60.0);
+            self.beat_decay *= per_second.powf(dt);
             self.state.beat = self.beat_decay.clamp(0.0, 1.0);
         }
 
