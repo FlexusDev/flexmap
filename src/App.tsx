@@ -146,14 +146,25 @@ function App() {
 
         <Separator />
 
-        {/* Center: Editor canvas */}
+        {/* Center: Editor canvas + live controls */}
         <Panel id="center" minSize={200}>
-          <div className="relative h-full w-full flex flex-col">
-            <div className="flex-1 min-h-0 relative">
-              <EditorCanvas />
-            </div>
-            <LiveControlsPanel />
-          </div>
+          <Group orientation="vertical">
+            <Panel id="canvas" minSize={100}>
+              <div className="relative h-full w-full">
+                <EditorCanvas />
+              </div>
+            </Panel>
+            <Separator />
+            <Panel
+              id="live-controls"
+              defaultSize={160}
+              minSize={28}
+              collapsible
+              collapsedSize={28}
+            >
+              <LiveControlsPanel />
+            </Panel>
+          </Group>
         </Panel>
 
         <Separator />

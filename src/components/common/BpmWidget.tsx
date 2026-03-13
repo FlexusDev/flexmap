@@ -6,16 +6,12 @@ export function BpmWidget() {
   const {
     bpmState,
     bpmMultiplier,
-    liveControlsOpen,
     refreshBpmState,
-    toggleLiveControls,
   } = useAppStore(
     useShallow((s) => ({
       bpmState: s.bpmState,
       bpmMultiplier: s.bpmMultiplier,
-      liveControlsOpen: s.liveControlsOpen,
       refreshBpmState: s.refreshBpmState,
-      toggleLiveControls: s.toggleLiveControls,
     })),
   );
 
@@ -64,19 +60,6 @@ export function BpmWidget() {
           transition: "transform 50ms ease-out, box-shadow 50ms ease-out",
         }}
       />
-
-      {/* Live controls toggle */}
-      <button
-        onClick={toggleLiveControls}
-        className={`ml-1 px-1.5 py-0.5 text-[10px] rounded transition-colors ${
-          liveControlsOpen
-            ? "bg-aura-hover text-aura-text"
-            : "text-aura-text-dim hover:text-aura-text"
-        }`}
-        title="Toggle Live Controls"
-      >
-        LIVE
-      </button>
     </div>
   );
 }

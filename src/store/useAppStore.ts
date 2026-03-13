@@ -41,18 +41,7 @@ let installedShaderSyncFingerprint = "";
 export const PERFORMANCE_PROFILE_KEY = "flexmap:performance_profile";
 const BPM_CONFIG_KEY = "flexmap:bpm_config";
 const BPM_DEVICE_KEY = "flexmap:bpm_device";
-const LIVE_CONTROLS_KEY = "flexmap:live_controls_open";
 const BPM_MULTIPLIER_KEY = "flexmap:bpm_multiplier";
-
-function readLiveControlsOpen(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(LIVE_CONTROLS_KEY) === "true";
-}
-
-function persistLiveControlsOpen(open: boolean): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(LIVE_CONTROLS_KEY, String(open));
-}
 
 function readBpmMultiplier(): number {
   if (typeof window === "undefined") return 1;
@@ -245,8 +234,6 @@ interface AppState {
   groups: LayerGroup[];
   bpmMultiplier: number;
   bpmSource: 'auto' | 'manual';
-  liveControlsOpen: boolean;
-  toggleLiveControls: () => void;
 
   // Toasts
   toasts: Toast[];
@@ -414,12 +401,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   groups: [],
   bpmMultiplier: readBpmMultiplier(),
   bpmSource: 'auto',
-  liveControlsOpen: readLiveControlsOpen(),
-  toggleLiveControls: () => {
-    const next = !get().liveControlsOpen;
-    set({ liveControlsOpen: next });
-    persistLiveControlsOpen(next);
-  },
 
   toasts: [],
   addToast: (message, type) => {
