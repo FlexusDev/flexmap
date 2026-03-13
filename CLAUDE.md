@@ -55,6 +55,14 @@ Stack: Tauri v2 (Rust backend + React/TypeScript/Tailwind frontend), wgpu v26 (M
 - Main window: full editor UI. KeyboardOverlay lives HERE only.
 - Projector window: fullscreen output only. No UI overlays.
 
+### Live Controls Panel
+- Toggleable panel below the canvas (center column only).
+- Contains section cards: Tempo card first, future cards for faders/scenes.
+- Toggle state persisted to localStorage.
+- Master speed slider uses logarithmic scale (0.0625–4.0).
+- Stepped mode snaps to musical divisions (4 Bar → 1/16).
+- Shift+drag for free roam continuous values.
+
 ### File Organization
 - Rust: `scene/`, `renderer/`, `input/`, `persistence/`
 - React: `components/`, `store/`, `hooks/`, `lib/`, `types/`
