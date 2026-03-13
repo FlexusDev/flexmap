@@ -2,6 +2,18 @@
 
 All notable changes to FlexMap are documented here.
 
+## [0.5.0] - 2026-03-13
+
+### Added
+
+- **Shared input mapping**: layer groups can now share a single UV mapping that spans the combined geometry of all group members, enabling seamless source sampling across multiple surfaces; includes per-group controls for box, offset, rotation, and scale in the properties panel
+
+### Fixed
+
+- **E2e test stability**: added proper waits for async UI and updated selectors for layer panel group refactor
+
+---
+
 ## [0.4.0] - 2026-03-12
 
 ### Added
@@ -185,6 +197,7 @@ All notable changes to FlexMap are documented here.
 - Input routing: InputBackend trait, test pattern, media file, Spout, Syphon.
 - Persistence: save/load .flexmap JSON, autosave, crash recovery.
 
+[0.5.0]: https://github.com/FlexusDev/flexmap/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/FlexusDev/flexmap/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/FlexusDev/flexmap/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/FlexusDev/flexmap/compare/v0.2.4...v0.3.0
