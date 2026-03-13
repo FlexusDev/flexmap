@@ -56,9 +56,8 @@ Stack: Tauri v2 (Rust backend + React/TypeScript/Tailwind frontend), wgpu v26 (M
 - Projector window: fullscreen output only. No UI overlays.
 
 ### Live Controls Panel
-- Toggleable panel below the canvas (center column only).
-- Contains section cards: Tempo card first, future cards for faders/scenes.
-- Toggle state persisted to localStorage.
+- Always-visible resizable panel below the canvas (center column, react-resizable-panels).
+- Collapsible via titlebar click. Contains section cards: Tempo card first, future cards for faders/scenes.
 - Master speed slider uses logarithmic scale (0.0625–4.0).
 - Stepped mode snaps to musical divisions (4 Bar → 1/16).
 - Shift+drag for free roam continuous values.
