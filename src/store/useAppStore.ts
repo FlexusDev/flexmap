@@ -61,6 +61,8 @@ const DEFAULT_BPM_STATE: BpmState = {
   selectedDeviceId: null,
   selectedDeviceName: null,
   lastBeatMs: 0,
+  multiplier: 1,
+  source: "auto",
 };
 
 function readPerformanceProfile(): PerformanceProfile {
@@ -1442,7 +1444,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   tapBpm: async () => {
     try {
       const bpmState = await tauriInvoke<BpmState>("tap_bpm", {});
-      set({ bpmState });
+      set((s) => ({
+        bpmState,
+        bpmConfig: { ...s.bpmConfig, manualBpm: bpmState.bpm },
+      }));
+      persistBpmConfig({ ...get().bpmConfig, manualBpm: bpmState.bpm });
     } catch (e) {
       console.error("Failed to tap BPM:", e);
     }

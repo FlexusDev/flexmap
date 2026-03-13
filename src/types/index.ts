@@ -365,6 +365,8 @@ export interface BpmState {
   selectedDeviceId: string | null;
   selectedDeviceName: string | null;
   lastBeatMs: number;
+  multiplier: number;
+  source: "auto" | "manual";
 }
 
 export interface FrameSnapshot {

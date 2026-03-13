@@ -31,12 +31,12 @@ export function BpmWidget() {
     })),
   );
 
-  // Poll BPM state at ~10Hz for beat indicator animation
+  // Poll BPM state at ~20Hz for smooth metronome animation
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     intervalRef.current = setInterval(() => {
       refreshBpmState();
-    }, 100);
+    }, 50);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
@@ -53,13 +53,17 @@ export function BpmWidget() {
         <span className="w-10 text-right">{bpm.toFixed(1)}</span>
       </div>
 
-      {/* Beat indicator — dot that pulses */}
+      {/* Beat indicator — optical metronome dot */}
       <div
-        className="w-2 h-2 rounded-full transition-all duration-75"
+        className="w-3 h-3 rounded-full"
         style={{
-          backgroundColor: beat > 0.3 ? "#22c55e" : "#3f3f46",
-          transform: `scale(${1 + beat * 0.5})`,
-          boxShadow: beat > 0.3 ? "0 0 4px #22c55e" : "none",
+          backgroundColor: `rgba(34, 197, 94, ${0.15 + beat * 0.85})`,
+          transform: `scale(${0.7 + beat * 0.6})`,
+          boxShadow:
+            beat > 0.15
+              ? `0 0 ${4 + beat * 8}px rgba(34, 197, 94, ${beat * 0.7})`
+              : "none",
+          transition: "transform 50ms ease-out, box-shadow 50ms ease-out",
         }}
       />
 

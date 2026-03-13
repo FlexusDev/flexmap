@@ -86,6 +86,8 @@ let mockBpmState: BpmState = {
   selectedDeviceId: null,
   selectedDeviceName: null,
   lastBeatMs: 0,
+  multiplier: 1,
+  source: "auto",
 };
 const mockAudioDevices: AudioInputDevice[] = [
   {
@@ -687,11 +689,12 @@ const mockCommands: Record<string, (args: any) => any> = {
     const t = now / 1000;
     const bpm = Math.max(1, mockBpmState.bpm || mockBpmConfig.manualBpm || 120);
     const phase = ((t * bpm) / 60) % 1;
-    const beat = phase < 0.12 ? 1 : 0;
+    // Smooth decay envelope instead of binary 0/1
+    const beat = Math.max(0, 1 - phase / 0.3);
     mockBpmState.phase = phase;
     mockBpmState.beat = beat;
-    mockBpmState.level = beat ? 0.9 : 0.24;
-    mockBpmState.lastBeatMs = beat ? now : mockBpmState.lastBeatMs;
+    mockBpmState.level = beat > 0.1 ? 0.7 + beat * 0.3 : 0.15;
+    mockBpmState.lastBeatMs = phase < 0.05 ? now : mockBpmState.lastBeatMs;
     mockBpmState.running = !!mockBpmState.selectedDeviceId;
     return { ...mockBpmState };
   },
