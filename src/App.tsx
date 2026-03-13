@@ -13,6 +13,7 @@ import CalibrationBar from "./components/calibration/CalibrationBar";
 import StatusBar from "./components/common/StatusBar";
 import KeyboardOverlay from "./components/common/KeyboardOverlay";
 import ToastContainer from "./components/common/ToastContainer";
+import { LiveControlsPanel } from "./components/live/LiveControlsPanel";
 
 function RecoveryDialog({ onRecover, onDismiss }: { onRecover: () => void; onDismiss: () => void }) {
   return (
@@ -147,8 +148,11 @@ function App() {
 
         {/* Center: Editor canvas */}
         <Panel id="center" minSize={200}>
-          <div className="relative h-full w-full">
-            <EditorCanvas />
+          <div className="relative h-full w-full flex flex-col">
+            <div className="flex-1 min-h-0 relative">
+              <EditorCanvas />
+            </div>
+            <LiveControlsPanel />
           </div>
         </Panel>
 
