@@ -963,7 +963,10 @@ const mockCommands: Record<string, (args: any) => any> = {
 
   get_groups: (): LayerGroup[] => [...mockGroups],
 
-  set_bpm_multiplier: (_args: { multiplier: number }) => null,
+  set_bpm_multiplier: (args: { multiplier: number }) => {
+    mockBpmState.multiplier = Math.max(0.0625, Math.min(4, args.multiplier));
+    return null;
+  },
   set_bpm_source: (_args: { source: string }) => null,
   tap_bpm: (): BpmState => ({ ...mockBpmState }),
 
