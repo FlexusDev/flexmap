@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 
 use super::pipeline::{LayerUniforms, generate_layer_mesh};
 use super::texture_manager::TextureManager;
+use crate::scene::group::LayerGroup;
 use crate::scene::layer::{Layer, LayerGeometry};
 
 /// Cached GPU buffers for a single layer
@@ -134,13 +135,15 @@ impl BufferCache {
         texture_view: &wgpu::TextureView,
         texture_manager: &TextureManager,
         layer: &Layer,
+        groups: &[LayerGroup],
         bpm_phase: f32,
         bpm_multiplier: f32,
     ) -> Option<&CachedLayerBuffers> {
         // Hash geometry struct directly — avoids allocating Vec<LayerVertex> + Vec<u16>
         // on every cache hit (60fps × N layers).
         let geom_hash = compute_geometry_hash(&layer.geometry);
-        let uniforms = LayerUniforms::from_layer(layer, bpm_phase, bpm_multiplier);
+        let shared_input = super::pipeline::resolve_shared_input_for_layer(layer, groups);
+        let uniforms = LayerUniforms::from_layer(layer, shared_input, bpm_phase, bpm_multiplier);
         let prop_hash = compute_properties_hash(&uniforms);
 
         // Get source generation to detect texture changes

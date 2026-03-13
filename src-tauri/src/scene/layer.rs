@@ -402,6 +402,33 @@ impl Default for PixelMapEffect {
     }
 }
 
+/// Shared source sampling for a layer group.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedInputMapping {
+    pub enabled: bool,
+    pub r#box: [f64; 4],
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub rotation: f64,
+    pub scale_x: f64,
+    pub scale_y: f64,
+}
+
+impl Default for SharedInputMapping {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            r#box: [0.0, 0.0, 1.0, 1.0],
+            offset_x: 0.0,
+            offset_y: 0.0,
+            rotation: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+        }
+    }
+}
+
 /// Source assignment for a layer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceAssignment {

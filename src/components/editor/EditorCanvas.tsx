@@ -11,11 +11,13 @@ import type {
   BlendMode,
   InputTransform,
   EditorSelectionMode,
+  SharedInputMapping,
 } from "../../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import type { PerfStats } from "../../store/useAppStore";
 import { hashPoints, drawTriangleTextured } from "../../lib/math";
 import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
+import { applyInputTransformToUv, applySharedInputMapping, resolveLayerSharedInput } from "../../lib/shared-input";
 import { CoordinateHUD } from "./CoordinateHUD";
 import { Magnifier } from "./Magnifier";
 
@@ -69,21 +71,6 @@ const TWO_PI = Math.PI * 2;
 const TRANSFORM_EPS = 1e-6;
 
 type ShapeEditTool = "points" | "drag" | "rotate";
-
-function applyInputTransformToUv(
-  uv: { u: number; v: number },
-  t: InputTransform
-): { u: number; v: number } {
-  const c = Math.cos(t.rotation);
-  const s = Math.sin(t.rotation);
-  const du = (uv.u - 0.5) * t.scale[0];
-  const dv = (uv.v - 0.5) * t.scale[1];
-  return {
-    u: du * c - dv * s + 0.5 + t.offset[0],
-    v: du * s + dv * c + 0.5 + t.offset[1],
-  };
-}
-
 
 function normalizeAngleDelta(rad: number): number {
   let a = rad;
@@ -146,6 +133,16 @@ interface ShapeTransformState {
 interface AlignmentGuide {
   axis: "h" | "v";
   position: number; // normalized 0-1
+}
+
+type SharedInputHandle = "nw" | "ne" | "se" | "sw";
+
+interface GroupBoxDragState {
+  groupId: string;
+  mode: "move" | "resize";
+  handle: SharedInputHandle | null;
+  startMouse: { x: number; y: number };
+  startBox: [number, number, number, number];
 }
 
 /** Extract all control points from a layer geometry (normalized 0-1) */
@@ -225,6 +222,87 @@ function meshToCircleParams(points: { x: number; y: number }[]): {
   return { center: { x: cx, y: cy }, radius_x: Math.max(0.0001, rx), radius_y: Math.max(0.0001, ry), rotation };
 }
 
+function sharedInputBoxToCanvas(
+  viewRect: { x: number; y: number; w: number; h: number },
+  box: [number, number, number, number]
+) {
+  return {
+    x: viewRect.x + box[0] * viewRect.w,
+    y: viewRect.y + box[1] * viewRect.h,
+    w: box[2] * viewRect.w,
+    h: box[3] * viewRect.h,
+  };
+}
+
+function hitTestSharedInputBox(
+  mx: number,
+  my: number,
+  viewRect: { x: number; y: number; w: number; h: number },
+  box: [number, number, number, number]
+): { mode: "move" | "resize"; handle: SharedInputHandle | null } | null {
+  const rect = sharedInputBoxToCanvas(viewRect, box);
+  const handles: Array<{ handle: SharedInputHandle; x: number; y: number }> = [
+    { handle: "nw", x: rect.x, y: rect.y },
+    { handle: "ne", x: rect.x + rect.w, y: rect.y },
+    { handle: "se", x: rect.x + rect.w, y: rect.y + rect.h },
+    { handle: "sw", x: rect.x, y: rect.y + rect.h },
+  ];
+  for (const handle of handles) {
+    if (Math.hypot(mx - handle.x, my - handle.y) <= 10) {
+      return { mode: "resize", handle: handle.handle };
+    }
+  }
+  if (mx >= rect.x && mx <= rect.x + rect.w && my >= rect.y && my <= rect.y + rect.h) {
+    return { mode: "move", handle: null };
+  }
+  return null;
+}
+
+function clampSharedInputBox(box: [number, number, number, number]): [number, number, number, number] {
+  const minSize = 0.01;
+  return [
+    Math.max(-1, Math.min(2, box[0])),
+    Math.max(-1, Math.min(2, box[1])),
+    Math.max(minSize, Math.min(4, box[2])),
+    Math.max(minSize, Math.min(4, box[3])),
+  ];
+}
+
+function resizeSharedInputBox(
+  startBox: [number, number, number, number],
+  handle: SharedInputHandle,
+  dx: number,
+  dy: number
+): [number, number, number, number] {
+  let [x, y, w, h] = startBox;
+  const right = x + w;
+  const bottom = y + h;
+
+  if (handle === "nw" || handle === "sw") {
+    x = startBox[0] + dx;
+    w = right - x;
+    if (w < 0.01) {
+      x = right - 0.01;
+      w = 0.01;
+    }
+  } else {
+    w = startBox[2] + dx;
+  }
+
+  if (handle === "nw" || handle === "ne") {
+    y = startBox[1] + dy;
+    h = bottom - y;
+    if (h < 0.01) {
+      y = bottom - 0.01;
+      h = 0.01;
+    }
+  } else {
+    h = startBox[3] + dy;
+  }
+
+  return clampSharedInputBox([x, y, w, h]);
+}
+
 function EditorCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -232,6 +310,7 @@ function EditorCanvas() {
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [inputDragState, setInputDragState] = useState<InputDragState | null>(null);
   const [inputRotateState, setInputRotateState] = useState<InputRotateState | null>(null);
+  const [groupBoxDragState, setGroupBoxDragState] = useState<GroupBoxDragState | null>(null);
   const [inputEditTool, setInputEditTool] = useState<"drag" | "rotate">("drag");
   const [shapeEditTool, setShapeEditTool] = useState<ShapeEditTool>("points");
   const [shapeTransformActive, setShapeTransformActive] = useState(false);
@@ -244,16 +323,17 @@ function EditorCanvas() {
 
   const {
     project,
-    layers, selectedLayerId, selectedLayerIds,
+    layers, groups, selectedLayerId, selectedLayerIds,
     setLayerSelection, toggleLayerSelection, clearLayerSelection,
     updateLayerPoint, applyGeometryTransformDelta,
     beginInteraction, setEditorPerf, snapEnabled, magnifierEnabled, editorSelectionMode,
-    setLayerInputTransform, toggleEditorSelectionMode,
+    setLayerInputTransform, setGroupSharedInput, toggleEditorSelectionMode,
     performanceProfile,
     selectedPointIndex, selectPoint, clearPointSelection,
   } = useAppStore(useShallow((s) => ({
     project: s.project,
     layers: s.layers,
+    groups: s.groups,
     selectedLayerId: s.selectedLayerId,
     selectedLayerIds: s.selectedLayerIds,
     setLayerSelection: s.setLayerSelection,
@@ -267,6 +347,7 @@ function EditorCanvas() {
     magnifierEnabled: s.magnifierEnabled,
     editorSelectionMode: s.editorSelectionMode,
     setLayerInputTransform: s.setLayerInputTransform,
+    setGroupSharedInput: s.setGroupSharedInput,
     toggleEditorSelectionMode: s.toggleEditorSelectionMode,
     performanceProfile: s.performanceProfile,
     selectedPointIndex: s.selectedPointIndex,
@@ -283,6 +364,21 @@ function EditorCanvas() {
     () => new Set(effectiveSelectedIds),
     [effectiveSelectedIds]
   );
+  const selectedGroup = useMemo(() => {
+    if (effectiveSelectedIds.length === 0) return null;
+    const selectedLayers = effectiveSelectedIds
+      .map((id) => layers.find((layer) => layer.id === id))
+      .filter((layer): layer is Layer => !!layer);
+    if (selectedLayers.some((layer) => !layer.groupId)) return null;
+    const groupIds = new Set(
+      selectedLayers
+        .map((layer) => layer.groupId)
+        .filter((groupId): groupId is string => !!groupId)
+    );
+    if (groupIds.size !== 1) return null;
+    const [groupId] = [...groupIds];
+    return groups.find((group) => group.id === groupId) ?? null;
+  }, [effectiveSelectedIds, groups, layers]);
 
   const outputWidth = project?.output.width ?? canvasSize.w;
   const outputHeight = project?.output.height ?? canvasSize.h;
@@ -343,6 +439,12 @@ function EditorCanvas() {
   const inputPendingRef = useRef<{ layerId: string; transform: InputTransform } | null>(null);
   const inputInFlightRef = useRef(false);
   const inputRafRef = useRef<number | null>(null);
+  const groupInputPendingRef = useRef<{
+    groupId: string;
+    sharedInput: SharedInputMapping;
+  } | null>(null);
+  const groupInputInFlightRef = useRef(false);
+  const groupInputRafRef = useRef<number | null>(null);
   // Shape drag/rotate state (mutable to avoid per-move re-renders)
   const shapeTransformRef = useRef<ShapeTransformState | null>(null);
   const shapeDragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -554,11 +656,16 @@ function EditorCanvas() {
         cancelAnimationFrame(inputRafRef.current);
         inputRafRef.current = null;
       }
+      if (groupInputRafRef.current !== null) {
+        cancelAnimationFrame(groupInputRafRef.current);
+        groupInputRafRef.current = null;
+      }
       if (geometryRafRef.current !== null) {
         cancelAnimationFrame(geometryRafRef.current);
         geometryRafRef.current = null;
       }
       inputPendingRef.current = null;
+      groupInputPendingRef.current = null;
       geometryPendingRef.current = null;
       shapeTransformRef.current = null;
     };
@@ -622,6 +729,41 @@ function EditorCanvas() {
       }
     },
     [flushInputTransform]
+  );
+
+  const flushGroupSharedInput = useCallback(() => {
+    if (groupInputInFlightRef.current) return;
+    const pending = groupInputPendingRef.current;
+    if (!pending) return;
+    groupInputPendingRef.current = null;
+    groupInputInFlightRef.current = true;
+    void setGroupSharedInput(pending.groupId, pending.sharedInput).finally(() => {
+      groupInputInFlightRef.current = false;
+      if (groupInputPendingRef.current) {
+        flushGroupSharedInput();
+      }
+    });
+  }, [setGroupSharedInput]);
+
+  const scheduleGroupSharedInput = useCallback(
+    (groupId: string, sharedInput: SharedInputMapping, immediate = false) => {
+      groupInputPendingRef.current = { groupId, sharedInput };
+      if (immediate) {
+        if (groupInputRafRef.current !== null) {
+          cancelAnimationFrame(groupInputRafRef.current);
+          groupInputRafRef.current = null;
+        }
+        flushGroupSharedInput();
+        return;
+      }
+      if (groupInputRafRef.current === null) {
+        groupInputRafRef.current = requestAnimationFrame(() => {
+          groupInputRafRef.current = null;
+          flushGroupSharedInput();
+        });
+      }
+    },
+    [flushGroupSharedInput]
   );
 
   const flushGeometryDelta = useCallback(() => {
@@ -721,6 +863,7 @@ function EditorCanvas() {
       setHoveredPoint(null);
       setDragState(null);
     }
+    setGroupBoxDragState(null);
     setInputDragState(null);
     setInputRotateState(null);
   }, [
@@ -906,6 +1049,21 @@ function EditorCanvas() {
     const my = e.clientY - rect.top;
     const cmdOrCtrl = e.metaKey || e.ctrlKey;
 
+    if (selectedGroup?.sharedInput?.enabled) {
+      const hit = hitTestSharedInputBox(mx, my, viewRect, selectedGroup.sharedInput.box);
+      if (hit) {
+        beginInteraction();
+        setGroupBoxDragState({
+          groupId: selectedGroup.id,
+          mode: hit.mode,
+          handle: hit.handle,
+          startMouse: { x: mx, y: my },
+          startBox: [...selectedGroup.sharedInput.box] as [number, number, number, number],
+        });
+        return;
+      }
+    }
+
     if (isShapePointMode) {
       const hit = hitTest(mx, my);
       if (hit) {
@@ -1006,6 +1164,29 @@ function EditorCanvas() {
       setMagnifierPos({ x: mx, y: my });
     }
 
+    if (groupBoxDragState && selectedGroup?.sharedInput) {
+      const dx = (mx - groupBoxDragState.startMouse.x) / viewRect.w;
+      const dy = (my - groupBoxDragState.startMouse.y) / viewRect.h;
+      const nextBox = groupBoxDragState.mode === "move"
+        ? clampSharedInputBox([
+            groupBoxDragState.startBox[0] + dx,
+            groupBoxDragState.startBox[1] + dy,
+            groupBoxDragState.startBox[2],
+            groupBoxDragState.startBox[3],
+          ])
+        : resizeSharedInputBox(
+            groupBoxDragState.startBox,
+            groupBoxDragState.handle ?? "se",
+            dx,
+            dy
+          );
+      scheduleGroupSharedInput(selectedGroup.id, {
+        ...selectedGroup.sharedInput,
+        box: nextBox,
+      });
+      return;
+    }
+
     const shapeTransform = shapeTransformRef.current;
     if (shapeTransform) {
       if (!shapeTransform.layerIds.every((id) => layers.some((l) => l.id === id))) {
@@ -1104,6 +1285,14 @@ function EditorCanvas() {
     finishShapeTransform();
     activeGuidesRef.current = [];
     setHudData(prev => ({ ...prev, visible: false }));
+    if (groupBoxDragState) {
+      if (groupInputRafRef.current !== null) {
+        cancelAnimationFrame(groupInputRafRef.current);
+        groupInputRafRef.current = null;
+      }
+      flushGroupSharedInput();
+      setGroupBoxDragState(null);
+    }
     if (inputDragState || inputRotateState) {
       if (inputRafRef.current !== null) {
         cancelAnimationFrame(inputRafRef.current);
@@ -1286,6 +1475,7 @@ function EditorCanvas() {
       const isPrimary = layer.id === selectedLayerId;
       const points = getPoints(layer.geometry).map(toCanvas);
       const inputTransform = layer.input_transform ?? DEFAULT_INPUT_TRANSFORM;
+      const sharedInput = resolveLayerSharedInput(layer, groups);
       const frame = frameCache.current.get(layer.id);
 
       ctx.strokeStyle = isSelected
@@ -1326,12 +1516,21 @@ function EditorCanvas() {
             rows,
             points: rawPts,
           } = layer.geometry.data;
-          const inputHash =
-            (((inputTransform.offset[0] * 1e6) | 0) >>> 0)
-            ^ (((inputTransform.offset[1] * 1e6) | 0) >>> 0)
-            ^ (((inputTransform.rotation * 1e6) | 0) >>> 0)
-            ^ (((inputTransform.scale[0] * 1e6) | 0) >>> 0)
-            ^ (((inputTransform.scale[1] * 1e6) | 0) >>> 0);
+          const inputHash = sharedInput
+            ? ((((sharedInput.box[0] * 1e6) | 0) >>> 0)
+              ^ (((sharedInput.box[1] * 1e6) | 0) >>> 0)
+              ^ (((sharedInput.box[2] * 1e6) | 0) >>> 0)
+              ^ (((sharedInput.box[3] * 1e6) | 0) >>> 0)
+              ^ (((sharedInput.offsetX * 1e6) | 0) >>> 0)
+              ^ (((sharedInput.offsetY * 1e6) | 0) >>> 0)
+              ^ (((sharedInput.rotation * 1e6) | 0) >>> 0)
+              ^ (((sharedInput.scaleX * 1e6) | 0) >>> 0)
+              ^ (((sharedInput.scaleY * 1e6) | 0) >>> 0))
+            : ((((inputTransform.offset[0] * 1e6) | 0) >>> 0)
+              ^ (((inputTransform.offset[1] * 1e6) | 0) >>> 0)
+              ^ (((inputTransform.rotation * 1e6) | 0) >>> 0)
+              ^ (((inputTransform.scale[0] * 1e6) | 0) >>> 0)
+              ^ (((inputTransform.scale[1] * 1e6) | 0) >>> 0));
           const viewportHash =
             (((viewRect.x * 1e3) | 0) >>> 0)
             ^ (((viewRect.y * 1e3) | 0) >>> 0)
@@ -1382,13 +1581,23 @@ function EditorCanvas() {
                 const fw = frame.width;
                 const fh = frame.height;
                 const baseUvs = [
-                  { u: c / cols, v: r / rows },
-                  { u: (c + 1) / cols, v: r / rows },
-                  { u: (c + 1) / cols, v: (r + 1) / rows },
-                  { u: c / cols, v: (r + 1) / rows },
+                  sharedInput
+                    ? { u: rawPts[r * (cols + 1) + c].x, v: rawPts[r * (cols + 1) + c].y }
+                    : { u: c / cols, v: r / rows },
+                  sharedInput
+                    ? { u: rawPts[r * (cols + 1) + c + 1].x, v: rawPts[r * (cols + 1) + c + 1].y }
+                    : { u: (c + 1) / cols, v: r / rows },
+                  sharedInput
+                    ? { u: rawPts[(r + 1) * (cols + 1) + c + 1].x, v: rawPts[(r + 1) * (cols + 1) + c + 1].y }
+                    : { u: (c + 1) / cols, v: (r + 1) / rows },
+                  sharedInput
+                    ? { u: rawPts[(r + 1) * (cols + 1) + c].x, v: rawPts[(r + 1) * (cols + 1) + c].y }
+                    : { u: c / cols, v: (r + 1) / rows },
                 ];
                 const finalUvs = baseUvs.map((uv) => {
-                  const withLayer = applyInputTransformToUv(uv, inputTransform);
+                  const withLayer = sharedInput
+                    ? applySharedInputMapping(uv, sharedInput)
+                    : applyInputTransformToUv(uv, inputTransform);
                   return { x: withLayer.u * fw, y: withLayer.v * fh };
                 });
 
@@ -1682,11 +1891,45 @@ function EditorCanvas() {
       ctx.restore();
     }
 
+    if (selectedGroup?.sharedInput?.enabled) {
+      const rect = sharedInputBoxToCanvas(viewRect, selectedGroup.sharedInput.box);
+      ctx.save();
+      ctx.strokeStyle = "rgba(34, 211, 238, 0.95)";
+      ctx.fillStyle = "rgba(34, 211, 238, 0.12)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([8, 4]);
+      ctx.beginPath();
+      ctx.rect(rect.x, rect.y, rect.w, rect.h);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const handles = [
+        { x: rect.x, y: rect.y },
+        { x: rect.x + rect.w, y: rect.y },
+        { x: rect.x + rect.w, y: rect.y + rect.h },
+        { x: rect.x, y: rect.y + rect.h },
+      ];
+      for (const handle of handles) {
+        ctx.beginPath();
+        ctx.arc(handle.x, handle.y, 5, 0, TWO_PI);
+        ctx.fillStyle = "#22d3ee";
+        ctx.fill();
+        ctx.strokeStyle = "#083344";
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#67e8f9";
+      ctx.font = "11px monospace";
+      ctx.fillText("Shared Input", rect.x + 8, rect.y - 8);
+      ctx.restore();
+    }
+
     ctx.restore();
   }, [
     layers,
+    groups,
     selectedLayerId,
     effectiveSelectedIds,
+    selectedGroup,
     isShapePointMode,
     canvasSize,
     toCanvas,

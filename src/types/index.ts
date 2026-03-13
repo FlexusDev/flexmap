@@ -121,6 +121,26 @@ export interface PixelMapEffect {
   worldBox: [number, number, number, number];
 }
 
+export interface SharedInputMapping {
+  enabled: boolean;
+  box: [number, number, number, number];
+  offsetX: number;
+  offsetY: number;
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+}
+
+export const DEFAULT_SHARED_INPUT_MAPPING: SharedInputMapping = {
+  enabled: true,
+  box: [0, 0, 1, 1],
+  offsetX: 0,
+  offsetY: 0,
+  rotation: 0,
+  scaleX: 1,
+  scaleY: 1,
+};
+
 export const DEFAULT_PIXEL_MAP_EFFECT: PixelMapEffect = {
   enabled: true,
   pattern: "chase",
@@ -144,6 +164,7 @@ export interface LayerGroup {
   visible: boolean;
   locked: boolean;
   pixelMap: PixelMapEffect | null;
+  sharedInput: SharedInputMapping | null;
 }
 
 export interface Layer {
@@ -214,6 +235,7 @@ export interface ProjectFile {
   output: OutputConfig;
   calibration: CalibrationConfig;
   layers: Layer[];
+  groups?: LayerGroup[];
   uiState: unknown;
 }
 

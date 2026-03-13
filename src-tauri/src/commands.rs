@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::scene::layer::*;
 use crate::scene::group::LayerGroup;
-use crate::scene::layer::PixelMapEffect;
+use crate::scene::layer::{PixelMapEffect, SharedInputMapping};
 use crate::scene::project::*;
 use crate::scene::state::SceneState;
 use crate::audio::{AudioInputDevice, BpmConfig, BpmState, BpmEngine};
@@ -19,8 +19,8 @@ use crate::renderer::projector::GpuProjector;
 
 /// Helper: after any scene mutation, sync layers + calibration to the render state
 fn sync_render_state(scene: &SceneState, render: &Arc<RenderState>) {
-    render.update_layers(scene.get_layers_snapshot());
     let project = scene.get_project_snapshot();
+    render.update_scene(project.layers.clone(), project.groups.clone());
     render.update_calibration(project.calibration);
 }
 
@@ -1750,6 +1750,20 @@ pub async fn set_group_pixel_map(
     render: State<'_, Arc<RenderState>>,
 ) -> Result<bool, String> {
     let result = state.set_group_pixel_map(&group_id, pixel_map);
+    if result {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn set_group_shared_input(
+    group_id: String,
+    shared_input: Option<SharedInputMapping>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let result = state.set_group_shared_input(&group_id, shared_input);
     if result {
         sync_render_state(&state, &render);
     }

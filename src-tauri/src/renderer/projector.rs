@@ -92,6 +92,7 @@ impl GpuProjector {
 
                     // Snapshot scene state (cheap clones behind RwLock)
                     let layers = render_state.layers.read().clone();
+                    let groups = render_state.groups.read().clone();
                     let calibration = render_state.calibration.read().clone();
                     let bpm_phase = *render_state.bpm_phase.read();
                     let bpm_multiplier = *render_state.bpm_multiplier.read();
@@ -160,7 +161,7 @@ impl GpuProjector {
                         let current_gen = render_state.layer_generation();
                         if current_gen != last_prepared_generation {
                             let mut eng = engine.write();
-                            eng.prepare_all_buffers(&layers, bpm_phase, bpm_multiplier);
+                            eng.prepare_all_buffers(&layers, &groups, bpm_phase, bpm_multiplier);
                             last_prepared_generation = current_gen;
                         }
 
@@ -169,7 +170,8 @@ impl GpuProjector {
 
                         // Use full multi-pass compositing (supports all 13 blend modes)
                         let t_render = std::time::Instant::now();
-                        let scene_cmd = eng.render_scene(&layers, &calibration, bpm_phase, bpm_multiplier);
+                        let scene_cmd =
+                            eng.render_scene(&layers, &groups, &calibration, bpm_phase, bpm_multiplier);
 
                         // Blit offscreen → surface
                         let mut blit_encoder = eng.gpu.device.create_command_encoder(

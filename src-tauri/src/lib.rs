@@ -460,6 +460,7 @@ pub fn run() {
             commands::create_layer_group,
             commands::delete_layer_group,
             commands::set_group_pixel_map,
+            commands::set_group_shared_input,
             commands::get_groups,
             // BPM control
             commands::set_bpm_multiplier,
@@ -512,9 +513,8 @@ pub fn run() {
                         // Sync initial scene to render state
                         let render_state = app_handle.state::<Arc<RenderState>>();
                         let scene_state = app_handle.state::<SceneState>();
-                        let layers = scene_state.get_layers_snapshot();
                         let project = scene_state.get_project_snapshot();
-                        render_state.update_layers(layers);
+                        render_state.update_scene(project.layers.clone(), project.groups.clone());
                         render_state.update_calibration(project.calibration);
 
                         log::info!("Render engine ready");
@@ -562,9 +562,11 @@ pub fn run() {
                     let input_mgr = app_handle_pump.state::<Arc<parking_lot::RwLock<InputManager>>>();
                     let render_state = app_handle_pump.state::<Arc<RenderState>>();
                     let bound_ids = input_mgr.read().bound_layer_ids();
-                    let layer_snapshot = app_handle_pump
+                    let project_snapshot = app_handle_pump
                         .state::<SceneState>()
-                        .get_layers_snapshot();
+                        .get_project_snapshot();
+                    let layer_snapshot = project_snapshot.layers.clone();
+                    let group_snapshot = project_snapshot.groups.clone();
                     let bpm_snapshot = {
                         let bpm_engine = app_handle_pump.state::<Arc<parking_lot::Mutex<BpmEngine>>>();
                         let s = bpm_engine.lock().runtime_snapshot();
@@ -780,8 +782,14 @@ pub fn run() {
                             if eng.preview_width != pw || eng.preview_height != ph {
                                 eng.resize_preview(pw, ph);
                             }
-                            eng.prepare_all_buffers(&layer_snapshot, bpm_phase, bpm_mult);
-                            let bpr = eng.render_preview(&layer_snapshot, &calibration, bpm_phase, bpm_mult);
+                            eng.prepare_all_buffers(&layer_snapshot, &group_snapshot, bpm_phase, bpm_mult);
+                            let bpr = eng.render_preview(
+                                &layer_snapshot,
+                                &group_snapshot,
+                                &calibration,
+                                bpm_phase,
+                                bpm_mult,
+                            );
                             let pixels = eng.read_preview_pixels(bpr);
                             drop(eng);
 

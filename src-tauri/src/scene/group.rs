@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use super::layer::PixelMapEffect;
+use super::layer::{PixelMapEffect, SharedInputMapping};
 
 /// A named group of layers that share a pixel mapping effect
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +12,8 @@ pub struct LayerGroup {
     pub visible: bool,
     pub locked: bool,
     pub pixel_map: Option<PixelMapEffect>,
+    #[serde(default, rename = "sharedInput")]
+    pub shared_input: Option<SharedInputMapping>,
 }
 
 impl LayerGroup {
@@ -23,6 +25,7 @@ impl LayerGroup {
             visible: true,
             locked: false,
             pixel_map: None,
+            shared_input: None,
         }
     }
 }
