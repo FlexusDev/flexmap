@@ -41,6 +41,24 @@ let installedShaderSyncFingerprint = "";
 export const PERFORMANCE_PROFILE_KEY = "flexmap:performance_profile";
 const BPM_CONFIG_KEY = "flexmap:bpm_config";
 const BPM_DEVICE_KEY = "flexmap:bpm_device";
+const LIVE_CONTROLS_KEY = "flexmap:live_controls_open";
+const BPM_MULTIPLIER_KEY = "flexmap:bpm_multiplier";
+
+function readLiveControlsOpen(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(LIVE_CONTROLS_KEY) === "true";
+}
+
+function persistLiveControlsOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(LIVE_CONTROLS_KEY, String(open));
+}
+
+function readBpmMultiplier(): number {
+  if (typeof window === "undefined") return 1;
+  const stored = window.localStorage.getItem(BPM_MULTIPLIER_KEY);
+  return stored ? parseFloat(stored) || 1 : 1;
+}
 
 const DEFAULT_BPM_CONFIG: BpmConfig = {
   enabled: false,
@@ -227,6 +245,8 @@ interface AppState {
   groups: LayerGroup[];
   bpmMultiplier: number;
   bpmSource: 'auto' | 'manual';
+  liveControlsOpen: boolean;
+  toggleLiveControls: () => void;
 
   // Toasts
   toasts: Toast[];
@@ -392,8 +412,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   bpmState: { ...DEFAULT_BPM_STATE },
 
   groups: [],
-  bpmMultiplier: 1,
+  bpmMultiplier: readBpmMultiplier(),
   bpmSource: 'auto',
+  liveControlsOpen: readLiveControlsOpen(),
+  toggleLiveControls: () => {
+    const next = !get().liveControlsOpen;
+    set({ liveControlsOpen: next });
+    persistLiveControlsOpen(next);
+  },
 
   toasts: [],
   addToast: (message, type) => {
@@ -1425,6 +1451,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await tauriInvoke("set_bpm_multiplier", { multiplier });
       set({ bpmMultiplier: multiplier });
+      window.localStorage.setItem(BPM_MULTIPLIER_KEY, String(multiplier));
     } catch (e) {
       console.error("Failed to set BPM multiplier:", e);
       get().addToast("Failed to set BPM multiplier", "error");
