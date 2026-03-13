@@ -678,20 +678,20 @@ const mockCommands: Record<string, (args: any) => any> = {
     return { ...mockBpmState };
   },
   get_bpm_state: (): BpmState => {
-    if (!mockBpmConfig.enabled) {
-      mockBpmState.beat = 0;
-      mockBpmState.level = 0;
-      mockBpmState.phase = 0;
-      mockBpmState.running = false;
-      return { ...mockBpmState };
-    }
     const now = Date.now();
     const t = now / 1000;
     const bpm = Math.max(1, mockBpmState.bpm || mockBpmConfig.manualBpm || 120);
+    // Phase always advances so metronome dot always pulses
     const phase = ((t * bpm) / 60) % 1;
-    // Smooth decay envelope instead of binary 0/1
-    const beat = Math.max(0, 1 - phase / 0.3);
     mockBpmState.phase = phase;
+    if (!mockBpmConfig.enabled) {
+      mockBpmState.beat = 0;
+      mockBpmState.level = 0;
+      mockBpmState.running = false;
+      return { ...mockBpmState };
+    }
+    // Smooth decay envelope for audio beat detection
+    const beat = Math.max(0, 1 - phase / 0.3);
     mockBpmState.beat = beat;
     mockBpmState.level = beat > 0.1 ? 0.7 + beat * 0.3 : 0.15;
     mockBpmState.lastBeatMs = phase < 0.05 ? now : mockBpmState.lastBeatMs;
