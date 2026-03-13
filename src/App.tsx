@@ -58,11 +58,14 @@ function App() {
   );
   const [showRecovery, setShowRecovery] = useState(false);
   const liveControlsPanelRef = usePanelRef();
+  const [liveControlsCollapsed, setLiveControlsCollapsed] = useState(false);
 
   useKeyboardShortcuts();
 
   const { defaultLayout: mainLayout, onLayoutChanged: onMainLayoutChanged } =
     useDefaultLayout({ id: "flexmap-main", storage: localStorage });
+  const { defaultLayout: centerLayout, onLayoutChanged: onCenterLayoutChanged } =
+    useDefaultLayout({ id: "flexmap-center", storage: localStorage });
 
   useEffect(() => {
     loadProject();
@@ -149,7 +152,11 @@ function App() {
 
         {/* Center: Editor canvas + live controls */}
         <Panel id="center" minSize={200}>
-          <Group orientation="vertical">
+          <Group
+            orientation="vertical"
+            defaultLayout={centerLayout}
+            onLayoutChanged={onCenterLayoutChanged}
+          >
             <Panel id="canvas" minSize={100}>
               <div className="relative h-full w-full">
                 <EditorCanvas />
@@ -163,8 +170,9 @@ function App() {
               minSize={28}
               collapsible
               collapsedSize={28}
+              onResize={() => setLiveControlsCollapsed(liveControlsPanelRef.current?.isCollapsed() ?? false)}
             >
-              <LiveControlsPanel panelRef={liveControlsPanelRef} />
+              <LiveControlsPanel panelRef={liveControlsPanelRef} collapsed={liveControlsCollapsed} />
             </Panel>
           </Group>
         </Panel>

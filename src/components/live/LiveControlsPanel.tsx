@@ -4,11 +4,10 @@ import { TempoCard } from "./TempoCard";
 
 interface LiveControlsPanelProps {
   panelRef: React.RefObject<PanelImperativeHandle | null>;
+  collapsed: boolean;
 }
 
-export function LiveControlsPanel({ panelRef }: LiveControlsPanelProps) {
-  const collapsed = panelRef.current?.isCollapsed() ?? false;
-
+export function LiveControlsPanel({ panelRef, collapsed }: LiveControlsPanelProps) {
   const toggle = useCallback(() => {
     const handle = panelRef.current;
     if (!handle) return;
