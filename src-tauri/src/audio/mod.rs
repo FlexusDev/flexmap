@@ -219,6 +219,7 @@ struct WorkerState {
     beat_history: Vec<Instant>,
     tap_history: Vec<Instant>,
     last_beat_instant: Option<Instant>,
+    start_instant: Instant,
     last_tick: Instant,
 }
 
@@ -244,6 +245,7 @@ impl WorkerState {
             beat_history: Vec::new(),
             tap_history: Vec::new(),
             last_beat_instant: None,
+            start_instant: Instant::now(),
             last_tick: Instant::now(),
         }
     }
@@ -389,6 +391,10 @@ impl WorkerState {
         } else {
             BpmSource::Auto
         };
+        // Ensure phase starts advancing immediately
+        if self.last_beat_instant.is_none() {
+            self.last_beat_instant = Some(Instant::now());
+        }
         self.get_bpm_state()
     }
 
@@ -501,23 +507,26 @@ impl WorkerState {
             .clamp(0.0, 0.25);
         self.last_tick = now;
 
+        // Drain buffer after reading so stale audio doesn't contaminate next tick
         let mut fft_input = [0.0f32; FFT_WINDOW];
         let mut has_fft_input = false;
-        let buffer = self.sample_buffer.lock();
         let mut rms = 0.0f32;
-        if !buffer.is_empty() {
-            let mut sum = 0.0;
-            for sample in buffer.iter() {
-                sum += sample * sample;
+        {
+            let mut buffer = self.sample_buffer.lock();
+            if !buffer.is_empty() {
+                let mut sum = 0.0;
+                for sample in buffer.iter() {
+                    sum += sample * sample;
+                }
+                rms = (sum / buffer.len() as f32).sqrt();
             }
-            rms = (sum / buffer.len() as f32).sqrt();
+            if buffer.len() >= FFT_WINDOW {
+                let tail = &buffer[buffer.len() - FFT_WINDOW..];
+                fft_input.copy_from_slice(tail);
+                has_fft_input = true;
+            }
+            buffer.clear();
         }
-        if buffer.len() >= FFT_WINDOW {
-            let tail = &buffer[buffer.len() - FFT_WINDOW..];
-            fft_input.copy_from_slice(tail);
-            has_fft_input = true;
-        }
-        drop(buffer);
         let fft_energy = if has_fft_input {
             self.low_band_energy(&fft_input)
         } else {
@@ -546,7 +555,7 @@ impl WorkerState {
             }
         }
 
-        if beat_triggered && self.config.manual_bpm <= 0.0 {
+        if beat_triggered && self.state.source == BpmSource::Auto {
             let mut intervals = Vec::new();
             for pair in self.beat_history.windows(2) {
                 let delta = pair[1].duration_since(pair[0]).as_secs_f32();
@@ -558,7 +567,7 @@ impl WorkerState {
                 let avg = intervals.iter().sum::<f32>() / intervals.len() as f32;
                 self.state.bpm = (60.0 / avg).clamp(40.0, 220.0);
             }
-        } else if self.config.manual_bpm > 0.0 {
+        } else if self.state.source == BpmSource::Manual {
             self.state.bpm = self.config.manual_bpm.clamp(40.0, 220.0);
         }
 
@@ -566,12 +575,12 @@ impl WorkerState {
             self.state.bpm = 120.0;
         }
 
+        // Always compute continuous phase from time reference
         let beat_interval = 60.0 / self.state.bpm.max(1.0);
-        self.state.phase = if let Some(last) = self.last_beat_instant {
-            (now.saturating_duration_since(last).as_secs_f32() / beat_interval).fract()
-        } else {
-            0.0
-        };
+        let time_ref = self.last_beat_instant.unwrap_or(self.start_instant);
+        self.state.phase = (now.saturating_duration_since(time_ref).as_secs_f32()
+            / beat_interval)
+            .fract();
 
         let attack = self.config.attack.clamp(0.05, 1.0);
         let decay = self.config.decay.clamp(0.05, 0.99);
