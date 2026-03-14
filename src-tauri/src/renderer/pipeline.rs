@@ -1,8 +1,8 @@
 use super::shaders;
 use crate::scene::group::LayerGroup;
 use crate::scene::layer::{
-    BlendMode, DimmerCurve, DimmerEffect, Layer, LayerGeometry, PatternCoordMode,
-    PhaseDirection, PixelMapPattern, SharedInputMapping,
+    BlendMode, DimmerCurve, DimmerEffect, Layer, LayerGeometry, PatternCoordMode, PhaseDirection,
+    PixelMapPattern, SharedInputMapping,
 };
 use bytemuck::{Pod, Zeroable};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct LayerVertex {
     pub position: [f32; 2],
-    pub tex_coord: [f32; 3],  // stores u*q, v*q, q for perspective-correct interpolation
+    pub tex_coord: [f32; 3], // stores u*q, v*q, q for perspective-correct interpolation
 }
 
 impl LayerVertex {
@@ -29,7 +29,7 @@ impl LayerVertex {
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,  // was Float32x2
+                    format: wgpu::VertexFormat::Float32x3, // was Float32x2
                 },
             ],
         }
@@ -67,6 +67,25 @@ pub struct LayerUniforms {
     pub shared_input_transform: [f32; 4],
     /// cos, sin, enabled, pad
     pub shared_input_rot: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BpmRenderSnapshot {
+    pub bpm: f32,
+    pub phase: f32,
+    pub multiplier: f32,
+    pub phase_origin_ms: u64,
+}
+
+impl Default for BpmRenderSnapshot {
+    fn default() -> Self {
+        Self {
+            bpm: 120.0,
+            phase: 0.0,
+            multiplier: 1.0,
+            phase_origin_ms: 0,
+        }
+    }
 }
 
 fn pattern_to_f32(p: PixelMapPattern) -> f32 {
@@ -108,11 +127,11 @@ fn fract(value: f32) -> f32 {
     value.rem_euclid(1.0)
 }
 
-pub fn current_dimmer_time_seconds() -> f32 {
+pub fn current_dimmer_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f32())
-        .unwrap_or(0.0)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn evaluate_dimmer_curve(curve: DimmerCurve, phase: f32, duty_cycle: f32) -> f32 {
@@ -124,27 +143,56 @@ fn evaluate_dimmer_curve(curve: DimmerCurve, phase: f32, duty_cycle: f32) -> f32
         DimmerCurve::RampUp => phase,
         DimmerCurve::RampDown => 1.0 - phase,
         DimmerCurve::Square => {
-            if phase < duty { 1.0 } else { 0.0 }
+            if phase < duty {
+                1.0
+            } else {
+                0.0
+            }
         }
         DimmerCurve::Pulse => {
-            if phase < duty { 1.0 - phase / duty } else { 0.0 }
+            if phase < duty {
+                1.0 - phase / duty
+            } else {
+                0.0
+            }
         }
     }
 }
 
+fn compute_dimmer_phase_at_time(
+    effect: &DimmerEffect,
+    bpm: BpmRenderSnapshot,
+    phase_offset: f32,
+    now_ms: u64,
+) -> f32 {
+    if !effect.enabled {
+        return 0.0;
+    }
+    let phase_origin_ms = if bpm.phase_origin_ms == 0 {
+        now_ms
+    } else {
+        bpm.phase_origin_ms
+    };
+    let effective_bpm = bpm.bpm.max(1.0) * bpm.multiplier.max(0.0625);
+    let beat_interval_ms = 60_000.0 / effective_bpm;
+    let beats_per_cycle = (effect.speed as f32).max(0.25);
+    fract(
+        (now_ms.saturating_sub(phase_origin_ms) as f32 / beat_interval_ms) / beats_per_cycle
+            + effect.phase_offset as f32
+            + phase_offset,
+    )
+}
+
 fn compute_dimmer_multiplier_at_time(
     effect: &DimmerEffect,
+    bpm: BpmRenderSnapshot,
     phase_offset: f32,
-    time_seconds: f32,
+    now_ms: u64,
 ) -> f32 {
     if !effect.enabled {
         return 1.0;
     }
-    let phase = fract(
-        time_seconds * effect.speed as f32
-            + effect.phase_offset as f32
-            + phase_offset,
-    );
+    let phase = compute_dimmer_phase_at_time(effect, bpm, phase_offset, now_ms);
     let sample = evaluate_dimmer_curve(effect.curve, phase, effect.duty_cycle as f32);
     let depth = (effect.depth as f32).clamp(0.0, 1.0);
     (1.0 - depth + depth * sample).clamp(0.0, 1.0)
@@ -164,53 +212,60 @@ fn compute_group_phase_offset(
         .enumerate()
         .filter(|(_, candidate)| candidate.group_id.as_deref() == Some(group.id.as_str()))
         .collect();
-    members.sort_by(|(a_idx, a), (b_idx, b)| {
-        a.z_index
-            .cmp(&b.z_index)
-            .then_with(|| a_idx.cmp(b_idx))
-    });
+    members
+        .sort_by(|(a_idx, a), (b_idx, b)| a.z_index.cmp(&b.z_index).then_with(|| a_idx.cmp(b_idx)));
 
-    let Some(member_index) = members.iter().position(|(_, candidate)| candidate.id == layer.id) else {
+    let Some(member_index) = members
+        .iter()
+        .position(|(_, candidate)| candidate.id == layer.id)
+    else {
         return 0.0;
     };
     if members.len() <= 1 {
         return 0.0;
     }
-    let normalized_index = member_index as f32 / (members.len() - 1) as f32;
-    let phased_index = match effect.phase_direction {
-        PhaseDirection::Forward => normalized_index,
-        PhaseDirection::Reverse => 1.0 - normalized_index,
-    };
-    effect.phase_spread as f32 * phased_index
+    let member_count = members.len() as f32;
+    match effect.phase_direction {
+        PhaseDirection::Forward => {
+            effect.phase_spread as f32 * (member_index as f32 / member_count)
+        }
+        PhaseDirection::Center => {
+            effect.phase_spread as f32 * (((member_index as f32 + 0.5) / member_count) - 0.5)
+        }
+        PhaseDirection::Reverse => {
+            effect.phase_spread as f32 * ((members.len() - 1 - member_index) as f32 / member_count)
+        }
+    }
 }
 
 pub fn compute_effective_opacity(
     layer: &Layer,
     layers: &[Layer],
     groups: &[LayerGroup],
-    _bpm_phase: f32,
-    _bpm_multiplier: f32,
+    bpm: BpmRenderSnapshot,
 ) -> f32 {
-    compute_effective_opacity_at_time(layer, layers, groups, current_dimmer_time_seconds())
+    compute_effective_opacity_at_time(layer, layers, groups, bpm, current_dimmer_time_millis())
 }
 
 pub fn compute_effective_opacity_at_time(
     layer: &Layer,
     layers: &[Layer],
     groups: &[LayerGroup],
-    time_seconds: f32,
+    bpm: BpmRenderSnapshot,
+    now_ms: u64,
 ) -> f32 {
     let base_opacity = (layer.properties.opacity as f32).clamp(0.0, 1.0);
 
     if let Some(group) = resolve_group_for_layer(layer, groups) {
         if let Some(effect) = group.dimmer_fx.as_ref().filter(|effect| effect.enabled) {
             let phase_offset = compute_group_phase_offset(layer, layers, group, effect);
-            return base_opacity * compute_dimmer_multiplier_at_time(effect, phase_offset, time_seconds);
+            return base_opacity
+                * compute_dimmer_multiplier_at_time(effect, bpm, phase_offset, now_ms);
         }
     }
 
     if let Some(effect) = layer.dimmer_fx.as_ref().filter(|effect| effect.enabled) {
-        return base_opacity * compute_dimmer_multiplier_at_time(effect, 0.0, time_seconds);
+        return base_opacity * compute_dimmer_multiplier_at_time(effect, bpm, 0.0, now_ms);
     }
 
     base_opacity
@@ -221,8 +276,7 @@ impl LayerUniforms {
         layer: &Layer,
         shared_input: Option<&SharedInputMapping>,
         opacity: f32,
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) -> Self {
         let props = &layer.properties;
         let input = &layer.input_transform;
@@ -232,35 +286,37 @@ impl LayerUniforms {
             0.0
         };
         let rot = input.rotation as f32;
-        let (shared_input_box, shared_input_transform, shared_input_rot) = if let Some(mapping) =
-            shared_input.filter(|mapping| mapping.enabled)
-        {
-            let rotation = mapping.rotation as f32;
-            (
-                [
-                    mapping.r#box[0] as f32,
-                    mapping.r#box[1] as f32,
-                    mapping.r#box[2] as f32,
-                    mapping.r#box[3] as f32,
-                ],
-                [
-                    mapping.offset_x as f32,
-                    mapping.offset_y as f32,
-                    mapping.scale_x as f32,
-                    mapping.scale_y as f32,
-                ],
-                [rotation.cos(), rotation.sin(), 1.0, 0.0],
-            )
-        } else {
-            ([0.0, 0.0, 1.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 0.0])
-        };
+        let (shared_input_box, shared_input_transform, shared_input_rot) =
+            if let Some(mapping) = shared_input.filter(|mapping| mapping.enabled) {
+                let rotation = mapping.rotation as f32;
+                (
+                    [
+                        mapping.r#box[0] as f32,
+                        mapping.r#box[1] as f32,
+                        mapping.r#box[2] as f32,
+                        mapping.r#box[3] as f32,
+                    ],
+                    [
+                        mapping.offset_x as f32,
+                        mapping.offset_y as f32,
+                        mapping.scale_x as f32,
+                        mapping.scale_y as f32,
+                    ],
+                    [rotation.cos(), rotation.sin(), 1.0, 0.0],
+                )
+            } else {
+                (
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [1.0, 0.0, 0.0, 0.0],
+                )
+            };
 
         // Pixel mapping
         let (pm_config, pm_anim, pm_transform, pm_world, pm_flags) =
             if let Some(ref pm) = layer.pixel_map {
                 if pm.enabled {
-                    let animated_phase =
-                        (bpm_phase * bpm_multiplier * pm.speed as f32).fract();
+                    let animated_phase = (bpm.phase * bpm.multiplier * pm.speed as f32).fract();
                     (
                         [
                             1.0,
@@ -377,7 +433,17 @@ mod tests {
     #[test]
     fn layer_uniforms_disable_shared_input_without_mapping() {
         let layer = Layer::new_quad("Q", 0);
-        let uniforms = LayerUniforms::from_layer(&layer, None, 1.0, 0.25, 1.0);
+        let uniforms = LayerUniforms::from_layer(
+            &layer,
+            None,
+            1.0,
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.25,
+                multiplier: 1.0,
+                phase_origin_ms: 0,
+            },
+        );
         assert_eq!(uniforms.shared_input_rot[2], 0.0);
         assert_eq!(uniforms.shared_input_box, [0.0, 0.0, 1.0, 1.0]);
     }
@@ -394,7 +460,17 @@ mod tests {
             scale_x: 2.0,
             scale_y: 3.0,
         };
-        let uniforms = LayerUniforms::from_layer(&layer, Some(&mapping), 1.0, 0.25, 1.0);
+        let uniforms = LayerUniforms::from_layer(
+            &layer,
+            Some(&mapping),
+            1.0,
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.25,
+                multiplier: 1.0,
+                phase_origin_ms: 0,
+            },
+        );
         assert_eq!(uniforms.shared_input_box, [0.1, 0.2, 0.3, 0.4]);
         assert_eq!(uniforms.shared_input_transform, [0.5, -0.25, 2.0, 3.0]);
         assert_eq!(uniforms.shared_input_rot[2], 1.0);
@@ -430,7 +506,18 @@ mod tests {
             ..DimmerEffect::default()
         });
 
-        let opacity = compute_effective_opacity_at_time(&layer, &[layer.clone()], &[], 0.5);
+        let opacity = compute_effective_opacity_at_time(
+            &layer,
+            &[layer.clone()],
+            &[],
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.0,
+                multiplier: 1.0,
+                phase_origin_ms: 1_000,
+            },
+            1_300,
+        );
         assert_eq!(opacity, 0.0);
     }
 
@@ -463,8 +550,94 @@ mod tests {
         };
 
         let layers = vec![layer_a.clone(), layer_b];
-        let opacity = compute_effective_opacity_at_time(&layer_a, &layers, &[group], 0.6);
+        let opacity = compute_effective_opacity_at_time(
+            &layer_a,
+            &layers,
+            &[group],
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.0,
+                multiplier: 1.0,
+                phase_origin_ms: 1_000,
+            },
+            1_300,
+        );
         assert_eq!(opacity, 0.0);
+    }
+
+    #[test]
+    fn compute_effective_opacity_supports_multi_beat_cycles() {
+        let mut layer = Layer::new_quad("Q", 0);
+        layer.dimmer_fx = Some(DimmerEffect {
+            speed: 4.0,
+            phase_offset: 0.0,
+            curve: DimmerCurve::Square,
+            duty_cycle: 0.5,
+            ..DimmerEffect::default()
+        });
+
+        let early = compute_effective_opacity_at_time(
+            &layer,
+            &[layer.clone()],
+            &[],
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.0,
+                multiplier: 1.0,
+                phase_origin_ms: 1_000,
+            },
+            1_500,
+        );
+        let late = compute_effective_opacity_at_time(
+            &layer,
+            &[layer.clone()],
+            &[],
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.0,
+                multiplier: 1.0,
+                phase_origin_ms: 1_000,
+            },
+            2_500,
+        );
+
+        assert_eq!(early, 1.0);
+        assert_eq!(late, 0.0);
+    }
+
+    #[test]
+    fn group_phase_offsets_do_not_duplicate_endpoints() {
+        let mut layers = vec![
+            Layer::new_quad("A", 0),
+            Layer::new_quad("B", 1),
+            Layer::new_quad("C", 2),
+            Layer::new_quad("D", 3),
+        ];
+        for layer in &mut layers {
+            layer.group_id = Some("group-1".to_string());
+        }
+        let effect = DimmerEffect {
+            phase_spread: 1.0,
+            phase_direction: PhaseDirection::Forward,
+            ..DimmerEffect::default()
+        };
+        let group = LayerGroup {
+            id: "group-1".to_string(),
+            name: "Group".to_string(),
+            layer_ids: layers.iter().map(|layer| layer.id.clone()).collect(),
+            visible: true,
+            locked: false,
+            pixel_map: None,
+            dimmer_fx: Some(effect.clone()),
+            shared_input: None,
+        };
+
+        let offsets: Vec<f32> = layers
+            .iter()
+            .map(|layer| compute_group_phase_offset(layer, &layers, &group, &effect))
+            .collect();
+
+        assert_eq!(offsets, vec![0.0, 0.25, 0.5, 0.75]);
     }
 }
 
@@ -600,35 +773,34 @@ impl RenderPipeline {
                 push_constant_ranges: &[],
             });
 
-        let calibration_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Calibration Render Pipeline"),
-                layout: Some(&calibration_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &calibration_shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &calibration_shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: surface_format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
+        let calibration_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Calibration Render Pipeline"),
+            layout: Some(&calibration_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &calibration_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &calibration_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
 
         // --- Face calibration pipeline (vertex buffer + alpha blend overlay) ---
         let face_calib_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -911,10 +1083,22 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
             // TL=0.0,0.0  TR=1.0,0.0  BR=1.0,1.0  BL=0.0,1.0
             let base_uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
             let vertices = vec![
-                LayerVertex { position: c[0], tex_coord: [base_uvs[0][0] * q[0], base_uvs[0][1] * q[0], q[0]] },
-                LayerVertex { position: c[1], tex_coord: [base_uvs[1][0] * q[1], base_uvs[1][1] * q[1], q[1]] },
-                LayerVertex { position: c[2], tex_coord: [base_uvs[2][0] * q[2], base_uvs[2][1] * q[2], q[2]] },
-                LayerVertex { position: c[3], tex_coord: [base_uvs[3][0] * q[3], base_uvs[3][1] * q[3], q[3]] },
+                LayerVertex {
+                    position: c[0],
+                    tex_coord: [base_uvs[0][0] * q[0], base_uvs[0][1] * q[0], q[0]],
+                },
+                LayerVertex {
+                    position: c[1],
+                    tex_coord: [base_uvs[1][0] * q[1], base_uvs[1][1] * q[1], q[1]],
+                },
+                LayerVertex {
+                    position: c[2],
+                    tex_coord: [base_uvs[2][0] * q[2], base_uvs[2][1] * q[2], q[2]],
+                },
+                LayerVertex {
+                    position: c[3],
+                    tex_coord: [base_uvs[3][0] * q[3], base_uvs[3][1] * q[3], q[3]],
+                },
             ];
             let indices = vec![0, 1, 2, 0, 2, 3];
             (vertices, indices)
@@ -937,7 +1121,9 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
             let indices = vec![0, 1, 2];
             (vertices, indices)
         }
-        LayerGeometry::Mesh { cols, rows, points, .. } => {
+        LayerGeometry::Mesh {
+            cols, rows, points, ..
+        } => {
             let cols = *cols as usize;
             let rows = *rows as usize;
 
@@ -960,10 +1146,14 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
                     ];
                     let qs = compute_quad_q_weights(&cell_corners);
                     // qs order: TL, TR, BR, BL
-                    q_accum[tl_idx] += qs[0]; q_count[tl_idx] += 1;
-                    q_accum[tr_idx] += qs[1]; q_count[tr_idx] += 1;
-                    q_accum[br_idx] += qs[2]; q_count[br_idx] += 1;
-                    q_accum[bl_idx] += qs[3]; q_count[bl_idx] += 1;
+                    q_accum[tl_idx] += qs[0];
+                    q_count[tl_idx] += 1;
+                    q_accum[tr_idx] += qs[1];
+                    q_count[tr_idx] += 1;
+                    q_accum[br_idx] += qs[2];
+                    q_count[br_idx] += 1;
+                    q_accum[bl_idx] += qs[3];
+                    q_count[bl_idx] += 1;
                 }
             }
 
@@ -973,7 +1163,11 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
                 for c in 0..=cols {
                     let idx = r * (cols + 1) + c;
                     let pt = &points[idx];
-                    let q = if q_count[idx] > 0 { q_accum[idx] / q_count[idx] as f32 } else { 1.0 };
+                    let q = if q_count[idx] > 0 {
+                        q_accum[idx] / q_count[idx] as f32
+                    } else {
+                        1.0
+                    };
                     let u = c as f32 / cols as f32;
                     let v = r as f32 / rows as f32;
                     vertices.push(LayerVertex {
@@ -1020,10 +1214,22 @@ pub fn generate_layer_mesh(geometry: &LayerGeometry) -> (Vec<LayerVertex>, Vec<u
             let q = compute_quad_q_weights(&corner_world);
             let base_uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
             let vertices = vec![
-                LayerVertex { position: corner_world[0], tex_coord: [base_uvs[0][0] * q[0], base_uvs[0][1] * q[0], q[0]] },
-                LayerVertex { position: corner_world[1], tex_coord: [base_uvs[1][0] * q[1], base_uvs[1][1] * q[1], q[1]] },
-                LayerVertex { position: corner_world[2], tex_coord: [base_uvs[2][0] * q[2], base_uvs[2][1] * q[2], q[2]] },
-                LayerVertex { position: corner_world[3], tex_coord: [base_uvs[3][0] * q[3], base_uvs[3][1] * q[3], q[3]] },
+                LayerVertex {
+                    position: corner_world[0],
+                    tex_coord: [base_uvs[0][0] * q[0], base_uvs[0][1] * q[0], q[0]],
+                },
+                LayerVertex {
+                    position: corner_world[1],
+                    tex_coord: [base_uvs[1][0] * q[1], base_uvs[1][1] * q[1], q[1]],
+                },
+                LayerVertex {
+                    position: corner_world[2],
+                    tex_coord: [base_uvs[2][0] * q[2], base_uvs[2][1] * q[2], q[2]],
+                },
+                LayerVertex {
+                    position: corner_world[3],
+                    tex_coord: [base_uvs[3][0] * q[3], base_uvs[3][1] * q[3], q[3]],
+                },
             ];
             let indices = vec![0, 1, 2, 0, 2, 3];
             (vertices, indices)
@@ -1047,10 +1253,22 @@ pub fn generate_layer_calibration_mesh(geometry: &LayerGeometry) -> (Vec<LayerVe
             let q = compute_quad_q_weights(&c);
             let base_uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
             let vertices = vec![
-                LayerVertex { position: c[0], tex_coord: [base_uvs[0][0] * q[0], base_uvs[0][1] * q[0], q[0]] },
-                LayerVertex { position: c[1], tex_coord: [base_uvs[1][0] * q[1], base_uvs[1][1] * q[1], q[1]] },
-                LayerVertex { position: c[2], tex_coord: [base_uvs[2][0] * q[2], base_uvs[2][1] * q[2], q[2]] },
-                LayerVertex { position: c[3], tex_coord: [base_uvs[3][0] * q[3], base_uvs[3][1] * q[3], q[3]] },
+                LayerVertex {
+                    position: c[0],
+                    tex_coord: [base_uvs[0][0] * q[0], base_uvs[0][1] * q[0], q[0]],
+                },
+                LayerVertex {
+                    position: c[1],
+                    tex_coord: [base_uvs[1][0] * q[1], base_uvs[1][1] * q[1], q[1]],
+                },
+                LayerVertex {
+                    position: c[2],
+                    tex_coord: [base_uvs[2][0] * q[2], base_uvs[2][1] * q[2], q[2]],
+                },
+                LayerVertex {
+                    position: c[3],
+                    tex_coord: [base_uvs[3][0] * q[3], base_uvs[3][1] * q[3], q[3]],
+                },
             ];
             let indices = vec![0, 1, 2, 0, 2, 3];
             (vertices, indices)
@@ -1058,9 +1276,18 @@ pub fn generate_layer_calibration_mesh(geometry: &LayerGeometry) -> (Vec<LayerVe
         LayerGeometry::Triangle { vertices: verts } => {
             // Triangles have no perspective distortion — keep q=1.0
             let vertices = vec![
-                LayerVertex { position: [verts[0].x as f32, verts[0].y as f32], tex_coord: [0.5, 0.0, 1.0] },
-                LayerVertex { position: [verts[1].x as f32, verts[1].y as f32], tex_coord: [1.0, 1.0, 1.0] },
-                LayerVertex { position: [verts[2].x as f32, verts[2].y as f32], tex_coord: [0.0, 1.0, 1.0] },
+                LayerVertex {
+                    position: [verts[0].x as f32, verts[0].y as f32],
+                    tex_coord: [0.5, 0.0, 1.0],
+                },
+                LayerVertex {
+                    position: [verts[1].x as f32, verts[1].y as f32],
+                    tex_coord: [1.0, 1.0, 1.0],
+                },
+                LayerVertex {
+                    position: [verts[2].x as f32, verts[2].y as f32],
+                    tex_coord: [0.0, 1.0, 1.0],
+                },
             ];
             let indices = vec![0, 1, 2];
             (vertices, indices)
@@ -1088,15 +1315,29 @@ pub fn generate_layer_calibration_mesh(geometry: &LayerGeometry) -> (Vec<LayerVe
             let q = compute_quad_q_weights(&corner_world);
             let base_uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
             let vertices = vec![
-                LayerVertex { position: corner_world[0], tex_coord: [base_uvs[0][0] * q[0], base_uvs[0][1] * q[0], q[0]] },
-                LayerVertex { position: corner_world[1], tex_coord: [base_uvs[1][0] * q[1], base_uvs[1][1] * q[1], q[1]] },
-                LayerVertex { position: corner_world[2], tex_coord: [base_uvs[2][0] * q[2], base_uvs[2][1] * q[2], q[2]] },
-                LayerVertex { position: corner_world[3], tex_coord: [base_uvs[3][0] * q[3], base_uvs[3][1] * q[3], q[3]] },
+                LayerVertex {
+                    position: corner_world[0],
+                    tex_coord: [base_uvs[0][0] * q[0], base_uvs[0][1] * q[0], q[0]],
+                },
+                LayerVertex {
+                    position: corner_world[1],
+                    tex_coord: [base_uvs[1][0] * q[1], base_uvs[1][1] * q[1], q[1]],
+                },
+                LayerVertex {
+                    position: corner_world[2],
+                    tex_coord: [base_uvs[2][0] * q[2], base_uvs[2][1] * q[2], q[2]],
+                },
+                LayerVertex {
+                    position: corner_world[3],
+                    tex_coord: [base_uvs[3][0] * q[3], base_uvs[3][1] * q[3], q[3]],
+                },
             ];
             let indices = vec![0, 1, 2, 0, 2, 3];
             (vertices, indices)
         }
-        LayerGeometry::Mesh { cols, rows, points, .. } => {
+        LayerGeometry::Mesh {
+            cols, rows, points, ..
+        } => {
             // Shared-vertex topology with averaged q weights — mirrors generate_layer_mesh
             let cols = *cols as usize;
             let rows = *rows as usize;
@@ -1117,10 +1358,14 @@ pub fn generate_layer_calibration_mesh(geometry: &LayerGeometry) -> (Vec<LayerVe
                         [points[bl_idx].x as f32, points[bl_idx].y as f32],
                     ];
                     let qs = compute_quad_q_weights(&cell_corners);
-                    q_accum[tl_idx] += qs[0]; q_count[tl_idx] += 1;
-                    q_accum[tr_idx] += qs[1]; q_count[tr_idx] += 1;
-                    q_accum[br_idx] += qs[2]; q_count[br_idx] += 1;
-                    q_accum[bl_idx] += qs[3]; q_count[bl_idx] += 1;
+                    q_accum[tl_idx] += qs[0];
+                    q_count[tl_idx] += 1;
+                    q_accum[tr_idx] += qs[1];
+                    q_count[tr_idx] += 1;
+                    q_accum[br_idx] += qs[2];
+                    q_count[br_idx] += 1;
+                    q_accum[bl_idx] += qs[3];
+                    q_count[bl_idx] += 1;
                 }
             }
 
@@ -1129,7 +1374,11 @@ pub fn generate_layer_calibration_mesh(geometry: &LayerGeometry) -> (Vec<LayerVe
                 for c in 0..=cols {
                     let idx = r * (cols + 1) + c;
                     let pt = &points[idx];
-                    let q = if q_count[idx] > 0 { q_accum[idx] / q_count[idx] as f32 } else { 1.0 };
+                    let q = if q_count[idx] > 0 {
+                        q_accum[idx] / q_count[idx] as f32
+                    } else {
+                        1.0
+                    };
                     let u = c as f32 / cols as f32;
                     let v = r as f32 / rows as f32;
                     vertices.push(LayerVertex {

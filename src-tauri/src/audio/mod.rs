@@ -64,6 +64,10 @@ fn default_multiplier() -> f32 {
     1.0
 }
 
+fn default_phase_origin_ms() -> u64 {
+    unix_ms_now()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BpmState {
@@ -75,6 +79,8 @@ pub struct BpmState {
     pub selected_device_id: Option<String>,
     pub selected_device_name: Option<String>,
     pub last_beat_ms: u64,
+    #[serde(default = "default_phase_origin_ms")]
+    pub phase_origin_ms: u64,
     #[serde(default = "default_multiplier")]
     pub multiplier: f32,
     #[serde(default)]
@@ -92,6 +98,7 @@ impl Default for BpmState {
             selected_device_id: None,
             selected_device_name: None,
             last_beat_ms: 0,
+            phase_origin_ms: default_phase_origin_ms(),
             multiplier: 1.0,
             source: BpmSource::default(),
         }
@@ -221,7 +228,6 @@ struct WorkerState {
     beat_history: Vec<Instant>,
     tap_history: Vec<Instant>,
     last_beat_instant: Option<Instant>,
-    start_instant: Instant,
     last_tick: Instant,
 }
 
@@ -247,7 +253,6 @@ impl WorkerState {
             beat_history: Vec::new(),
             tap_history: Vec::new(),
             last_beat_instant: None,
-            start_instant: Instant::now(),
             last_tick: Instant::now(),
         }
     }
@@ -293,7 +298,9 @@ impl WorkerState {
         };
 
         for (index, device) in devices.enumerate() {
-            let name = device.name().unwrap_or_else(|_| format!("Input {}", index + 1));
+            let name = device
+                .name()
+                .unwrap_or_else(|_| format!("Input {}", index + 1));
             let cfg = device.default_input_config().ok();
             out.push(AudioInputDevice {
                 id: device_id(&name),
@@ -335,7 +342,9 @@ impl WorkerState {
             if let Some(device_id) = self.state.selected_device_id.clone() {
                 let (device, device_name) = self.resolve_input_device(&device_id)?;
                 self.start_stream(device, device_id, device_name)?;
-            } else if let Some(default) = self.list_input_devices().into_iter().find(|d| d.is_default) {
+            } else if let Some(default) =
+                self.list_input_devices().into_iter().find(|d| d.is_default)
+            {
                 let (device, device_name) = self.resolve_input_device(&default.id)?;
                 self.start_stream(device, default.id, device_name)?;
             }
@@ -347,6 +356,18 @@ impl WorkerState {
     fn get_bpm_state(&mut self) -> BpmState {
         self.tick();
         self.state.clone()
+    }
+
+    fn align_phase_origin(&mut self, now_ms: u64, beat_interval_ms: f32, reset_cycle: bool) {
+        if reset_cycle || self.state.phase_origin_ms == 0 {
+            self.state.phase_origin_ms = now_ms;
+            return;
+        }
+
+        let elapsed_beats =
+            (now_ms.saturating_sub(self.state.phase_origin_ms) as f32 / beat_interval_ms).round();
+        let aligned = (now_ms as f32 - elapsed_beats.max(0.0) * beat_interval_ms).round();
+        self.state.phase_origin_ms = aligned.max(0.0) as u64;
     }
 
     fn tap_tempo(&mut self) -> BpmState {
@@ -373,8 +394,10 @@ impl WorkerState {
                 if self.state.source == BpmSource::Manual {
                     self.state.bpm = bpm;
                 }
+                let now_ms = unix_ms_now();
                 self.last_beat_instant = Some(now);
-                self.state.last_beat_ms = unix_ms_now();
+                self.state.last_beat_ms = now_ms;
+                self.align_phase_origin(now_ms, 60_000.0 / bpm.max(1.0), true);
                 self.beat_decay = 1.0;
             }
         }
@@ -396,6 +419,7 @@ impl WorkerState {
         if self.last_beat_instant.is_none() {
             self.last_beat_instant = Some(Instant::now());
         }
+        self.state.phase_origin_ms = unix_ms_now();
         self.get_bpm_state()
     }
 
@@ -406,6 +430,7 @@ impl WorkerState {
             beat: state.beat.clamp(0.0, 1.0),
             level: state.level.clamp(0.0, 1.0),
             phase: state.phase.fract(),
+            phase_origin_ms: state.phase_origin_ms,
             multiplier: state.multiplier,
         }
     }
@@ -417,7 +442,9 @@ impl WorkerState {
             .map_err(|err| format!("Failed to enumerate input devices: {}", err))?;
 
         for (index, device) in devices.enumerate() {
-            let name = device.name().unwrap_or_else(|_| format!("Input {}", index + 1));
+            let name = device
+                .name()
+                .unwrap_or_else(|_| format!("Input {}", index + 1));
             let id = device_id(&name);
             if id == wanted_id {
                 return Ok((device, name));
@@ -459,7 +486,9 @@ impl WorkerState {
                 .build_input_stream(
                     &stream_cfg,
                     move |data: &[i16], _| {
-                        push_samples(data, channels, &sample_buffer, |v| v as f32 / i16::MAX as f32)
+                        push_samples(data, channels, &sample_buffer, |v| {
+                            v as f32 / i16::MAX as f32
+                        })
                     },
                     err_fn,
                     None,
@@ -576,12 +605,15 @@ impl WorkerState {
             self.state.bpm = 120.0;
         }
 
-        // Always compute continuous phase from time reference
-        let beat_interval = 60.0 / self.state.bpm.max(1.0);
-        let time_ref = self.last_beat_instant.unwrap_or(self.start_instant);
-        self.state.phase = (now.saturating_duration_since(time_ref).as_secs_f32()
-            / beat_interval)
-            .fract();
+        let now_ms = unix_ms_now();
+        let beat_interval_ms = 60_000.0 / self.state.bpm.max(1.0);
+        if beat_triggered {
+            self.align_phase_origin(now_ms, beat_interval_ms, false);
+        } else if self.state.phase_origin_ms == 0 {
+            self.state.phase_origin_ms = now_ms;
+        }
+        self.state.phase =
+            (now_ms.saturating_sub(self.state.phase_origin_ms) as f32 / beat_interval_ms).fract();
 
         let attack = self.config.attack.clamp(0.05, 1.0);
         let decay = self.config.decay.clamp(0.05, 0.99);

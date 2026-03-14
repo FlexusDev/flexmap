@@ -1,5 +1,5 @@
-pub mod commands;
 pub mod audio;
+pub mod commands;
 pub mod input;
 pub mod persistence;
 pub mod renderer;
@@ -31,7 +31,8 @@ mod webkit_console {
     /// Send a message that returns an `id` (pointer).
     #[inline]
     unsafe fn msg_id(recv: Id, sel: Sel) -> Id {
-        let f: unsafe extern "C" fn(Id, Sel) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
+        let f: unsafe extern "C" fn(Id, Sel) -> Id =
+            std::mem::transmute(objc_msgSend as *const c_void);
         f(recv, sel)
     }
 
@@ -94,10 +95,9 @@ mod webkit_console {
         let added = class_addMethod(
             cls,
             sel,
-            std::mem::transmute::<
-                unsafe extern "C" fn(Id, Sel, Id, Id),
-                unsafe extern "C" fn(),
-            >(console_log_imp),
+            std::mem::transmute::<unsafe extern "C" fn(Id, Sel, Id, Id), unsafe extern "C" fn()>(
+                console_log_imp,
+            ),
             c"v@:@@".as_ptr(),
         );
 
@@ -114,8 +114,7 @@ mod webkit_console {
 #[cfg(windows)]
 mod webview2_cdp {
     use webview2_com::{
-        CallDevToolsProtocolMethodCompletedHandler,
-        DevToolsProtocolEventReceivedEventHandler,
+        CallDevToolsProtocolMethodCompletedHandler, DevToolsProtocolEventReceivedEventHandler,
         Microsoft::Web::WebView2::Win32::ICoreWebView2,
     };
     use windows::core::{PCWSTR, PWSTR};
@@ -124,7 +123,8 @@ mod webview2_cdp {
     /// Subscribe to one CDP event, forwarding output to the log.
     unsafe fn subscribe(webview: &ICoreWebView2, event_name: &str) {
         let ev: Vec<u16> = event_name.encode_utf16().chain(Some(0)).collect();
-        let receiver = match webview.GetDevToolsProtocolEventReceiver(PCWSTR::from_raw(ev.as_ptr())) {
+        let receiver = match webview.GetDevToolsProtocolEventReceiver(PCWSTR::from_raw(ev.as_ptr()))
+        {
             Ok(r) => r,
             Err(e) => {
                 log::warn!("[webview_native] CDP receiver failed for {event_name}: {e:?}");
@@ -133,8 +133,8 @@ mod webview2_cdp {
         };
 
         let en = event_name.to_string();
-        let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(
-            move |_sender, args| {
+        let handler =
+            DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
                     unsafe {
                         let mut json = PWSTR::null();
@@ -148,8 +148,7 @@ mod webview2_cdp {
                     }
                 }
                 Ok(())
-            },
-        ));
+            }));
 
         let mut token: i64 = 0;
         if let Err(e) = receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) {
@@ -163,9 +162,10 @@ mod webview2_cdp {
         for domain in ["Runtime.enable", "Log.enable"] {
             let m: Vec<u16> = domain.encode_utf16().chain(Some(0)).collect();
             let p: Vec<u16> = "{}".encode_utf16().chain(Some(0)).collect();
-            let handler = CallDevToolsProtocolMethodCompletedHandler::create(
-                Box::new(|_result, _json| Ok(())),
-            );
+            let handler =
+                CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_result, _json| {
+                    Ok(())
+                }));
             let _ = webview.CallDevToolsProtocolMethod(
                 PCWSTR::from_raw(m.as_ptr()),
                 PCWSTR::from_raw(p.as_ptr()),
@@ -181,22 +181,36 @@ mod webview2_cdp {
     }
 }
 
-use std::sync::Arc;
-use tauri::{Emitter, Manager};
-use scene::state::SceneState;
+use audio::BpmEngine;
+use commands::{CompositedPreviewCache, PreviewCache};
+use input::adapter::InputManager;
 use renderer::engine::RenderState;
 use renderer::projector::GpuProjector;
-use input::adapter::InputManager;
-use audio::BpmEngine;
-use commands::{PreviewCache, CompositedPreviewCache};
+use scene::state::SceneState;
+use std::sync::Arc;
+use tauri::{Emitter, Manager};
 
-fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+fn build_app_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
     let file_new = MenuItem::with_id(app, "app.new", "New Project", true, Some("CmdOrCtrl+N"))?;
-    let file_open = MenuItem::with_id(app, "app.open", "Open Project...", true, Some("CmdOrCtrl+O"))?;
+    let file_open = MenuItem::with_id(
+        app,
+        "app.open",
+        "Open Project...",
+        true,
+        Some("CmdOrCtrl+O"),
+    )?;
     let file_save = MenuItem::with_id(app, "app.save", "Save", true, Some("CmdOrCtrl+S"))?;
-    let file_save_as = MenuItem::with_id(app, "app.save_as", "Save As...", true, Some("CmdOrCtrl+Shift+S"))?;
+    let file_save_as = MenuItem::with_id(
+        app,
+        "app.save_as",
+        "Save As...",
+        true,
+        Some("CmdOrCtrl+Shift+S"),
+    )?;
     let file_sep_1 = PredefinedMenuItem::separator(app)?;
     let file_sep_2 = PredefinedMenuItem::separator(app)?;
     let file_close = PredefinedMenuItem::close_window(app, None)?;
@@ -217,7 +231,8 @@ fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result
 
     let edit_undo = MenuItem::with_id(app, "app.undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
     let edit_redo = MenuItem::with_id(app, "app.redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;
-    let edit_duplicate = MenuItem::with_id(app, "app.duplicate", "Duplicate", true, Some("CmdOrCtrl+D"))?;
+    let edit_duplicate =
+        MenuItem::with_id(app, "app.duplicate", "Duplicate", true, Some("CmdOrCtrl+D"))?;
     let edit_sep_1 = PredefinedMenuItem::separator(app)?;
     let edit_sep_2 = PredefinedMenuItem::separator(app)?;
     let edit_cut = PredefinedMenuItem::cut(app, None)?;
@@ -241,8 +256,13 @@ fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result
         ],
     )?;
 
-    let view_projector =
-        MenuItem::with_id(app, "app.toggle_projector", "Toggle Projector", true, Some("CmdOrCtrl+P"))?;
+    let view_projector = MenuItem::with_id(
+        app,
+        "app.toggle_projector",
+        "Toggle Projector",
+        true,
+        Some("CmdOrCtrl+P"),
+    )?;
     let view_submenu = Submenu::with_items(app, "View", true, &[&view_projector])?;
 
     #[cfg(target_os = "macos")]
@@ -275,7 +295,10 @@ fn build_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result
     };
 
     #[cfg(target_os = "macos")]
-    return Menu::with_items(app, &[&app_submenu, &file_submenu, &edit_submenu, &view_submenu]);
+    return Menu::with_items(
+        app,
+        &[&app_submenu, &file_submenu, &edit_submenu, &view_submenu],
+    );
 
     #[cfg(not(target_os = "macos"))]
     return Menu::with_items(app, &[&file_submenu, &edit_submenu, &view_submenu]);
@@ -575,7 +598,12 @@ pub fn run() {
                         s
                     };
 
-                    render_state.update_bpm(bpm_snapshot.phase, bpm_snapshot.multiplier);
+                    render_state.update_bpm(renderer::pipeline::BpmRenderSnapshot {
+                        bpm: bpm_snapshot.bpm,
+                        phase: bpm_snapshot.phase,
+                        multiplier: bpm_snapshot.multiplier,
+                        phase_origin_ms: bpm_snapshot.phase_origin_ms,
+                    });
 
                     let engine_state = app_handle_pump
                         .try_state::<Arc<parking_lot::RwLock<renderer::engine::RenderEngine>>>();
@@ -776,21 +804,20 @@ pub fn run() {
                             let pw = ((out_w as f32 * preview_quality) as u32).max(64);
                             let ph = ((out_h as f32 * preview_quality) as u32).max(64);
 
-                            let bpm_phase = *render_state.bpm_phase.read();
-                            let bpm_mult = *render_state.bpm_multiplier.read();
+                            let bpm = *render_state.bpm.read();
                             let calibration = render_state.calibration.read().clone();
 
                             let mut eng = engine_lock.write();
                             if eng.preview_width != pw || eng.preview_height != ph {
                                 eng.resize_preview(pw, ph);
                             }
-                            eng.prepare_all_buffers(&layer_snapshot, &group_snapshot, bpm_phase, bpm_mult);
+                            eng.prepare_all_buffers(&layer_snapshot, &group_snapshot, bpm);
+                            eng.refresh_dynamic_uniforms(&layer_snapshot, &group_snapshot, bpm);
                             let bpr = eng.render_preview(
                                 &layer_snapshot,
                                 &group_snapshot,
                                 &calibration,
-                                bpm_phase,
-                                bpm_mult,
+                                bpm,
                             );
                             let pixels = eng.read_preview_pixels(bpr);
                             drop(eng);

@@ -12,8 +12,8 @@ use wgpu::util::DeviceExt;
 use super::buffer_cache::BufferCache;
 use super::gpu::{FramePacingMode, GpuContext};
 use super::pipeline::{
-    BlendUniforms, CalibrationUniforms, LayerUniforms, LayerVertex, RenderPipeline,
-    blend_mode_to_u32, generate_layer_calibration_mesh, generate_layer_mesh,
+    blend_mode_to_u32, generate_layer_calibration_mesh, generate_layer_mesh, BlendUniforms,
+    BpmRenderSnapshot, CalibrationUniforms, LayerUniforms, LayerVertex, RenderPipeline,
 };
 use super::texture_manager::TextureManager;
 use crate::scene::group::LayerGroup;
@@ -32,10 +32,8 @@ pub struct RenderState {
     /// Monotonically increasing counter, bumped by update_layers().
     /// The projector uses this to skip prepare_all_buffers when layers haven't changed.
     pub layer_generation: AtomicU64,
-    /// BPM phase (0.0-1.0), updated by frame pump each tick
-    pub bpm_phase: RwLock<f32>,
-    /// BPM multiplier (0.25, 0.5, 1.0, 2.0, 4.0)
-    pub bpm_multiplier: RwLock<f32>,
+    /// Current BPM snapshot, updated by the frame pump each tick.
+    pub bpm: RwLock<BpmRenderSnapshot>,
     /// Preview quality as fraction of output resolution (0.25, 0.5, 0.75, 1.0)
     pub preview_quality: RwLock<f32>,
 }
@@ -51,8 +49,7 @@ impl RenderState {
             output_height: RwLock::new(1080),
             frame_pacing: RwLock::new(FramePacingMode::default()),
             layer_generation: AtomicU64::new(0),
-            bpm_phase: RwLock::new(0.0),
-            bpm_multiplier: RwLock::new(1.0),
+            bpm: RwLock::new(BpmRenderSnapshot::default()),
             preview_quality: RwLock::new(0.5),
         }
     }
@@ -86,9 +83,8 @@ impl RenderState {
         val
     }
 
-    pub fn update_bpm(&self, phase: f32, multiplier: f32) {
-        *self.bpm_phase.write() = phase;
-        *self.bpm_multiplier.write() = multiplier;
+    pub fn update_bpm(&self, bpm: BpmRenderSnapshot) {
+        *self.bpm.write() = bpm;
     }
 
     pub fn set_preview_quality(&self, quality: f32) {
@@ -255,22 +251,30 @@ impl RenderEngine {
         let (layer_temp_texture, layer_temp_view) =
             Self::create_offscreen_target(&gpu.device, width, height, surface_format);
 
-        let blit_cache = Self::build_blit_cache(
-            &gpu.device,
-            &pipeline,
-            &offscreen_view,
-            &white_texture_view,
-        );
+        let blit_cache =
+            Self::build_blit_cache(&gpu.device, &pipeline, &offscreen_view, &white_texture_view);
 
         // Create preview offscreen at 50% default (960x540 for 1920x1080)
         let preview_width = (width / 2).max(64);
         let preview_height = (height / 2).max(64);
-        let (preview_texture, preview_view) =
-            Self::create_offscreen_target(&gpu.device, preview_width, preview_height, surface_format);
-        let (preview_ping_pong, preview_ping_pong_view) =
-            Self::create_offscreen_target(&gpu.device, preview_width, preview_height, surface_format);
-        let (preview_layer_temp, preview_layer_temp_view) =
-            Self::create_offscreen_target(&gpu.device, preview_width, preview_height, surface_format);
+        let (preview_texture, preview_view) = Self::create_offscreen_target(
+            &gpu.device,
+            preview_width,
+            preview_height,
+            surface_format,
+        );
+        let (preview_ping_pong, preview_ping_pong_view) = Self::create_offscreen_target(
+            &gpu.device,
+            preview_width,
+            preview_height,
+            surface_format,
+        );
+        let (preview_layer_temp, preview_layer_temp_view) = Self::create_offscreen_target(
+            &gpu.device,
+            preview_width,
+            preview_height,
+            surface_format,
+        );
 
         let preview_bytes_per_row = (preview_width * 4).next_multiple_of(256);
         let preview_staging_size = (preview_bytes_per_row * preview_height) as u64;
@@ -281,12 +285,8 @@ impl RenderEngine {
             mapped_at_creation: false,
         });
 
-        let preview_blit_cache = Self::build_blit_cache(
-            &gpu.device,
-            &pipeline,
-            &preview_view,
-            &white_texture_view,
-        );
+        let preview_blit_cache =
+            Self::build_blit_cache(&gpu.device, &pipeline, &preview_view, &white_texture_view);
 
         Self {
             gpu,
@@ -424,25 +424,21 @@ impl RenderEngine {
         layers: &[Layer],
         groups: &[LayerGroup],
         calibration: &CalibrationConfig,
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) -> u32 {
         let bytes_per_row = (self.preview_width * 4).next_multiple_of(256);
 
         // Render the scene into the preview offscreen using the preview-sized textures.
         // We temporarily use preview_texture/preview_ping_pong/preview_layer_temp as
         // the render targets by calling a dedicated preview scene render method.
-        let scene_cmd = self.render_scene_to_preview(
-            layers,
-            groups,
-            calibration,
-            bpm_phase,
-            bpm_multiplier,
-        );
+        let scene_cmd = self.render_scene_to_preview(layers, groups, calibration, bpm);
 
-        let mut encoder = self.gpu.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("Preview Readback") },
-        );
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Preview Readback"),
+            });
 
         // Copy preview texture -> staging buffer
         encoder.copy_texture_to_buffer(
@@ -478,8 +474,7 @@ impl RenderEngine {
         layers: &[Layer],
         groups: &[LayerGroup],
         calibration: &CalibrationConfig,
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) -> wgpu::CommandBuffer {
         let mut encoder = self
             .gpu
@@ -494,8 +489,7 @@ impl RenderEngine {
                     &mut encoder,
                     layers,
                     groups,
-                    bpm_phase,
-                    bpm_multiplier,
+                    bpm,
                     &self.preview_texture,
                     &self.preview_view,
                     &self.preview_ping_pong,
@@ -504,10 +498,18 @@ impl RenderEngine {
                     self.preview_width,
                     self.preview_height,
                 );
-                if let Some(target_layer) = layers.iter().find(|l| l.id == target.layer_id && l.visible) {
+                if let Some(target_layer) =
+                    layers.iter().find(|l| l.id == target.layer_id && l.visible)
+                {
                     let (verts, idxs) = generate_layer_calibration_mesh(&target_layer.geometry);
                     if !verts.is_empty() {
-                        self.render_face_calibration_pass_to(&mut encoder, calibration, &verts, &idxs, &self.preview_view);
+                        self.render_face_calibration_pass_to(
+                            &mut encoder,
+                            calibration,
+                            &verts,
+                            &idxs,
+                            &self.preview_view,
+                        );
                     }
                 }
             } else {
@@ -533,8 +535,7 @@ impl RenderEngine {
                 &mut encoder,
                 layers,
                 groups,
-                bpm_phase,
-                bpm_multiplier,
+                bpm,
                 &self.preview_texture,
                 &self.preview_view,
                 &self.preview_ping_pong,
@@ -587,10 +588,9 @@ impl RenderEngine {
         &mut self,
         layers: &[Layer],
         groups: &[LayerGroup],
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) {
-        let dimmer_time_seconds = super::pipeline::current_dimmer_time_seconds();
+        let dimmer_now_ms = super::pipeline::current_dimmer_time_millis();
         let layer_ids: Vec<String> = layers.iter().map(|l| l.id.clone()).collect();
         self.buffer_cache.retain_layers(&layer_ids);
 
@@ -610,25 +610,39 @@ impl RenderEngine {
                 layers,
                 layer,
                 groups,
-                bpm_phase,
-                bpm_multiplier,
-                dimmer_time_seconds,
+                bpm,
+                dimmer_now_ms,
             );
         }
+    }
+
+    pub fn refresh_dynamic_uniforms(
+        &mut self,
+        layers: &[Layer],
+        groups: &[LayerGroup],
+        bpm: BpmRenderSnapshot,
+    ) {
+        let dimmer_now_ms = super::pipeline::current_dimmer_time_millis();
+        self.buffer_cache.refresh_dynamic_uniforms(
+            &self.gpu.queue,
+            layers,
+            groups,
+            bpm,
+            dimmer_now_ms,
+        );
     }
 
     /// Render the full scene to the offscreen texture.
     /// Uses multi-pass ping-pong compositing for complex blend modes.
     /// Returns the command buffer ready for submission.
     /// Call prepare_all_buffers() first if you want cache benefits.
-    /// `bpm_phase` and `bpm_multiplier` drive pixel mapping animation.
+    /// The BPM snapshot drives pixel mapping animation and synced dimmer timing.
     pub fn render_scene(
         &self,
         layers: &[Layer],
         groups: &[LayerGroup],
         calibration: &CalibrationConfig,
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) -> wgpu::CommandBuffer {
         let mut encoder = self
             .gpu
@@ -640,8 +654,10 @@ impl RenderEngine {
         if calibration.enabled {
             if let Some(ref target) = calibration.target_layer {
                 // Layer-level calibration: render scene normally then overlay pattern on target layer
-                self.render_layers_multipass(&mut encoder, layers, groups, bpm_phase, bpm_multiplier);
-                if let Some(target_layer) = layers.iter().find(|l| l.id == target.layer_id && l.visible) {
+                self.render_layers_multipass(&mut encoder, layers, groups, bpm);
+                if let Some(target_layer) =
+                    layers.iter().find(|l| l.id == target.layer_id && l.visible)
+                {
                     let (verts, idxs) = generate_layer_calibration_mesh(&target_layer.geometry);
                     if !verts.is_empty() {
                         self.render_face_calibration_pass(&mut encoder, calibration, &verts, &idxs);
@@ -668,7 +684,7 @@ impl RenderEngine {
             }
         } else {
             // Layer compositing with blend modes
-            self.render_layers_multipass(&mut encoder, layers, groups, bpm_phase, bpm_multiplier);
+            self.render_layers_multipass(&mut encoder, layers, groups, bpm);
         }
 
         encoder.finish()
@@ -687,10 +703,9 @@ impl RenderEngine {
         encoder: &mut wgpu::CommandEncoder,
         layers: &[Layer],
         groups: &[LayerGroup],
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) {
-        let dimmer_time_seconds = super::pipeline::current_dimmer_time_seconds();
+        let dimmer_now_ms = super::pipeline::current_dimmer_time_millis();
         let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
         sorted.sort_by_key(|l| l.z_index);
 
@@ -716,15 +731,7 @@ impl RenderEngine {
             });
 
             for layer in &sorted {
-                self.render_single_layer_hw(
-                    &mut pass,
-                    layers,
-                    layer,
-                    groups,
-                    bpm_phase,
-                    bpm_multiplier,
-                    dimmer_time_seconds,
-                );
+                self.render_single_layer_hw(&mut pass, layers, layer, groups, bpm, dimmer_now_ms);
             }
             return;
         }
@@ -783,9 +790,8 @@ impl RenderEngine {
                         layers,
                         sorted[i],
                         groups,
-                        bpm_phase,
-                        bpm_multiplier,
-                        dimmer_time_seconds,
+                        bpm,
+                        dimmer_now_ms,
                     );
                     i += 1;
                 }
@@ -816,9 +822,8 @@ impl RenderEngine {
                         layer,
                         groups,
                         true,
-                        bpm_phase,
-                        bpm_multiplier,
-                        dimmer_time_seconds,
+                        bpm,
+                        dimmer_now_ms,
                     );
                 }
 
@@ -840,50 +845,50 @@ impl RenderEngine {
                             });
 
                     // Source bind group (layer_temp)
-                    let source_bg =
-                        self.gpu
-                            .device
-                            .create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("Blend Source BG"),
-                                layout: &self.pipeline.blend_source_bind_group_layout,
-                                entries: &[
-                                    wgpu::BindGroupEntry {
-                                        binding: 0,
-                                        resource: wgpu::BindingResource::TextureView(
-                                            &self.layer_temp_view,
-                                        ),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 1,
-                                        resource: wgpu::BindingResource::Sampler(
-                                            &self.pipeline.sampler,
-                                        ),
-                                    },
-                                ],
-                            });
+                    let source_bg = self
+                        .gpu
+                        .device
+                        .create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("Blend Source BG"),
+                            layout: &self.pipeline.blend_source_bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &self.layer_temp_view,
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(
+                                        &self.pipeline.sampler,
+                                    ),
+                                },
+                            ],
+                        });
 
                     // Dest bind group (current offscreen)
-                    let dest_bg =
-                        self.gpu
-                            .device
-                            .create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("Blend Dest BG"),
-                                layout: &self.pipeline.blend_dest_bind_group_layout,
-                                entries: &[
-                                    wgpu::BindGroupEntry {
-                                        binding: 0,
-                                        resource: wgpu::BindingResource::TextureView(
-                                            &self.offscreen_view,
-                                        ),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 1,
-                                        resource: wgpu::BindingResource::Sampler(
-                                            &self.pipeline.sampler,
-                                        ),
-                                    },
-                                ],
-                            });
+                    let dest_bg = self
+                        .gpu
+                        .device
+                        .create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("Blend Dest BG"),
+                            layout: &self.pipeline.blend_dest_bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &self.offscreen_view,
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(
+                                        &self.pipeline.sampler,
+                                    ),
+                                },
+                            ],
+                        });
 
                     // Uniform bind group
                     let uniform_bg =
@@ -954,24 +959,14 @@ impl RenderEngine {
         layers: &[Layer],
         layer: &Layer,
         groups: &[LayerGroup],
-        bpm_phase: f32,
-        bpm_multiplier: f32,
-        dimmer_time_seconds: f32,
+        bpm: BpmRenderSnapshot,
+        dimmer_now_ms: u64,
     ) {
         match layer.blend_mode {
             BlendMode::Additive => pass.set_pipeline(&self.pipeline.additive_pipeline),
             _ => pass.set_pipeline(&self.pipeline.layer_pipeline),
         }
-        self.render_single_layer_to_pass(
-            pass,
-            layers,
-            layer,
-            groups,
-            false,
-            bpm_phase,
-            bpm_multiplier,
-            dimmer_time_seconds,
-        );
+        self.render_single_layer_to_pass(pass, layers, layer, groups, false, bpm, dimmer_now_ms);
     }
 
     /// Render a single layer's geometry into the current render pass.
@@ -984,9 +979,8 @@ impl RenderEngine {
         layer: &Layer,
         groups: &[LayerGroup],
         force_normal: bool,
-        bpm_phase: f32,
-        bpm_multiplier: f32,
-        dimmer_time_seconds: f32,
+        bpm: BpmRenderSnapshot,
+        dimmer_now_ms: u64,
     ) {
         if force_normal {
             pass.set_pipeline(&self.pipeline.layer_pipeline);
@@ -1019,10 +1013,10 @@ impl RenderEngine {
             layer,
             layers,
             groups,
-            dimmer_time_seconds,
+            bpm,
+            dimmer_now_ms,
         );
-        let uniforms =
-            LayerUniforms::from_layer(layer, shared_input, opacity, bpm_phase, bpm_multiplier);
+        let uniforms = LayerUniforms::from_layer(layer, shared_input, opacity, bpm);
         let uniform_buffer =
             self.gpu
                 .device
@@ -1056,23 +1050,23 @@ impl RenderEngine {
             });
 
         // Create vertex and index buffers
-        let vertex_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Layer Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+        let vertex_buffer = self
+            .gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Layer Vertex Buffer"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
 
-        let index_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Layer Index Buffer"),
-                    contents: bytemuck::cast_slice(&indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+        let index_buffer = self
+            .gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Layer Index Buffer"),
+                contents: bytemuck::cast_slice(&indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
 
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -1087,23 +1081,14 @@ impl RenderEngine {
         pass: &mut wgpu::RenderPass<'a>,
         layers: &[Layer],
         groups: &[LayerGroup],
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) {
-        let dimmer_time_seconds = super::pipeline::current_dimmer_time_seconds();
+        let dimmer_now_ms = super::pipeline::current_dimmer_time_millis();
         let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
         sorted.sort_by_key(|l| l.z_index);
 
         for layer in sorted {
-            self.render_single_layer_hw(
-                pass,
-                layers,
-                layer,
-                groups,
-                bpm_phase,
-                bpm_multiplier,
-                dimmer_time_seconds,
-            );
+            self.render_single_layer_hw(pass, layers, layer, groups, bpm, dimmer_now_ms);
         }
     }
 
@@ -1162,8 +1147,7 @@ impl RenderEngine {
         encoder: &mut wgpu::CommandEncoder,
         layers: &[Layer],
         groups: &[LayerGroup],
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
         target_texture: &wgpu::Texture,
         target_view: &wgpu::TextureView,
         ping_pong_texture: &wgpu::Texture,
@@ -1172,7 +1156,7 @@ impl RenderEngine {
         target_width: u32,
         target_height: u32,
     ) {
-        let dimmer_time_seconds = super::pipeline::current_dimmer_time_seconds();
+        let dimmer_now_ms = super::pipeline::current_dimmer_time_millis();
         let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
         sorted.sort_by_key(|l| l.z_index);
 
@@ -1196,15 +1180,7 @@ impl RenderEngine {
             });
 
             for layer in &sorted {
-                self.render_single_layer_hw(
-                    &mut pass,
-                    layers,
-                    layer,
-                    groups,
-                    bpm_phase,
-                    bpm_multiplier,
-                    dimmer_time_seconds,
-                );
+                self.render_single_layer_hw(&mut pass, layers, layer, groups, bpm, dimmer_now_ms);
             }
             return;
         }
@@ -1255,9 +1231,8 @@ impl RenderEngine {
                         layers,
                         sorted[i],
                         groups,
-                        bpm_phase,
-                        bpm_multiplier,
-                        dimmer_time_seconds,
+                        bpm,
+                        dimmer_now_ms,
                     );
                     i += 1;
                 }
@@ -1276,7 +1251,7 @@ impl RenderEngine {
                         })],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
-                            occlusion_query_set: None,
+                        occlusion_query_set: None,
                     });
                     self.render_single_layer_to_pass(
                         &mut temp_pass,
@@ -1284,9 +1259,8 @@ impl RenderEngine {
                         layer,
                         groups,
                         true,
-                        bpm_phase,
-                        bpm_multiplier,
-                        dimmer_time_seconds,
+                        bpm,
+                        dimmer_now_ms,
                     );
                 }
 
@@ -1306,41 +1280,45 @@ impl RenderEngine {
                                 usage: wgpu::BufferUsages::UNIFORM,
                             });
 
-                    let source_bg =
-                        self.gpu
-                            .device
-                            .create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("Blend Source BG"),
-                                layout: &self.pipeline.blend_source_bind_group_layout,
-                                entries: &[
-                                    wgpu::BindGroupEntry {
-                                        binding: 0,
-                                        resource: wgpu::BindingResource::TextureView(layer_temp_view),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 1,
-                                        resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
-                                    },
-                                ],
-                            });
+                    let source_bg = self
+                        .gpu
+                        .device
+                        .create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("Blend Source BG"),
+                            layout: &self.pipeline.blend_source_bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(layer_temp_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(
+                                        &self.pipeline.sampler,
+                                    ),
+                                },
+                            ],
+                        });
 
-                    let dest_bg =
-                        self.gpu
-                            .device
-                            .create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("Blend Dest BG"),
-                                layout: &self.pipeline.blend_dest_bind_group_layout,
-                                entries: &[
-                                    wgpu::BindGroupEntry {
-                                        binding: 0,
-                                        resource: wgpu::BindingResource::TextureView(target_view),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 1,
-                                        resource: wgpu::BindingResource::Sampler(&self.pipeline.sampler),
-                                    },
-                                ],
-                            });
+                    let dest_bg = self
+                        .gpu
+                        .device
+                        .create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("Blend Dest BG"),
+                            layout: &self.pipeline.blend_dest_bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(target_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(
+                                        &self.pipeline.sampler,
+                                    ),
+                                },
+                            ],
+                        });
 
                     let uniform_bg =
                         self.gpu
@@ -1449,23 +1427,23 @@ impl RenderEngine {
                 }],
             });
 
-        let vertex_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Face Calib Vertex Buffer"),
-                    contents: bytemuck::cast_slice(vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+        let vertex_buffer = self
+            .gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Face Calib Vertex Buffer"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
 
-        let index_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Face Calib Index Buffer"),
-                    contents: bytemuck::cast_slice(indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+        let index_buffer = self
+            .gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Face Calib Index Buffer"),
+                contents: bytemuck::cast_slice(indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Face Calibration Pass"),
@@ -1499,8 +1477,7 @@ impl RenderEngine {
         layers: &[Layer],
         groups: &[LayerGroup],
         calibration: &CalibrationConfig,
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) -> Result<(), String> {
         let output = surface
             .get_current_texture()
@@ -1510,21 +1487,19 @@ impl RenderEngine {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         // First, render the scene to the offscreen texture using multi-pass compositing
-        let scene_cmd = self.render_scene(layers, groups, calibration, bpm_phase, bpm_multiplier);
+        let scene_cmd = self.render_scene(layers, groups, calibration, bpm);
 
         // Then blit the offscreen result to the surface
-        let mut blit_encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Surface Blit Encoder"),
-            });
+        let mut blit_encoder =
+            self.gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Surface Blit Encoder"),
+                });
 
         self.blit_to_view(&mut blit_encoder, &surface_view);
 
-        self.gpu
-            .queue
-            .submit([scene_cmd, blit_encoder.finish()]);
+        self.gpu.queue.submit([scene_cmd, blit_encoder.finish()]);
         output.present();
         Ok(())
     }
@@ -1572,12 +1547,11 @@ impl RenderEngine {
             _pad0: 0.0,
             _pad1: 0.0,
         };
-        let uniform_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Blit Uniform Buffer (cached)"),
-                contents: bytemuck::cast_slice(&[blit_uniforms]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Blit Uniform Buffer (cached)"),
+            contents: bytemuck::cast_slice(&[blit_uniforms]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         let uniform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Blit Uniform BG (cached)"),
             layout: &pipeline.blend_uniform_bind_group_layout,
@@ -1686,23 +1660,23 @@ impl RenderEngine {
                 }],
             });
 
-        let vertex_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Face Calib Vertex Buffer"),
-                    contents: bytemuck::cast_slice(vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+        let vertex_buffer = self
+            .gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Face Calib Vertex Buffer"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
 
-        let index_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Face Calib Index Buffer"),
-                    contents: bytemuck::cast_slice(indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+        let index_buffer = self
+            .gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Face Calib Index Buffer"),
+                contents: bytemuck::cast_slice(indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Face Calibration Pass"),
@@ -1733,10 +1707,9 @@ impl RenderEngine {
         layers: &[Layer],
         groups: &[LayerGroup],
         calibration: &CalibrationConfig,
-        bpm_phase: f32,
-        bpm_multiplier: f32,
+        bpm: BpmRenderSnapshot,
     ) -> Vec<u8> {
-        let bpr = self.render_preview(layers, groups, calibration, bpm_phase, bpm_multiplier);
+        let bpr = self.render_preview(layers, groups, calibration, bpm);
         self.read_preview_pixels(bpr)
     }
 }

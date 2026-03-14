@@ -72,6 +72,7 @@ function ProjectorView() {
     selectedDeviceId: null,
     selectedDeviceName: null,
     lastBeatMs: 0,
+    phaseOriginMs: 0,
     multiplier: 1,
     source: "auto",
   });
@@ -374,13 +375,25 @@ function ProjectorView() {
           groups,
           frameCache.current,
           tmpCanvasMap.current,
-          bpmState.phase,
-          bpmState.multiplier
+          bpmState
         );
       }
       ctx.restore();
     }
-  }, [layers, groups, calibration, sceneReady, frameTick, output, uiState, viewport, bpmState.phase, bpmState.multiplier]);
+  }, [
+    layers,
+    groups,
+    calibration,
+    sceneReady,
+    frameTick,
+    output,
+    uiState,
+    viewport,
+    bpmState.bpm,
+    bpmState.phase,
+    bpmState.phaseOriginMs,
+    bpmState.multiplier,
+  ]);
 
   return (
     <canvas
@@ -486,15 +499,14 @@ function drawLayers(
   groups: LayerGroup[],
   frameCache: Map<string, ImageData>,
   tmpCanvasMap: Map<string, HTMLCanvasElement>,
-  bpmPhase: number,
-  bpmMultiplier: number
+  bpmState: BpmState
 ) {
   const sorted = [...layers]
     .filter((l) => l.visible)
     .sort((a, b) => a.zIndex - b.zIndex);
 
   for (const layer of sorted) {
-    const alpha = computeLayerOpacity(layer, layers, groups, bpmPhase, bpmMultiplier);
+    const alpha = computeLayerOpacity(layer, layers, groups, bpmState);
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = blendModeToComposite(layer.blend_mode);
 

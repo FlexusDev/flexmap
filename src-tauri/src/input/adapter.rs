@@ -61,6 +61,7 @@ pub struct BpmRuntimeSnapshot {
     pub beat: f32,
     pub level: f32,
     pub phase: f32,
+    pub phase_origin_ms: u64,
     pub multiplier: f32,
 }
 
@@ -71,6 +72,7 @@ impl Default for BpmRuntimeSnapshot {
             beat: 0.0,
             level: 0.0,
             phase: 0.0,
+            phase_origin_ms: 0,
             multiplier: 1.0,
         }
     }
@@ -288,11 +290,7 @@ impl InputManager {
     /// Bind a source to a layer. Connects the backend if not already connected.
     /// If the layer was already bound to a different source, the old source is
     /// disconnected (unless other layers still use it).
-    pub fn connect_source(
-        &mut self,
-        layer_id: &str,
-        source_id: &str,
-    ) -> Result<(), InputError> {
+    pub fn connect_source(&mut self, layer_id: &str, source_id: &str) -> Result<(), InputError> {
         // If this layer was already bound to a DIFFERENT source, clean up the old one
         if let Some(old_source) = self.layer_bindings.get(layer_id).cloned() {
             if old_source != source_id {
@@ -305,7 +303,11 @@ impl InputManager {
                     for backend in &mut self.backends {
                         if backend.is_source_active(&old_source) {
                             backend.disconnect_source(&old_source);
-                            log::info!("Auto-disconnected unused source {} (layer {} rebinding)", old_source, layer_id);
+                            log::info!(
+                                "Auto-disconnected unused source {} (layer {} rebinding)",
+                                old_source,
+                                layer_id
+                            );
                             break;
                         }
                     }
@@ -332,11 +334,7 @@ impl InputManager {
 
         self.layer_bindings
             .insert(layer_id.to_string(), source_id.to_string());
-        log::info!(
-            "Layer {} bound to source {}",
-            layer_id,
-            source_id
-        );
+        log::info!("Layer {} bound to source {}", layer_id, source_id);
         Ok(())
     }
 
@@ -417,7 +415,11 @@ impl InputManager {
         for layer_id in affected_layers {
             self.layer_bindings.remove(&layer_id);
             self.layer_modulation.remove(&layer_id);
-            log::info!("Auto-unbound layer {} from removed source {}", layer_id, source_id);
+            log::info!(
+                "Auto-unbound layer {} from removed source {}",
+                layer_id,
+                source_id
+            );
         }
 
         for backend in &mut self.backends {
@@ -466,9 +468,9 @@ impl InputManager {
     /// Used for a cheap read-lock pre-check before taking the expensive write lock
     /// for reconnection.
     pub fn has_stale_bindings(&self) -> bool {
-        self.layer_bindings.values().any(|source_id| {
-            !self.backends.iter().any(|b| b.is_source_active(source_id))
-        })
+        self.layer_bindings
+            .values()
+            .any(|source_id| !self.backends.iter().any(|b| b.is_source_active(source_id)))
     }
 
     /// Attempt to reconnect bound sources that are discoverable but not actively
@@ -490,20 +492,14 @@ impl InputManager {
             }
 
             // Check if any backend has this source active
-            let already_active = self
-                .backends
-                .iter()
-                .any(|b| b.is_source_active(source_id));
+            let already_active = self.backends.iter().any(|b| b.is_source_active(source_id));
             if already_active {
                 continue;
             }
 
             // Check if any backend can discover this source
             for backend in &mut self.backends {
-                let discoverable = backend
-                    .list_sources()
-                    .iter()
-                    .any(|s| s.id == *source_id);
+                let discoverable = backend.list_sources().iter().any(|s| s.id == *source_id);
 
                 if discoverable {
                     match backend.connect(source_id) {
@@ -512,11 +508,7 @@ impl InputManager {
                             recovered.push(source_id.clone());
                         }
                         Err(e) => {
-                            log::debug!(
-                                "Auto-reconnect failed for source {}: {}",
-                                source_id,
-                                e
-                            );
+                            log::debug!("Auto-reconnect failed for source {}: {}", source_id, e);
                         }
                     }
                     break;

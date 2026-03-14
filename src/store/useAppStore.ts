@@ -69,6 +69,7 @@ const DEFAULT_BPM_STATE: BpmState = {
   selectedDeviceId: null,
   selectedDeviceName: null,
   lastBeatMs: 0,
+  phaseOriginMs: 0,
   multiplier: 1,
   source: "auto",
 };
@@ -1468,7 +1469,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setBpmMultiplier: async (multiplier) => {
     try {
       await tauriInvoke("set_bpm_multiplier", { multiplier });
-      set({ bpmMultiplier: multiplier });
+      set((s) => ({
+        bpmMultiplier: multiplier,
+        bpmState: { ...s.bpmState, multiplier },
+      }));
       window.localStorage.setItem(BPM_MULTIPLIER_KEY, String(multiplier));
     } catch (e) {
       console.error("Failed to set BPM multiplier:", e);
@@ -1479,7 +1483,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   setBpmSource: async (source) => {
     try {
       await tauriInvoke("set_bpm_source", { source });
-      set({ bpmSource: source });
+      set((s) => ({
+        bpmSource: source,
+        bpmState: {
+          ...s.bpmState,
+          source,
+          phaseOriginMs: Date.now(),
+        },
+      }));
     } catch (e) {
       console.error("Failed to set BPM source:", e);
       get().addToast("Failed to set BPM source", "error");

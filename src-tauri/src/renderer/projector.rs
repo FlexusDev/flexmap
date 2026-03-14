@@ -11,9 +11,9 @@
 //!
 //! This removes the entire base64 → IPC → JS → Canvas2D bottleneck for projector output.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use parking_lot::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use super::engine::{RenderEngine, RenderState};
 use super::gpu::{FramePacingMode, OutputSurface};
@@ -55,13 +55,8 @@ impl GpuProjector {
         }
 
         // Configure the surface on the main thread (we're called from run_on_main_thread)
-        let output_surface = OutputSurface::new(
-            surface,
-            adapter,
-            &device,
-            initial_width,
-            initial_height,
-        )?;
+        let output_surface =
+            OutputSurface::new(surface, adapter, &device, initial_width, initial_height)?;
 
         self.stop_signal.store(false, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
@@ -94,8 +89,7 @@ impl GpuProjector {
                     let layers = render_state.layers.read().clone();
                     let groups = render_state.groups.read().clone();
                     let calibration = render_state.calibration.read().clone();
-                    let bpm_phase = *render_state.bpm_phase.read();
-                    let bpm_multiplier = *render_state.bpm_multiplier.read();
+                    let bpm = *render_state.bpm.read();
 
                     // Check if output size changed
                     let out_w = *render_state.output_width.read();
@@ -155,23 +149,23 @@ impl GpuProjector {
                             drop(eng);
                         }
 
-                        // Pre-populate buffer cache only when layers/textures changed.
-                        // This avoids taking an expensive write lock at 60fps when only
-                        // the projector is rendering unchanged content.
+                        // Geometry/bind-group prep stays generation-gated, but animated
+                        // uniforms are refreshed every frame so dimmer/pixel-map motion
+                        // keeps advancing even on a static scene.
                         let current_gen = render_state.layer_generation();
                         if current_gen != last_prepared_generation {
                             let mut eng = engine.write();
-                            eng.prepare_all_buffers(&layers, &groups, bpm_phase, bpm_multiplier);
+                            eng.prepare_all_buffers(&layers, &groups, bpm);
                             last_prepared_generation = current_gen;
                         }
 
-                        let eng = engine.read();
+                        let mut eng = engine.write();
+                        eng.refresh_dynamic_uniforms(&layers, &groups, bpm);
                         prepare_ms = t_prepare.elapsed().as_secs_f64() * 1000.0;
 
                         // Use full multi-pass compositing (supports all 13 blend modes)
                         let t_render = std::time::Instant::now();
-                        let scene_cmd =
-                            eng.render_scene(&layers, &groups, &calibration, bpm_phase, bpm_multiplier);
+                        let scene_cmd = eng.render_scene(&layers, &groups, &calibration, bpm);
 
                         // Blit offscreen → surface
                         let mut blit_encoder = eng.gpu.device.create_command_encoder(

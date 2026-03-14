@@ -1512,8 +1512,7 @@ function EditorCanvas() {
           layer,
           layers,
           groups,
-          bpmState.phase,
-          bpmState.multiplier
+          bpmState
         );
         ctx.globalCompositeOperation = blendModeToComposite(layer.blend_mode);
 
@@ -1944,7 +1943,9 @@ function EditorCanvas() {
     hoveredPoint,
     dragState,
     frameTickState,
+    bpmState.bpm,
     bpmState.phase,
+    bpmState.phaseOriginMs,
     bpmState.multiplier,
     selectedPointIndex,
   ]);

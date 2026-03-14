@@ -2,12 +2,14 @@ import Slider from "../../controls/Slider";
 import type { DimmerCurve, DimmerEffect } from "../../../types";
 import { DEFAULT_DIMMER_EFFECT, DIMMER_CURVES } from "../../../types";
 import { evaluateDimmerCurve, isDutyCurve } from "../../../lib/dimmer-fx";
+import DimmerFxGraph, { type DimmerFxGraphContext } from "./DimmerFxGraph";
 
 interface DimmerFxSectionProps {
   title: string;
   dimmerFx: DimmerEffect | null;
   groupMode?: boolean;
   overrideNote?: string | null;
+  graphContext?: DimmerFxGraphContext;
   onDimmerFxChange: (effect: DimmerEffect | null) => void;
   onSliderDown: () => void;
   onSliderUp: () => void;
@@ -31,6 +33,7 @@ export default function DimmerFxSection({
   dimmerFx,
   groupMode = false,
   overrideNote,
+  graphContext,
   onDimmerFxChange,
   onSliderDown,
   onSliderUp,
@@ -94,6 +97,9 @@ export default function DimmerFxSection({
 
       {enabled && dimmerFx && (
         <div className="space-y-2">
+          {graphContext && (
+            <DimmerFxGraph effect={dimmerFx} context={graphContext} />
+          )}
           <div>
             <span className="block text-[10px] text-zinc-500 mb-1">Curve</span>
             <div className="grid grid-cols-3 gap-1">
@@ -135,18 +141,18 @@ export default function DimmerFxSection({
               onPointerUp={onSliderUp}
             />
             <Slider
-              label="Speed"
+              label="Beats/Cycle"
               value={dimmerFx.speed}
-              min={0.1}
-              max={8}
-              step={0.1}
-              decimals={1}
+              min={0.25}
+              max={16}
+              step={0.25}
+              decimals={2}
               onChange={(value) => update({ speed: value })}
               onPointerDown={onSliderDown}
               onPointerUp={onSliderUp}
             />
             <Slider
-              label="Phase"
+              label="Offset"
               value={dimmerFx.phaseOffset}
               min={0}
               max={1}
@@ -170,7 +176,7 @@ export default function DimmerFxSection({
             {groupMode && (
               <>
                 <Slider
-                  label="Spread"
+                  label="Phasing"
                   value={dimmerFx.phaseSpread}
                   min={0}
                   max={1}
@@ -180,7 +186,9 @@ export default function DimmerFxSection({
                   onPointerUp={onSliderUp}
                 />
                 <div>
-                  <span className="block text-[10px] text-zinc-500 mb-0.5">Direction</span>
+                  <span className="block text-[10px] text-zinc-500 mb-0.5">
+                    Phasing Order
+                  </span>
                   <div className="flex gap-1">
                     <button
                       type="button"
@@ -192,6 +200,17 @@ export default function DimmerFxSection({
                       }`}
                     >
                       Forward
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => update({ phaseDirection: "center" })}
+                      className={`flex-1 text-[11px] py-0.5 rounded ${
+                        dimmerFx.phaseDirection === "center"
+                          ? "bg-amber-500 text-white"
+                          : "bg-zinc-800 text-zinc-500"
+                      }`}
+                    >
+                      Center
                     </button>
                     <button
                       type="button"

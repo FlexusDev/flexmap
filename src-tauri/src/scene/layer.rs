@@ -41,9 +41,7 @@ pub enum LayerGeometry {
         corners: [Point2D; 4], // TL, TR, BR, BL
     },
     /// 3-point warp (affine transform)
-    Triangle {
-        vertices: [Point2D; 3],
-    },
+    Triangle { vertices: [Point2D; 3] },
     /// Subdivided grid mesh for complex surfaces
     Mesh {
         cols: u32,
@@ -194,11 +192,7 @@ impl LayerGeometry {
                 points.push(Point2D::new(x, y));
             }
         }
-        LayerGeometry::Mesh {
-            cols,
-            rows,
-            points,
-        }
+        LayerGeometry::Mesh { cols, rows, points }
     }
 
     /// Create a default circle (returns a 1x1 Mesh of the oriented bbox)
@@ -239,9 +233,9 @@ impl LayerGeometry {
         // TL, TR, BR, BL corners of the oriented bounding box
         let corners = [
             Point2D::new(cx + (-rx) * c - (-ry) * s, cy + (-rx) * s + (-ry) * c),
-            Point2D::new(cx + rx * c - (-ry) * s,     cy + rx * s + (-ry) * c),
-            Point2D::new(cx + rx * c - ry * s,         cy + rx * s + ry * c),
-            Point2D::new(cx + (-rx) * c - ry * s,     cy + (-rx) * s + ry * c),
+            Point2D::new(cx + rx * c - (-ry) * s, cy + rx * s + (-ry) * c),
+            Point2D::new(cx + rx * c - ry * s, cy + rx * s + ry * c),
+            Point2D::new(cx + (-rx) * c - ry * s, cy + (-rx) * s + ry * c),
         ];
         // Mesh points row-major: [TL, TR, BL, BR]
         LayerGeometry::Mesh {
@@ -256,9 +250,12 @@ impl LayerGeometry {
     pub fn normalize(self) -> Self {
         match self {
             LayerGeometry::Quad { corners } => Self::quad_to_mesh(corners),
-            LayerGeometry::Circle { center, radius_x, radius_y, rotation } => {
-                Self::circle_to_mesh(center, radius_x, radius_y, rotation)
-            }
+            LayerGeometry::Circle {
+                center,
+                radius_x,
+                radius_y,
+                rotation,
+            } => Self::circle_to_mesh(center, radius_x, radius_y, rotation),
             other => other,
         }
     }
@@ -380,6 +377,7 @@ impl Default for DimmerCurve {
 #[serde(rename_all = "camelCase")]
 pub enum PhaseDirection {
     Forward,
+    Center,
     Reverse,
 }
 
@@ -397,13 +395,13 @@ pub struct DimmerEffect {
     pub curve: DimmerCurve,
     /// Strength of the effect (0.0-1.0)
     pub depth: f64,
-    /// Oscillation rate in cycles per second
+    /// Beats per full cycle at 1x BPM
     pub speed: f64,
-    /// Base phase offset (0.0-1.0)
+    /// Global cycle offset applied to the whole effect (0.0-1.0)
     pub phase_offset: f64,
     /// Duty cycle for square/pulse curves (0.0-1.0)
     pub duty_cycle: f64,
-    /// Auto-spread amount for group members (0.0-1.0)
+    /// Per-member phasing amount across group members (0.0-1.0)
     pub phase_spread: f64,
     pub phase_direction: PhaseDirection,
 }
@@ -615,7 +613,10 @@ mod tests {
     fn new_quad_is_mesh_with_4_points() {
         let layer = Layer::new_quad("Q", 0);
         // default_quad() returns a 1x1 Mesh (quad_to_mesh)
-        if let LayerGeometry::Mesh { cols, rows, points, .. } = &layer.geometry {
+        if let LayerGeometry::Mesh {
+            cols, rows, points, ..
+        } = &layer.geometry
+        {
             assert_eq!(*cols, 1);
             assert_eq!(*rows, 1);
             assert_eq!(points.len(), 4); // (1+1)*(1+1)
@@ -637,7 +638,10 @@ mod tests {
     #[test]
     fn new_mesh_dimensions_correct() {
         let layer = Layer::new_mesh("M", 0, 3, 2);
-        if let LayerGeometry::Mesh { cols, rows, points, .. } = &layer.geometry {
+        if let LayerGeometry::Mesh {
+            cols, rows, points, ..
+        } = &layer.geometry
+        {
             assert_eq!(*cols, 3);
             assert_eq!(*rows, 2);
             assert_eq!(points.len(), (3 + 1) * (2 + 1)); // 12
@@ -650,7 +654,10 @@ mod tests {
     fn new_circle_is_mesh() {
         // default_circle() converts to a 1x1 Mesh via circle_to_mesh
         let layer = Layer::new_circle("C", 0);
-        if let LayerGeometry::Mesh { cols, rows, points, .. } = &layer.geometry {
+        if let LayerGeometry::Mesh {
+            cols, rows, points, ..
+        } = &layer.geometry
+        {
             assert_eq!(*cols, 1);
             assert_eq!(*rows, 1);
             assert_eq!(points.len(), 4);

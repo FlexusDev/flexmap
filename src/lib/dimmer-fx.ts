@@ -1,4 +1,5 @@
 import type {
+  BpmState,
   DimmerCurve,
   DimmerEffect,
   Layer,
@@ -9,11 +10,9 @@ function fract(value: number): number {
   return ((value % 1) + 1) % 1;
 }
 
-function currentDimmerTimeSeconds(): number {
-  return Date.now() / 1000;
-}
+export type DimmerTimingState = Pick<BpmState, "bpm" | "multiplier" | "phaseOriginMs">;
 
-function sortLayersByVisualOrder(layers: Layer[]): Layer[] {
+export function sortLayersByVisualOrder(layers: Layer[]): Layer[] {
   return [...layers].sort((a, b) => {
     if (a.zIndex !== b.zIndex) return a.zIndex - b.zIndex;
     return layers.indexOf(a) - layers.indexOf(b);
@@ -52,7 +51,11 @@ export function evaluateDimmerCurve(
   }
 }
 
-function computeGroupPhaseOffset(
+function clampBeatsPerCycle(speed: number): number {
+  return Math.max(0.25, speed);
+}
+
+export function computeGroupPhaseOffset(
   layer: Layer,
   layers: Layer[],
   group: LayerGroup,
@@ -63,12 +66,16 @@ function computeGroupPhaseOffset(
     layers.filter((candidate) => candidate.groupId === group.id)
   );
   const memberIndex = members.findIndex((candidate) => candidate.id === layer.id);
-  if (memberIndex < 0 || members.length <= 1) return 0;
-  const normalizedIndex = memberIndex / Math.max(1, members.length - 1);
-  const phasedIndex = effect.phaseDirection === "reverse"
-    ? 1 - normalizedIndex
-    : normalizedIndex;
-  return effect.phaseSpread * phasedIndex;
+  const memberCount = members.length;
+  if (memberIndex < 0 || memberCount <= 1) return 0;
+  switch (effect.phaseDirection) {
+    case "forward":
+      return effect.phaseSpread * (memberIndex / memberCount);
+    case "reverse":
+      return effect.phaseSpread * ((memberCount - 1 - memberIndex) / memberCount);
+    case "center":
+      return effect.phaseSpread * (((memberIndex + 0.5) / memberCount) - 0.5);
+  }
 }
 
 export function resolveEffectiveDimmerFx(
@@ -101,19 +108,32 @@ export function resolveEffectiveDimmerFx(
   };
 }
 
-export function computeDimmerMultiplier(
+export function computeDimmerPhase(
   effect: DimmerEffect | null,
-  _bpmPhase: number,
-  _bpmMultiplier: number,
+  timing: DimmerTimingState,
   phaseOffset = 0,
-  timeSeconds = currentDimmerTimeSeconds()
+  timeMs = Date.now()
 ): number {
-  if (!effect?.enabled) return 1;
-  const phase = fract(
-    timeSeconds * effect.speed
+  if (!effect?.enabled) return 0;
+  const phaseOriginMs = timing.phaseOriginMs > 0 ? timing.phaseOriginMs : timeMs;
+  const effectiveBpm = Math.max(1, timing.bpm) * Math.max(0.0625, timing.multiplier || 1);
+  const beatIntervalMs = 60000 / effectiveBpm;
+  const beatsPerCycle = clampBeatsPerCycle(effect.speed);
+  return fract(
+    ((timeMs - phaseOriginMs) / beatIntervalMs) / beatsPerCycle
       + effect.phaseOffset
       + phaseOffset
   );
+}
+
+export function computeDimmerMultiplier(
+  effect: DimmerEffect | null,
+  timing: DimmerTimingState,
+  phaseOffset = 0,
+  timeMs = Date.now()
+): number {
+  if (!effect?.enabled) return 1;
+  const phase = computeDimmerPhase(effect, timing, phaseOffset, timeMs);
   const sample = evaluateDimmerCurve(effect.curve, phase, effect.dutyCycle);
   const depth = Math.min(1, Math.max(0, effect.depth));
   return Math.min(1, Math.max(0, 1 - depth + depth * sample));
@@ -123,11 +143,10 @@ export function computeLayerOpacity(
   layer: Layer,
   layers: Layer[],
   groups: LayerGroup[],
-  bpmPhase: number,
-  bpmMultiplier: number,
-  timeSeconds = currentDimmerTimeSeconds()
+  timing: DimmerTimingState,
+  timeMs = Date.now()
 ): number {
   const { effect, phaseOffset } = resolveEffectiveDimmerFx(layer, layers, groups);
   return Math.min(1, Math.max(0, layer.properties.opacity))
-    * computeDimmerMultiplier(effect, bpmPhase, bpmMultiplier, phaseOffset, timeSeconds);
+    * computeDimmerMultiplier(effect, timing, phaseOffset, timeMs);
 }

@@ -553,6 +553,12 @@ function PropertiesPanel() {
                 title="Dimmer FX"
                 dimmerFx={primaryLayer.dimmerFx}
                 overrideNote={layerDimmerOverrideNote}
+                graphContext={{
+                  kind: "layer",
+                  layer: primaryLayer,
+                  layers,
+                  groups,
+                }}
                 onDimmerFxChange={(effect) => {
                   for (const id of effectiveSelectedIds) {
                     void setLayerDimmerFx(id, effect);
@@ -615,6 +621,13 @@ function PropertiesPanel() {
                   title="Group Dimmer FX"
                   dimmerFx={selectedGroup.dimmerFx}
                   groupMode
+                  graphContext={{
+                    kind: "group",
+                    group: selectedGroup,
+                    layers,
+                    groups,
+                    highlightedLayerId: primaryLayer?.id ?? null,
+                  }}
                   onDimmerFxChange={(effect) => {
                     void setGroupDimmerFx(selectedGroup.id, effect);
                   }}

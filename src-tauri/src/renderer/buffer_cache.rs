@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use wgpu::util::DeviceExt;
 
-use super::pipeline::{LayerUniforms, generate_layer_mesh};
+use super::pipeline::{generate_layer_mesh, BpmRenderSnapshot, LayerUniforms};
 use super::texture_manager::TextureManager;
 use crate::scene::group::LayerGroup;
 use crate::scene::layer::{Layer, LayerGeometry};
@@ -57,7 +57,9 @@ fn compute_geometry_hash(geometry: &LayerGeometry) -> u64 {
                 hash_f64(&mut hasher, p.y);
             }
         }
-        LayerGeometry::Mesh { cols, rows, points, .. } => {
+        LayerGeometry::Mesh {
+            cols, rows, points, ..
+        } => {
             cols.hash(&mut hasher);
             rows.hash(&mut hasher);
             for p in points {
@@ -115,6 +117,19 @@ fn create_bind_group(
     })
 }
 
+fn build_layer_uniforms(
+    layer: &Layer,
+    layers: &[Layer],
+    groups: &[LayerGroup],
+    bpm: BpmRenderSnapshot,
+    now_ms: u64,
+) -> LayerUniforms {
+    let shared_input = super::pipeline::resolve_shared_input_for_layer(layer, groups);
+    let opacity =
+        super::pipeline::compute_effective_opacity_at_time(layer, layers, groups, bpm, now_ms);
+    LayerUniforms::from_layer(layer, shared_input, opacity, bpm)
+}
+
 impl BufferCache {
     pub fn new() -> Self {
         Self {
@@ -137,22 +152,13 @@ impl BufferCache {
         layers: &[Layer],
         layer: &Layer,
         groups: &[LayerGroup],
-        bpm_phase: f32,
-        bpm_multiplier: f32,
-        dimmer_time_seconds: f32,
+        bpm: BpmRenderSnapshot,
+        dimmer_now_ms: u64,
     ) -> Option<&CachedLayerBuffers> {
         // Hash geometry struct directly — avoids allocating Vec<LayerVertex> + Vec<u16>
         // on every cache hit (60fps × N layers).
         let geom_hash = compute_geometry_hash(&layer.geometry);
-        let shared_input = super::pipeline::resolve_shared_input_for_layer(layer, groups);
-        let opacity = super::pipeline::compute_effective_opacity_at_time(
-            layer,
-            layers,
-            groups,
-            dimmer_time_seconds,
-        );
-        let uniforms =
-            LayerUniforms::from_layer(layer, shared_input, opacity, bpm_phase, bpm_multiplier);
+        let uniforms = build_layer_uniforms(layer, layers, groups, bpm, dimmer_now_ms);
         let prop_hash = compute_properties_hash(&uniforms);
 
         // Get source generation to detect texture changes
@@ -234,6 +240,30 @@ impl BufferCache {
         self.entries.get(&layer.id)
     }
 
+    pub fn refresh_dynamic_uniforms(
+        &mut self,
+        queue: &wgpu::Queue,
+        layers: &[Layer],
+        groups: &[LayerGroup],
+        bpm: BpmRenderSnapshot,
+        now_ms: u64,
+    ) {
+        for layer in layers.iter() {
+            if !self.entries.contains_key(&layer.id) {
+                continue;
+            }
+            let uniforms = build_layer_uniforms(layer, layers, groups, bpm, now_ms);
+            let prop_hash = compute_properties_hash(&uniforms);
+            if let Some(existing) = self.entries.get_mut(&layer.id) {
+                if existing.properties_hash == prop_hash {
+                    continue;
+                }
+                queue.write_buffer(&existing.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+                existing.properties_hash = prop_hash;
+            }
+        }
+    }
+
     /// Invalidate the cache for a specific layer
     pub fn invalidate(&mut self, layer_id: &str) {
         self.entries.remove(layer_id);
@@ -260,5 +290,87 @@ impl BufferCache {
 impl Default for BufferCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::layer::{DimmerCurve, DimmerEffect, PixelMapEffect};
+
+    #[test]
+    fn layer_uniforms_change_when_dimmer_phase_advances() {
+        let mut layer = Layer::new_quad("Q", 0);
+        layer.dimmer_fx = Some(DimmerEffect {
+            curve: DimmerCurve::Square,
+            duty_cycle: 0.5,
+            ..DimmerEffect::default()
+        });
+
+        let early = build_layer_uniforms(
+            &layer,
+            &[layer.clone()],
+            &[],
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.0,
+                multiplier: 1.0,
+                phase_origin_ms: 1_000,
+            },
+            1_250,
+        );
+        let late = build_layer_uniforms(
+            &layer,
+            &[layer.clone()],
+            &[],
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.0,
+                multiplier: 1.0,
+                phase_origin_ms: 1_000,
+            },
+            1_500,
+        );
+
+        assert_ne!(
+            compute_properties_hash(&early),
+            compute_properties_hash(&late)
+        );
+    }
+
+    #[test]
+    fn layer_uniforms_change_when_pixel_map_phase_advances() {
+        let mut layer = Layer::new_quad("Q", 0);
+        layer.pixel_map = Some(PixelMapEffect::default());
+
+        let early = build_layer_uniforms(
+            &layer,
+            &[layer.clone()],
+            &[],
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.1,
+                multiplier: 1.0,
+                phase_origin_ms: 1_000,
+            },
+            1_000,
+        );
+        let late = build_layer_uniforms(
+            &layer,
+            &[layer.clone()],
+            &[],
+            BpmRenderSnapshot {
+                bpm: 120.0,
+                phase: 0.6,
+                multiplier: 1.0,
+                phase_origin_ms: 1_000,
+            },
+            1_000,
+        );
+
+        assert_ne!(
+            compute_properties_hash(&early),
+            compute_properties_hash(&late)
+        );
     }
 }

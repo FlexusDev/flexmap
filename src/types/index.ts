@@ -116,12 +116,13 @@ export const DIMMER_CURVES: { value: DimmerCurve; label: string }[] = [
   { value: "pulse", label: "Pulse" },
 ];
 
-export type PhaseDirection = "forward" | "reverse";
+export type PhaseDirection = "forward" | "center" | "reverse";
 
 export interface DimmerEffect {
   enabled: boolean;
   curve: DimmerCurve;
   depth: number;
+  // Beats per full cycle at 1x BPM.
   speed: number;
   phaseOffset: number;
   dutyCycle: number;
@@ -402,6 +403,7 @@ export interface BpmState {
   selectedDeviceId: string | null;
   selectedDeviceName: string | null;
   lastBeatMs: number;
+  phaseOriginMs: number;
   multiplier: number;
   source: "auto" | "manual";
 }

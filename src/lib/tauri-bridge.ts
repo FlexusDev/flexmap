@@ -87,6 +87,7 @@ let mockBpmState: BpmState = {
   selectedDeviceId: null,
   selectedDeviceName: null,
   lastBeatMs: 0,
+  phaseOriginMs: Date.now(),
   multiplier: 1,
   source: "auto",
 };
@@ -681,10 +682,10 @@ const mockCommands: Record<string, (args: any) => any> = {
   },
   get_bpm_state: (): BpmState => {
     const now = Date.now();
-    const t = now / 1000;
     const bpm = Math.max(1, mockBpmState.bpm || mockBpmConfig.manualBpm || 120);
-    // Phase always advances so metronome dot always pulses
-    const phase = ((t * bpm) / 60) % 1;
+    const phaseOriginMs = mockBpmState.phaseOriginMs || now;
+    const beatIntervalMs = 60000 / (bpm * Math.max(0.0625, mockBpmState.multiplier || 1));
+    const phase = ((now - phaseOriginMs) / beatIntervalMs) % 1;
     mockBpmState.phase = phase;
     if (!mockBpmConfig.enabled) {
       mockBpmState.beat = 0;
@@ -701,7 +702,10 @@ const mockCommands: Record<string, (args: any) => any> = {
     return { ...mockBpmState };
   },
   tap_tempo: (): BpmState => {
-    mockBpmState.lastBeatMs = Date.now();
+    const now = Date.now();
+    mockBpmState.lastBeatMs = now;
+    mockBpmState.phaseOriginMs = now;
+    mockBpmState.phase = 0;
     mockBpmState.beat = 1;
     mockBpmState.level = 1;
     return { ...mockBpmState };
@@ -988,8 +992,20 @@ const mockCommands: Record<string, (args: any) => any> = {
     mockBpmState.multiplier = Math.max(0.0625, Math.min(4, args.multiplier));
     return null;
   },
-  set_bpm_source: (_args: { source: string }) => null,
-  tap_bpm: (): BpmState => ({ ...mockBpmState }),
+  set_bpm_source: (args: { source: string }) => {
+    mockBpmState.source = args.source === "manual" ? "manual" : "auto";
+    mockBpmState.phaseOriginMs = Date.now();
+    return null;
+  },
+  tap_bpm: (): BpmState => {
+    const now = Date.now();
+    mockBpmState.lastBeatMs = now;
+    mockBpmState.phaseOriginMs = now;
+    mockBpmState.phase = 0;
+    mockBpmState.beat = 1;
+    mockBpmState.level = 1;
+    return { ...mockBpmState };
+  },
 
   set_preview_quality: (_args: { quality: number }) => null,
   get_composited_preview: (_args: { cursor: number }) => null, // No composited preview in browser mode
