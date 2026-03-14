@@ -17,6 +17,7 @@ import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import type { PerfStats } from "../../store/useAppStore";
 import { hashPoints, drawTriangleTextured } from "../../lib/math";
 import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
+import { computeLayerOpacity } from "../../lib/dimmer-fx";
 import { applyInputTransformToUv, applySharedInputMapping, resolveLayerSharedInput } from "../../lib/shared-input";
 import { CoordinateHUD } from "./CoordinateHUD";
 import { Magnifier } from "./Magnifier";
@@ -328,7 +329,7 @@ function EditorCanvas() {
     updateLayerPoint, applyGeometryTransformDelta,
     beginInteraction, setEditorPerf, snapEnabled, magnifierEnabled, editorSelectionMode,
     setLayerInputTransform, setGroupSharedInput, toggleEditorSelectionMode,
-    performanceProfile,
+    performanceProfile, bpmState,
     selectedPointIndex, selectPoint, clearPointSelection,
   } = useAppStore(useShallow((s) => ({
     project: s.project,
@@ -350,6 +351,7 @@ function EditorCanvas() {
     setGroupSharedInput: s.setGroupSharedInput,
     toggleEditorSelectionMode: s.toggleEditorSelectionMode,
     performanceProfile: s.performanceProfile,
+    bpmState: s.bpmState,
     selectedPointIndex: s.selectedPointIndex,
     selectPoint: s.selectPoint,
     clearPointSelection: s.clearPointSelection,
@@ -1506,7 +1508,13 @@ function EditorCanvas() {
         }
 
         ctx.save();
-        ctx.globalAlpha = layer.properties.opacity;
+        ctx.globalAlpha = computeLayerOpacity(
+          layer,
+          layers,
+          groups,
+          bpmState.phase,
+          bpmState.multiplier
+        );
         ctx.globalCompositeOperation = blendModeToComposite(layer.blend_mode);
 
         if (layer.geometry.type === "Mesh") {
@@ -1936,6 +1944,8 @@ function EditorCanvas() {
     hoveredPoint,
     dragState,
     frameTickState,
+    bpmState.phase,
+    bpmState.multiplier,
     selectedPointIndex,
   ]);
 

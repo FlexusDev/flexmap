@@ -258,6 +258,86 @@ describe("setGroupSharedInput", () => {
   });
 });
 
+describe("setLayerDimmerFx", () => {
+  it("updates the targeted layer dimmer effect", async () => {
+    await act(async () => {
+      await getState().addLayer("A", "quad");
+    });
+    await tick();
+
+    const layerId = getState().layers[0].id;
+
+    await act(async () => {
+      await getState().setLayerDimmerFx(layerId, {
+        enabled: true,
+        curve: "pulse",
+        depth: 0.9,
+        speed: 2,
+        phaseOffset: 0.25,
+        dutyCycle: 0.2,
+        phaseSpread: 1,
+        phaseDirection: "forward",
+      });
+    });
+    await tick();
+
+    expect(getState().layers[0].dimmerFx).toEqual({
+      enabled: true,
+      curve: "pulse",
+      depth: 0.9,
+      speed: 2,
+      phaseOffset: 0.25,
+      dutyCycle: 0.2,
+      phaseSpread: 1,
+      phaseDirection: "forward",
+    });
+  });
+});
+
+describe("setGroupDimmerFx", () => {
+  it("updates the targeted group dimmer effect", async () => {
+    await act(async () => {
+      await getState().addLayer("A", "quad");
+      await getState().addLayer("B", "quad");
+    });
+    await tick();
+
+    const layerIds = getState().layers.map((layer) => layer.id);
+    let groupId = "";
+    await act(async () => {
+      const group = await getState().createGroup("Group", layerIds);
+      groupId = group.id;
+    });
+    await tick();
+
+    await act(async () => {
+      await getState().setGroupDimmerFx(groupId, {
+        enabled: true,
+        curve: "triangle",
+        depth: 0.5,
+        speed: 1.5,
+        phaseOffset: 0.15,
+        dutyCycle: 0.5,
+        phaseSpread: 0.8,
+        phaseDirection: "reverse",
+      });
+    });
+    await tick();
+
+    const group = getState().groups.find((entry) => entry.id === groupId);
+    expect(group?.dimmerFx).toEqual({
+      enabled: true,
+      curve: "triangle",
+      depth: 0.5,
+      speed: 1.5,
+      phaseOffset: 0.15,
+      dutyCycle: 0.5,
+      phaseSpread: 0.8,
+      phaseDirection: "reverse",
+    });
+  });
+});
+
 describe("addToast / dismissToast", () => {
   it("adds a toast", () => {
     act(() => {

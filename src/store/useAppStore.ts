@@ -27,6 +27,7 @@ import type {
   PixelMapEffect,
   LayerGroup,
   SharedInputMapping,
+  DimmerEffect,
 } from "../types";
 
 export interface Toast {
@@ -354,11 +355,13 @@ interface AppState {
 
   // Pixel mapping
   setLayerPixelMap: (layerId: string, pixelMap: PixelMapEffect | null) => Promise<void>;
+  setLayerDimmerFx: (layerId: string, dimmerFx: DimmerEffect | null) => Promise<void>;
 
   // Groups
   createGroup: (name: string, layerIds: string[]) => Promise<LayerGroup>;
   deleteGroup: (groupId: string) => Promise<void>;
   setGroupPixelMap: (groupId: string, pixelMap: PixelMapEffect | null) => Promise<void>;
+  setGroupDimmerFx: (groupId: string, dimmerFx: DimmerEffect | null) => Promise<void>;
   setGroupSharedInput: (groupId: string, sharedInput: SharedInputMapping | null) => Promise<void>;
 
   // BPM control
@@ -1349,6 +1352,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  setLayerDimmerFx: async (layerId, dimmerFx) => {
+    try {
+      await tauriInvoke("set_layer_dimmer_fx", { layerId, dimmerFx });
+      set((s) => ({
+        layers: s.layers.map((l) =>
+          l.id === layerId ? { ...l, dimmerFx } : l
+        ),
+        isDirty: true,
+      }));
+    } catch (e) {
+      console.error("Failed to set layer dimmer FX:", e);
+      get().addToast("Failed to set dimmer FX", "error");
+    }
+  },
+
   // Groups
   createGroup: async (name, layerIds) => {
     try {
@@ -1405,6 +1423,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) {
       console.error("Failed to set group pixel map:", e);
       get().addToast("Failed to set group pixel map", "error");
+    }
+  },
+
+  setGroupDimmerFx: async (groupId, dimmerFx) => {
+    try {
+      await tauriInvoke("set_group_dimmer_fx", { groupId, dimmerFx });
+      set((s) => ({
+        groups: s.groups.map((g) =>
+          g.id === groupId ? { ...g, dimmerFx } : g
+        ),
+        project: syncProjectGroups(
+          s.project,
+          s.groups.map((g) => (g.id === groupId ? { ...g, dimmerFx } : g))
+        ),
+        isDirty: true,
+      }));
+    } catch (e) {
+      console.error("Failed to set group dimmer FX:", e);
+      get().addToast("Failed to set group dimmer FX", "error");
     }
   },
 

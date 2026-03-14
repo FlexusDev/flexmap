@@ -559,6 +559,18 @@ impl SceneState {
         }
     }
 
+    pub fn set_group_dimmer_fx(&self, group_id: &str, dimmer_fx: Option<DimmerEffect>) -> bool {
+        let mut proj = self.project.write();
+        if let Some(group) = proj.groups.iter_mut().find(|g| g.id == group_id) {
+            group.dimmer_fx = dimmer_fx;
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn set_group_shared_input(
         &self,
         group_id: &str,
@@ -579,6 +591,18 @@ impl SceneState {
         let mut proj = self.project.write();
         if let Some(layer) = proj.layers.iter_mut().find(|l| l.id == layer_id) {
             layer.pixel_map = pixel_map;
+            drop(proj);
+            self.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_layer_dimmer_fx(&self, layer_id: &str, dimmer_fx: Option<DimmerEffect>) -> bool {
+        let mut proj = self.project.write();
+        if let Some(layer) = proj.layers.iter_mut().find(|l| l.id == layer_id) {
+            layer.dimmer_fx = dimmer_fx;
             drop(proj);
             self.mark_dirty();
             true
@@ -1090,6 +1114,24 @@ mod tests {
     }
 
     #[test]
+    fn set_group_dimmer_fx_valid_and_invalid() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+        let group = state.create_group("G1", vec![id1]);
+
+        let effect = DimmerEffect::default();
+        assert!(state.set_group_dimmer_fx(&group.id, Some(effect.clone())));
+
+        let groups = state.get_groups();
+        assert_eq!(groups[0].dimmer_fx, Some(effect));
+
+        assert!(state.set_group_dimmer_fx(&group.id, None));
+        assert!(state.get_groups()[0].dimmer_fx.is_none());
+
+        assert!(!state.set_group_dimmer_fx("nonexistent", Some(DimmerEffect::default())));
+    }
+
+    #[test]
     fn set_layer_pixel_map_valid_and_invalid() {
         let state = SceneState::new();
         let id1 = add_quad(&state, "A");
@@ -1106,5 +1148,22 @@ mod tests {
 
         // Invalid layer ID
         assert!(!state.set_layer_pixel_map("nonexistent", Some(PixelMapEffect::default())));
+    }
+
+    #[test]
+    fn set_layer_dimmer_fx_valid_and_invalid() {
+        let state = SceneState::new();
+        let id1 = add_quad(&state, "A");
+
+        let effect = DimmerEffect::default();
+        assert!(state.set_layer_dimmer_fx(&id1, Some(effect.clone())));
+
+        let layers = state.get_layers_snapshot();
+        assert_eq!(layers[0].dimmer_fx, Some(effect));
+
+        assert!(state.set_layer_dimmer_fx(&id1, None));
+        assert!(state.get_layers_snapshot()[0].dimmer_fx.is_none());
+
+        assert!(!state.set_layer_dimmer_fx("nonexistent", Some(DimmerEffect::default())));
     }
 }

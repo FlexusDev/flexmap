@@ -457,9 +457,11 @@ pub fn run() {
             commands::subdivide_mesh,
             // Pixel mapping + Groups
             commands::set_layer_pixel_map,
+            commands::set_layer_dimmer_fx,
             commands::create_layer_group,
             commands::delete_layer_group,
             commands::set_group_pixel_map,
+            commands::set_group_dimmer_fx,
             commands::set_group_shared_input,
             commands::get_groups,
             // BPM control

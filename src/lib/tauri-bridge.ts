@@ -30,6 +30,7 @@ import type {
   PixelMapEffect,
   LayerGroup,
   SharedInputMapping,
+  DimmerEffect,
 } from "../types";
 import { DEFAULT_INPUT_TRANSFORM } from "../types";
 
@@ -439,6 +440,7 @@ const mockCommands: Record<string, (args: any) => any> = {
       },
       blend_mode: "normal",
       pixelMap: null,
+      dimmerFx: null,
       groupId: null,
     };
     mockProject.layers.push(layer);
@@ -908,6 +910,15 @@ const mockCommands: Record<string, (args: any) => any> = {
     return true;
   },
 
+  set_layer_dimmer_fx: (_args: { layerId: string; dimmerFx: DimmerEffect | null }) => {
+    const layer = mockProject.layers.find((l) => l.id === _args.layerId);
+    if (layer) {
+      layer.dimmerFx = _args.dimmerFx;
+      touchMockProject();
+    }
+    return true;
+  },
+
   create_layer_group: (args: { name: string; layerIds: string[] }): LayerGroup => {
     const group: LayerGroup = {
       id: makeId(),
@@ -916,6 +927,7 @@ const mockCommands: Record<string, (args: any) => any> = {
       visible: true,
       locked: false,
       pixelMap: null,
+      dimmerFx: null,
       sharedInput: null,
     };
     mockGroups.push(group);
@@ -944,6 +956,15 @@ const mockCommands: Record<string, (args: any) => any> = {
     const group = mockGroups.find((g) => g.id === args.groupId);
     if (group) {
       group.pixelMap = args.pixelMap;
+      touchMockProject();
+    }
+    return true;
+  },
+
+  set_group_dimmer_fx: (args: { groupId: string; dimmerFx: DimmerEffect | null }) => {
+    const group = mockGroups.find((g) => g.id === args.groupId);
+    if (group) {
+      group.dimmerFx = args.dimmerFx;
       touchMockProject();
     }
     return true;

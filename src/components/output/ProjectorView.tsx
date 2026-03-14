@@ -8,6 +8,7 @@ import type {
   PreviewDelta,
   ProjectSnapshotWithRevision,
   BlendMode,
+  BpmState,
   InputTransform,
   OutputConfig,
   PerformanceProfile,
@@ -15,6 +16,7 @@ import type {
 import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import { drawTriangleTextured } from "../../lib/math";
 import { fitAspectViewport, resolveAspectRatioUiState } from "../../lib/aspect-ratios";
+import { computeLayerOpacity } from "../../lib/dimmer-fx";
 import { applySharedInputMapping, resolveLayerSharedInput } from "../../lib/shared-input";
 import { PERFORMANCE_PROFILE_KEY } from "../../store/useAppStore";
 
@@ -60,6 +62,18 @@ function ProjectorView() {
     height: 1080,
     framerate: 60,
     monitor_preference: null,
+  });
+  const [bpmState, setBpmState] = useState<BpmState>({
+    bpm: 120,
+    beat: 0,
+    level: 0,
+    phase: 0,
+    running: false,
+    selectedDeviceId: null,
+    selectedDeviceName: null,
+    lastBeatMs: 0,
+    multiplier: 1,
+    source: "auto",
   });
   const [uiState, setUiState] = useState<unknown>(null);
   const [viewport, setViewport] = useState(() => ({
@@ -176,6 +190,26 @@ function ProjectorView() {
       }
     };
     pollProject();
+    return () => {
+      running = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let running = true;
+    const pollBpm = async () => {
+      while (running) {
+        try {
+          const next = await tauriInvoke<BpmState>("get_bpm_state");
+          if (!running) break;
+          setBpmState(next);
+        } catch {
+          // ignore
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
+    pollBpm();
     return () => {
       running = false;
     };
@@ -332,11 +366,21 @@ function ProjectorView() {
       if (calibration.enabled) {
         drawCalibration(ctx, viewRect.w, viewRect.h, calibration.pattern);
       } else {
-        drawLayers(ctx, viewRect.w, viewRect.h, layers, groups, frameCache.current, tmpCanvasMap.current);
+        drawLayers(
+          ctx,
+          viewRect.w,
+          viewRect.h,
+          layers,
+          groups,
+          frameCache.current,
+          tmpCanvasMap.current,
+          bpmState.phase,
+          bpmState.multiplier
+        );
       }
       ctx.restore();
     }
-  }, [layers, groups, calibration, sceneReady, frameTick, output, uiState, viewport]);
+  }, [layers, groups, calibration, sceneReady, frameTick, output, uiState, viewport, bpmState.phase, bpmState.multiplier]);
 
   return (
     <canvas
@@ -441,14 +485,16 @@ function drawLayers(
   layers: Layer[],
   groups: LayerGroup[],
   frameCache: Map<string, ImageData>,
-  tmpCanvasMap: Map<string, HTMLCanvasElement>
+  tmpCanvasMap: Map<string, HTMLCanvasElement>,
+  bpmPhase: number,
+  bpmMultiplier: number
 ) {
   const sorted = [...layers]
     .filter((l) => l.visible)
     .sort((a, b) => a.zIndex - b.zIndex);
 
   for (const layer of sorted) {
-    const alpha = layer.properties.opacity;
+    const alpha = computeLayerOpacity(layer, layers, groups, bpmPhase, bpmMultiplier);
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = blendModeToComposite(layer.blend_mode);
 
@@ -484,7 +530,9 @@ function drawLayers(
       }
     } else {
       // No frame — white fill
-      ctx.fillStyle = `rgba(255, 255, 255, ${alpha * layer.properties.brightness})`;
+      const brightness = Math.max(0, Math.min(1, layer.properties.brightness));
+      const channel = Math.round(brightness * 255);
+      ctx.fillStyle = `rgb(${channel}, ${channel}, ${channel})`;
       drawLayerPath(ctx, w, h, layer);
       ctx.fill();
     }

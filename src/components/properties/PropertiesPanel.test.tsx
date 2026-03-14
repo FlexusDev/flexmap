@@ -14,9 +14,67 @@ vi.mock("./sections/PixelMapSection", () => ({
   default: () => <div data-testid="pixel-map-section" />,
 }));
 
+vi.mock("./sections/DimmerFxSection", () => ({
+  default: ({
+    title,
+    onDimmerFxChange,
+  }: {
+    title: string;
+    onDimmerFxChange: (value: unknown) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid={title.toLowerCase().replace(/\s+/g, "-")}
+      onClick={() => onDimmerFxChange({
+        enabled: true,
+        curve: "square",
+        depth: 1,
+        speed: 1,
+        phaseOffset: 0.1,
+        dutyCycle: 0.4,
+        phaseSpread: 0.7,
+        phaseDirection: "forward",
+      })}
+    >
+      {title}
+    </button>
+  ),
+}));
+
+vi.mock("./sections/SharedInputSection", () => ({
+  default: ({
+    onSharedInputChange,
+    defaultMapping,
+    hasMixedSources,
+  }: {
+    onSharedInputChange: (value: unknown) => void;
+    defaultMapping: {
+      box: [number, number, number, number];
+      offsetX: number;
+      offsetY: number;
+      rotation: number;
+      scaleX: number;
+      scaleY: number;
+    };
+    hasMixedSources: boolean;
+  }) => (
+    <div>
+      <button
+        type="button"
+        data-testid="shared-input"
+        onClick={() => onSharedInputChange({ ...defaultMapping, enabled: true })}
+      >
+        Shared Input
+      </button>
+      {hasMixedSources && <span>different sources</span>}
+    </div>
+  ),
+}));
+
 import PropertiesPanel from "./PropertiesPanel";
 
 const originalSetGroupSharedInput = useAppStore.getState().setGroupSharedInput;
+const originalSetGroupDimmerFx = useAppStore.getState().setGroupDimmerFx;
 
 describe("PropertiesPanel shared input", () => {
   beforeEach(() => {
@@ -66,6 +124,7 @@ describe("PropertiesPanel shared input", () => {
           },
           blend_mode: "normal",
           pixelMap: null,
+          dimmerFx: null,
           groupId: "group-1",
         },
         {
@@ -101,6 +160,7 @@ describe("PropertiesPanel shared input", () => {
           },
           blend_mode: "normal",
           pixelMap: null,
+          dimmerFx: null,
           groupId: "group-1",
         },
       ],
@@ -112,6 +172,7 @@ describe("PropertiesPanel shared input", () => {
           visible: true,
           locked: false,
           pixelMap: null,
+          dimmerFx: null,
           sharedInput: null,
         },
       ],
@@ -120,12 +181,16 @@ describe("PropertiesPanel shared input", () => {
       selectedPointIndex: null,
       editorSelectionMode: "shape",
       sources: [],
+      setGroupDimmerFx: vi.fn().mockResolvedValue(undefined),
       setGroupSharedInput: vi.fn().mockResolvedValue(undefined),
     });
   });
 
   afterEach(() => {
-    useAppStore.setState({ setGroupSharedInput: originalSetGroupSharedInput });
+    useAppStore.setState({
+      setGroupDimmerFx: originalSetGroupDimmerFx,
+      setGroupSharedInput: originalSetGroupSharedInput,
+    });
   });
 
   it("shows shared input controls and dispatches group updates", async () => {
@@ -135,7 +200,7 @@ describe("PropertiesPanel shared input", () => {
     expect(screen.getByText(/different sources/i)).toBeDefined();
 
     await act(async () => {
-      fireEvent.click(screen.getAllByRole("button")[0]);
+      fireEvent.click(screen.getByTestId("shared-input"));
       await Promise.resolve();
     });
 
@@ -148,5 +213,26 @@ describe("PropertiesPanel shared input", () => {
     expect(mapping?.box[1]).toBeCloseTo(0.1);
     expect(mapping?.box[2]).toBeCloseTo(0.5);
     expect(mapping?.box[3]).toBeCloseTo(0.3);
+  });
+
+  it("shows group dimmer controls and dispatches group updates", async () => {
+    render(<PropertiesPanel />);
+
+    expect(screen.getByText("Group Dimmer FX")).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("group-dimmer-fx"));
+      await Promise.resolve();
+    });
+
+    const mock = vi.mocked(useAppStore.getState().setGroupDimmerFx);
+    expect(mock).toHaveBeenCalledTimes(1);
+    const [groupId, effect] = mock.mock.calls[0];
+    expect(groupId).toBe("group-1");
+    expect(effect).toMatchObject({
+      enabled: true,
+      curve: "square",
+      phaseSpread: 0.7,
+    });
   });
 });

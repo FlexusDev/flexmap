@@ -12,6 +12,7 @@ import { DEFAULT_INPUT_TRANSFORM } from "../../types";
 import LayerSection from "./sections/LayerSection";
 import EditSection from "./sections/EditSection";
 import PixelMapSection from "./sections/PixelMapSection";
+import DimmerFxSection from "./sections/DimmerFxSection";
 import SharedInputSection from "./sections/SharedInputSection";
 import { defaultSharedInputForLayers, groupUsesMixedSources } from "../../lib/shared-input";
 
@@ -83,6 +84,8 @@ function PropertiesPanel() {
     setLayerVisibility,
     setLayerLocked,
     setLayerPixelMap,
+    setLayerDimmerFx,
+    setGroupDimmerFx,
     setGroupSharedInput,
   } = useAppStore(useShallow((s) => ({
     project: s.project,
@@ -107,6 +110,8 @@ function PropertiesPanel() {
     setLayerVisibility: s.setLayerVisibility,
     setLayerLocked: s.setLayerLocked,
     setLayerPixelMap: s.setLayerPixelMap,
+    setLayerDimmerFx: s.setLayerDimmerFx,
+    setGroupDimmerFx: s.setGroupDimmerFx,
     setGroupSharedInput: s.setGroupSharedInput,
   })));
 
@@ -245,6 +250,9 @@ function PropertiesPanel() {
     () => selectedGroup ? groupUsesMixedSources(selectedGroup, layers) : false,
     [layers, selectedGroup]
   );
+  const layerDimmerOverrideNote = selectedGroup?.dimmerFx?.enabled
+    ? "Group Dimmer FX is active. Layer Dimmer FX settings are stored but currently overridden."
+    : null;
   // Visibility / Lock mixed
   const visibleMixed = selectedLayers.some((l) => l.visible !== primaryLayer?.visible);
   const lockedMixed = selectedLayers.some((l) => l.locked !== primaryLayer?.locked);
@@ -534,6 +542,27 @@ function PropertiesPanel() {
               />
             </div>
 
+            <div
+              className={`border-b border-aura-border ${
+                (selectedGroup?.dimmerFx?.enabled || primaryLayer.dimmerFx?.enabled)
+                  ? "border-l-2 border-l-amber-500"
+                  : ""
+              }`}
+            >
+              <DimmerFxSection
+                title="Dimmer FX"
+                dimmerFx={primaryLayer.dimmerFx}
+                overrideNote={layerDimmerOverrideNote}
+                onDimmerFxChange={(effect) => {
+                  for (const id of effectiveSelectedIds) {
+                    void setLayerDimmerFx(id, effect);
+                  }
+                }}
+                onSliderDown={beginSliderInteraction}
+                onSliderUp={endSliderInteraction}
+              />
+            </div>
+
             <EditSection
               layer={primaryLayer}
               mode={selectionMode}
@@ -573,6 +602,27 @@ function PropertiesPanel() {
                 onSliderUp={endSliderInteraction}
               />
             </div>
+
+            {selectedGroup && (
+              <div
+                className={`border-b border-aura-border ${
+                  selectedGroup.dimmerFx?.enabled
+                    ? "border-l-2 border-l-amber-500"
+                    : ""
+                }`}
+              >
+                <DimmerFxSection
+                  title="Group Dimmer FX"
+                  dimmerFx={selectedGroup.dimmerFx}
+                  groupMode
+                  onDimmerFxChange={(effect) => {
+                    void setGroupDimmerFx(selectedGroup.id, effect);
+                  }}
+                  onSliderDown={beginSliderInteraction}
+                  onSliderUp={endSliderInteraction}
+                />
+              </div>
+            )}
 
             {selectedGroup && (
               <div

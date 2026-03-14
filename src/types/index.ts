@@ -105,6 +105,41 @@ export const PIXEL_MAP_PATTERNS: { value: PixelMapPattern; label: string }[] = [
 
 export type PatternCoordMode = "perShape" | "worldSpace";
 
+export type DimmerCurve = "sine" | "triangle" | "rampUp" | "rampDown" | "square" | "pulse";
+
+export const DIMMER_CURVES: { value: DimmerCurve; label: string }[] = [
+  { value: "sine", label: "Sine" },
+  { value: "triangle", label: "Triangle" },
+  { value: "rampUp", label: "Ramp Up" },
+  { value: "rampDown", label: "Ramp Down" },
+  { value: "square", label: "Square" },
+  { value: "pulse", label: "Pulse" },
+];
+
+export type PhaseDirection = "forward" | "reverse";
+
+export interface DimmerEffect {
+  enabled: boolean;
+  curve: DimmerCurve;
+  depth: number;
+  speed: number;
+  phaseOffset: number;
+  dutyCycle: number;
+  phaseSpread: number;
+  phaseDirection: PhaseDirection;
+}
+
+export const DEFAULT_DIMMER_EFFECT: DimmerEffect = {
+  enabled: true,
+  curve: "sine",
+  depth: 1,
+  speed: 1,
+  phaseOffset: 0,
+  dutyCycle: 0.5,
+  phaseSpread: 1,
+  phaseDirection: "forward",
+};
+
 export interface PixelMapEffect {
   enabled: boolean;
   pattern: PixelMapPattern;
@@ -164,6 +199,7 @@ export interface LayerGroup {
   visible: boolean;
   locked: boolean;
   pixelMap: PixelMapEffect | null;
+  dimmerFx: DimmerEffect | null;
   sharedInput: SharedInputMapping | null;
 }
 
@@ -180,6 +216,7 @@ export interface Layer {
   properties: LayerProperties;
   blend_mode: BlendMode;
   pixelMap: PixelMapEffect | null;
+  dimmerFx: DimmerEffect | null;
   groupId: string | null;
 }
 

@@ -590,6 +590,7 @@ impl RenderEngine {
         bpm_phase: f32,
         bpm_multiplier: f32,
     ) {
+        let dimmer_time_seconds = super::pipeline::current_dimmer_time_seconds();
         let layer_ids: Vec<String> = layers.iter().map(|l| l.id.clone()).collect();
         self.buffer_cache.retain_layers(&layer_ids);
 
@@ -606,10 +607,12 @@ impl RenderEngine {
                 &self.pipeline.sampler,
                 texture_view,
                 &self.texture_manager,
+                layers,
                 layer,
                 groups,
                 bpm_phase,
                 bpm_multiplier,
+                dimmer_time_seconds,
             );
         }
     }
@@ -687,6 +690,7 @@ impl RenderEngine {
         bpm_phase: f32,
         bpm_multiplier: f32,
     ) {
+        let dimmer_time_seconds = super::pipeline::current_dimmer_time_seconds();
         let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
         sorted.sort_by_key(|l| l.z_index);
 
@@ -712,7 +716,15 @@ impl RenderEngine {
             });
 
             for layer in &sorted {
-                self.render_single_layer_hw(&mut pass, layer, groups, bpm_phase, bpm_multiplier);
+                self.render_single_layer_hw(
+                    &mut pass,
+                    layers,
+                    layer,
+                    groups,
+                    bpm_phase,
+                    bpm_multiplier,
+                    dimmer_time_seconds,
+                );
             }
             return;
         }
@@ -768,10 +780,12 @@ impl RenderEngine {
                 while i < sorted.len() && Self::is_hw_blend(&sorted[i].blend_mode) {
                     self.render_single_layer_hw(
                         &mut hw_pass,
+                        layers,
                         sorted[i],
                         groups,
                         bpm_phase,
                         bpm_multiplier,
+                        dimmer_time_seconds,
                     );
                     i += 1;
                 }
@@ -798,11 +812,13 @@ impl RenderEngine {
                     // Render layer with Normal alpha blending to temp
                     self.render_single_layer_to_pass(
                         &mut temp_pass,
+                        layers,
                         layer,
                         groups,
                         true,
                         bpm_phase,
                         bpm_multiplier,
+                        dimmer_time_seconds,
                     );
                 }
 
@@ -935,16 +951,27 @@ impl RenderEngine {
     fn render_single_layer_hw<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
+        layers: &[Layer],
         layer: &Layer,
         groups: &[LayerGroup],
         bpm_phase: f32,
         bpm_multiplier: f32,
+        dimmer_time_seconds: f32,
     ) {
         match layer.blend_mode {
             BlendMode::Additive => pass.set_pipeline(&self.pipeline.additive_pipeline),
             _ => pass.set_pipeline(&self.pipeline.layer_pipeline),
         }
-        self.render_single_layer_to_pass(pass, layer, groups, false, bpm_phase, bpm_multiplier);
+        self.render_single_layer_to_pass(
+            pass,
+            layers,
+            layer,
+            groups,
+            false,
+            bpm_phase,
+            bpm_multiplier,
+            dimmer_time_seconds,
+        );
     }
 
     /// Render a single layer's geometry into the current render pass.
@@ -953,11 +980,13 @@ impl RenderEngine {
     fn render_single_layer_to_pass<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'a>,
+        layers: &[Layer],
         layer: &Layer,
         groups: &[LayerGroup],
         force_normal: bool,
         bpm_phase: f32,
         bpm_multiplier: f32,
+        dimmer_time_seconds: f32,
     ) {
         if force_normal {
             pass.set_pipeline(&self.pipeline.layer_pipeline);
@@ -986,7 +1015,14 @@ impl RenderEngine {
 
         // Create per-layer uniform buffer
         let shared_input = super::pipeline::resolve_shared_input_for_layer(layer, groups);
-        let uniforms = LayerUniforms::from_layer(layer, shared_input, bpm_phase, bpm_multiplier);
+        let opacity = super::pipeline::compute_effective_opacity_at_time(
+            layer,
+            layers,
+            groups,
+            dimmer_time_seconds,
+        );
+        let uniforms =
+            LayerUniforms::from_layer(layer, shared_input, opacity, bpm_phase, bpm_multiplier);
         let uniform_buffer =
             self.gpu
                 .device
@@ -1054,11 +1090,20 @@ impl RenderEngine {
         bpm_phase: f32,
         bpm_multiplier: f32,
     ) {
+        let dimmer_time_seconds = super::pipeline::current_dimmer_time_seconds();
         let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
         sorted.sort_by_key(|l| l.z_index);
 
         for layer in sorted {
-            self.render_single_layer_hw(pass, layer, groups, bpm_phase, bpm_multiplier);
+            self.render_single_layer_hw(
+                pass,
+                layers,
+                layer,
+                groups,
+                bpm_phase,
+                bpm_multiplier,
+                dimmer_time_seconds,
+            );
         }
     }
 
@@ -1127,6 +1172,7 @@ impl RenderEngine {
         target_width: u32,
         target_height: u32,
     ) {
+        let dimmer_time_seconds = super::pipeline::current_dimmer_time_seconds();
         let mut sorted: Vec<&Layer> = layers.iter().filter(|l| l.visible).collect();
         sorted.sort_by_key(|l| l.z_index);
 
@@ -1150,7 +1196,15 @@ impl RenderEngine {
             });
 
             for layer in &sorted {
-                self.render_single_layer_hw(&mut pass, layer, groups, bpm_phase, bpm_multiplier);
+                self.render_single_layer_hw(
+                    &mut pass,
+                    layers,
+                    layer,
+                    groups,
+                    bpm_phase,
+                    bpm_multiplier,
+                    dimmer_time_seconds,
+                );
             }
             return;
         }
@@ -1198,10 +1252,12 @@ impl RenderEngine {
                 while i < sorted.len() && Self::is_hw_blend(&sorted[i].blend_mode) {
                     self.render_single_layer_hw(
                         &mut hw_pass,
+                        layers,
                         sorted[i],
                         groups,
                         bpm_phase,
                         bpm_multiplier,
+                        dimmer_time_seconds,
                     );
                     i += 1;
                 }
@@ -1224,11 +1280,13 @@ impl RenderEngine {
                     });
                     self.render_single_layer_to_pass(
                         &mut temp_pass,
+                        layers,
                         layer,
                         groups,
                         true,
                         bpm_phase,
                         bpm_multiplier,
+                        dimmer_time_seconds,
                     );
                 }
 

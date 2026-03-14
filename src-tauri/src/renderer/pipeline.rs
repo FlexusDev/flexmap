@@ -1,9 +1,11 @@
 use super::shaders;
 use crate::scene::group::LayerGroup;
 use crate::scene::layer::{
-    BlendMode, Layer, LayerGeometry, PatternCoordMode, PixelMapPattern, SharedInputMapping,
+    BlendMode, DimmerCurve, DimmerEffect, Layer, LayerGeometry, PatternCoordMode,
+    PhaseDirection, PixelMapPattern, SharedInputMapping,
 };
 use bytemuck::{Pod, Zeroable};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Vertex format for layer rendering
 #[repr(C)]
@@ -97,10 +99,128 @@ pub fn resolve_shared_input_for_layer<'a>(
         .filter(|mapping| mapping.enabled)
 }
 
+fn resolve_group_for_layer<'a>(layer: &Layer, groups: &'a [LayerGroup]) -> Option<&'a LayerGroup> {
+    let group_id = layer.group_id.as_deref()?;
+    groups.iter().find(|group| group.id == group_id)
+}
+
+fn fract(value: f32) -> f32 {
+    value.rem_euclid(1.0)
+}
+
+pub fn current_dimmer_time_seconds() -> f32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f32())
+        .unwrap_or(0.0)
+}
+
+fn evaluate_dimmer_curve(curve: DimmerCurve, phase: f32, duty_cycle: f32) -> f32 {
+    let phase = fract(phase);
+    let duty = duty_cycle.clamp(0.01, 0.99);
+    match curve {
+        DimmerCurve::Sine => (phase * std::f32::consts::TAU).sin() * 0.5 + 0.5,
+        DimmerCurve::Triangle => 1.0 - ((phase * 2.0) - 1.0).abs(),
+        DimmerCurve::RampUp => phase,
+        DimmerCurve::RampDown => 1.0 - phase,
+        DimmerCurve::Square => {
+            if phase < duty { 1.0 } else { 0.0 }
+        }
+        DimmerCurve::Pulse => {
+            if phase < duty { 1.0 - phase / duty } else { 0.0 }
+        }
+    }
+}
+
+fn compute_dimmer_multiplier_at_time(
+    effect: &DimmerEffect,
+    phase_offset: f32,
+    time_seconds: f32,
+) -> f32 {
+    if !effect.enabled {
+        return 1.0;
+    }
+    let phase = fract(
+        time_seconds * effect.speed as f32
+            + effect.phase_offset as f32
+            + phase_offset,
+    );
+    let sample = evaluate_dimmer_curve(effect.curve, phase, effect.duty_cycle as f32);
+    let depth = (effect.depth as f32).clamp(0.0, 1.0);
+    (1.0 - depth + depth * sample).clamp(0.0, 1.0)
+}
+
+fn compute_group_phase_offset(
+    layer: &Layer,
+    layers: &[Layer],
+    group: &LayerGroup,
+    effect: &DimmerEffect,
+) -> f32 {
+    if effect.phase_spread.abs() < f64::EPSILON {
+        return 0.0;
+    }
+    let mut members: Vec<(usize, &Layer)> = layers
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.group_id.as_deref() == Some(group.id.as_str()))
+        .collect();
+    members.sort_by(|(a_idx, a), (b_idx, b)| {
+        a.z_index
+            .cmp(&b.z_index)
+            .then_with(|| a_idx.cmp(b_idx))
+    });
+
+    let Some(member_index) = members.iter().position(|(_, candidate)| candidate.id == layer.id) else {
+        return 0.0;
+    };
+    if members.len() <= 1 {
+        return 0.0;
+    }
+    let normalized_index = member_index as f32 / (members.len() - 1) as f32;
+    let phased_index = match effect.phase_direction {
+        PhaseDirection::Forward => normalized_index,
+        PhaseDirection::Reverse => 1.0 - normalized_index,
+    };
+    effect.phase_spread as f32 * phased_index
+}
+
+pub fn compute_effective_opacity(
+    layer: &Layer,
+    layers: &[Layer],
+    groups: &[LayerGroup],
+    _bpm_phase: f32,
+    _bpm_multiplier: f32,
+) -> f32 {
+    compute_effective_opacity_at_time(layer, layers, groups, current_dimmer_time_seconds())
+}
+
+pub fn compute_effective_opacity_at_time(
+    layer: &Layer,
+    layers: &[Layer],
+    groups: &[LayerGroup],
+    time_seconds: f32,
+) -> f32 {
+    let base_opacity = (layer.properties.opacity as f32).clamp(0.0, 1.0);
+
+    if let Some(group) = resolve_group_for_layer(layer, groups) {
+        if let Some(effect) = group.dimmer_fx.as_ref().filter(|effect| effect.enabled) {
+            let phase_offset = compute_group_phase_offset(layer, layers, group, effect);
+            return base_opacity * compute_dimmer_multiplier_at_time(effect, phase_offset, time_seconds);
+        }
+    }
+
+    if let Some(effect) = layer.dimmer_fx.as_ref().filter(|effect| effect.enabled) {
+        return base_opacity * compute_dimmer_multiplier_at_time(effect, 0.0, time_seconds);
+    }
+
+    base_opacity
+}
+
 impl LayerUniforms {
     pub fn from_layer(
         layer: &Layer,
         shared_input: Option<&SharedInputMapping>,
+        opacity: f32,
         bpm_phase: f32,
         bpm_multiplier: f32,
     ) -> Self {
@@ -192,7 +312,7 @@ impl LayerUniforms {
                 props.brightness as f32,
                 props.contrast as f32,
                 props.gamma as f32,
-                props.opacity as f32,
+                opacity,
             ],
             feather_and_shape: [props.feather as f32, shape_kind, 0.0, 0.0],
             input_offset: [input.offset[0] as f32, input.offset[1] as f32, 0.0, 0.0],
@@ -257,7 +377,7 @@ mod tests {
     #[test]
     fn layer_uniforms_disable_shared_input_without_mapping() {
         let layer = Layer::new_quad("Q", 0);
-        let uniforms = LayerUniforms::from_layer(&layer, None, 0.25, 1.0);
+        let uniforms = LayerUniforms::from_layer(&layer, None, 1.0, 0.25, 1.0);
         assert_eq!(uniforms.shared_input_rot[2], 0.0);
         assert_eq!(uniforms.shared_input_box, [0.0, 0.0, 1.0, 1.0]);
     }
@@ -274,7 +394,7 @@ mod tests {
             scale_x: 2.0,
             scale_y: 3.0,
         };
-        let uniforms = LayerUniforms::from_layer(&layer, Some(&mapping), 0.25, 1.0);
+        let uniforms = LayerUniforms::from_layer(&layer, Some(&mapping), 1.0, 0.25, 1.0);
         assert_eq!(uniforms.shared_input_box, [0.1, 0.2, 0.3, 0.4]);
         assert_eq!(uniforms.shared_input_transform, [0.5, -0.25, 2.0, 3.0]);
         assert_eq!(uniforms.shared_input_rot[2], 1.0);
@@ -291,11 +411,60 @@ mod tests {
             visible: true,
             locked: false,
             pixel_map: None,
+            dimmer_fx: None,
             shared_input: Some(SharedInputMapping::default()),
         };
         let groups = [group];
         let resolved = resolve_shared_input_for_layer(&layer, &groups);
         assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn compute_effective_opacity_uses_layer_dimmer_fx() {
+        let mut layer = Layer::new_quad("Q", 0);
+        layer.properties.opacity = 0.8;
+        layer.dimmer_fx = Some(DimmerEffect {
+            curve: DimmerCurve::Square,
+            duty_cycle: 0.25,
+            phase_offset: 0.0,
+            ..DimmerEffect::default()
+        });
+
+        let opacity = compute_effective_opacity_at_time(&layer, &[layer.clone()], &[], 0.5);
+        assert_eq!(opacity, 0.0);
+    }
+
+    #[test]
+    fn compute_effective_opacity_group_dimmer_fx_overrides_layer_fx() {
+        let mut layer_a = Layer::new_quad("A", 0);
+        let mut layer_b = Layer::new_quad("B", 1);
+        layer_a.group_id = Some("group-1".to_string());
+        layer_b.group_id = Some("group-1".to_string());
+        layer_a.dimmer_fx = Some(DimmerEffect {
+            curve: DimmerCurve::Square,
+            duty_cycle: 0.75,
+            ..DimmerEffect::default()
+        });
+
+        let group = LayerGroup {
+            id: "group-1".to_string(),
+            name: "Group".to_string(),
+            layer_ids: vec![layer_a.id.clone(), layer_b.id.clone()],
+            visible: true,
+            locked: false,
+            pixel_map: None,
+            dimmer_fx: Some(DimmerEffect {
+                curve: DimmerCurve::Square,
+                duty_cycle: 0.5,
+                phase_spread: 1.0,
+                ..DimmerEffect::default()
+            }),
+            shared_input: None,
+        };
+
+        let layers = vec![layer_a.clone(), layer_b];
+        let opacity = compute_effective_opacity_at_time(&layer_a, &layers, &[group], 0.6);
+        assert_eq!(opacity, 0.0);
     }
 }
 

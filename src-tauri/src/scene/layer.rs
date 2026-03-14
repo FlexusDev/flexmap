@@ -357,6 +357,72 @@ impl Default for PatternCoordMode {
     }
 }
 
+/// Curve type for dimmer modulation
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum DimmerCurve {
+    Sine,
+    Triangle,
+    RampUp,
+    RampDown,
+    Square,
+    Pulse,
+}
+
+impl Default for DimmerCurve {
+    fn default() -> Self {
+        DimmerCurve::Sine
+    }
+}
+
+/// Direction for auto-spread group phasing
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum PhaseDirection {
+    Forward,
+    Reverse,
+}
+
+impl Default for PhaseDirection {
+    fn default() -> Self {
+        PhaseDirection::Forward
+    }
+}
+
+/// Opacity modulation effect for layers and groups
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DimmerEffect {
+    pub enabled: bool,
+    pub curve: DimmerCurve,
+    /// Strength of the effect (0.0-1.0)
+    pub depth: f64,
+    /// Oscillation rate in cycles per second
+    pub speed: f64,
+    /// Base phase offset (0.0-1.0)
+    pub phase_offset: f64,
+    /// Duty cycle for square/pulse curves (0.0-1.0)
+    pub duty_cycle: f64,
+    /// Auto-spread amount for group members (0.0-1.0)
+    pub phase_spread: f64,
+    pub phase_direction: PhaseDirection,
+}
+
+impl Default for DimmerEffect {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            curve: DimmerCurve::default(),
+            depth: 1.0,
+            speed: 1.0,
+            phase_offset: 0.0,
+            duty_cycle: 0.5,
+            phase_spread: 1.0,
+            phase_direction: PhaseDirection::default(),
+        }
+    }
+}
+
 /// Pixel mapping effect — B&W pattern that modulates layer opacity
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -457,6 +523,8 @@ pub struct Layer {
     pub blend_mode: BlendMode,
     #[serde(default, rename = "pixelMap")]
     pub pixel_map: Option<PixelMapEffect>,
+    #[serde(default, rename = "dimmerFx")]
+    pub dimmer_fx: Option<DimmerEffect>,
     #[serde(default, rename = "groupId")]
     pub group_id: Option<String>,
 }
@@ -476,6 +544,7 @@ impl Layer {
             properties: LayerProperties::default(),
             blend_mode: BlendMode::default(),
             pixel_map: None,
+            dimmer_fx: None,
             group_id: None,
         }
     }
@@ -494,6 +563,7 @@ impl Layer {
             properties: LayerProperties::default(),
             blend_mode: BlendMode::default(),
             pixel_map: None,
+            dimmer_fx: None,
             group_id: None,
         }
     }
@@ -512,6 +582,7 @@ impl Layer {
             properties: LayerProperties::default(),
             blend_mode: BlendMode::default(),
             pixel_map: None,
+            dimmer_fx: None,
             group_id: None,
         }
     }
@@ -530,6 +601,7 @@ impl Layer {
             properties: LayerProperties::default(),
             blend_mode: BlendMode::default(),
             pixel_map: None,
+            dimmer_fx: None,
             group_id: None,
         }
     }
@@ -593,6 +665,7 @@ mod tests {
         assert_eq!(layer.properties.opacity, 1.0);
         assert!(layer.visible);
         assert!(!layer.locked);
+        assert!(layer.dimmer_fx.is_none());
     }
 
     #[test]

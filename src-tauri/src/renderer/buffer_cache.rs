@@ -134,16 +134,25 @@ impl BufferCache {
         sampler: &wgpu::Sampler,
         texture_view: &wgpu::TextureView,
         texture_manager: &TextureManager,
+        layers: &[Layer],
         layer: &Layer,
         groups: &[LayerGroup],
         bpm_phase: f32,
         bpm_multiplier: f32,
+        dimmer_time_seconds: f32,
     ) -> Option<&CachedLayerBuffers> {
         // Hash geometry struct directly — avoids allocating Vec<LayerVertex> + Vec<u16>
         // on every cache hit (60fps × N layers).
         let geom_hash = compute_geometry_hash(&layer.geometry);
         let shared_input = super::pipeline::resolve_shared_input_for_layer(layer, groups);
-        let uniforms = LayerUniforms::from_layer(layer, shared_input, bpm_phase, bpm_multiplier);
+        let opacity = super::pipeline::compute_effective_opacity_at_time(
+            layer,
+            layers,
+            groups,
+            dimmer_time_seconds,
+        );
+        let uniforms =
+            LayerUniforms::from_layer(layer, shared_input, opacity, bpm_phase, bpm_multiplier);
         let prop_hash = compute_properties_hash(&uniforms);
 
         // Get source generation to detect texture changes

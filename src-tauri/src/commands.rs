@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::scene::layer::*;
 use crate::scene::group::LayerGroup;
-use crate::scene::layer::{PixelMapEffect, SharedInputMapping};
+use crate::scene::layer::{DimmerEffect, PixelMapEffect, SharedInputMapping};
 use crate::scene::project::*;
 use crate::scene::state::SceneState;
 use crate::audio::{AudioInputDevice, BpmConfig, BpmState, BpmEngine};
@@ -1718,6 +1718,20 @@ pub async fn set_layer_pixel_map(
 }
 
 #[tauri::command]
+pub async fn set_layer_dimmer_fx(
+    layer_id: String,
+    dimmer_fx: Option<DimmerEffect>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let result = state.set_layer_dimmer_fx(&layer_id, dimmer_fx);
+    if result {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn create_layer_group(
     name: String,
     layer_ids: Vec<String>,
@@ -1750,6 +1764,20 @@ pub async fn set_group_pixel_map(
     render: State<'_, Arc<RenderState>>,
 ) -> Result<bool, String> {
     let result = state.set_group_pixel_map(&group_id, pixel_map);
+    if result {
+        sync_render_state(&state, &render);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn set_group_dimmer_fx(
+    group_id: String,
+    dimmer_fx: Option<DimmerEffect>,
+    state: State<'_, SceneState>,
+    render: State<'_, Arc<RenderState>>,
+) -> Result<bool, String> {
+    let result = state.set_group_dimmer_fx(&group_id, dimmer_fx);
     if result {
         sync_render_state(&state, &render);
     }

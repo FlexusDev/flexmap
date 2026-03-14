@@ -220,6 +220,27 @@ mod tests {
     }
 
     #[test]
+    fn project_roundtrip_dimmer_fx() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("dimmer.flexmap");
+
+        let mut proj = ProjectFile::new("Dimmer");
+        let mut layer = Layer::new_quad("Q", 0);
+        layer.dimmer_fx = Some(crate::scene::layer::DimmerEffect::default());
+        let layer_id = layer.id.clone();
+        proj.layers.push(layer);
+        let mut group = crate::scene::group::LayerGroup::new("G", vec![layer_id]);
+        group.dimmer_fx = Some(crate::scene::layer::DimmerEffect::default());
+        proj.groups.push(group);
+
+        save_project(&proj, &path).unwrap();
+        let loaded = load_project(&path).unwrap();
+
+        assert!(loaded.layers[0].dimmer_fx.is_some());
+        assert!(loaded.groups[0].dimmer_fx.is_some());
+    }
+
+    #[test]
     fn legacy_face_fields_ignored_on_load() {
         use crate::scene::layer::LayerGeometry;
 
