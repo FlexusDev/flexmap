@@ -14,8 +14,7 @@ pub fn save_project(project: &ProjectFile, path: &Path) -> Result<(), String> {
 
 /// Load a project from a JSON file
 pub fn load_project(path: &Path) -> Result<ProjectFile, String> {
-    let json =
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let json = std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
     let project: ProjectFile =
         serde_json::from_str(&json).map_err(|e| format!("Failed to parse project: {}", e))?;
 
@@ -167,12 +166,7 @@ mod tests {
         save_project(&proj, &path).unwrap();
         let loaded = load_project(&path).unwrap();
 
-        if let LayerGeometry::Mesh {
-            cols,
-            rows,
-            points,
-        } = &loaded.layers[0].geometry
-        {
+        if let LayerGeometry::Mesh { cols, rows, points } = &loaded.layers[0].geometry {
             assert_eq!(*cols, 2);
             assert_eq!(*rows, 2);
             assert_eq!(points.len(), 9);

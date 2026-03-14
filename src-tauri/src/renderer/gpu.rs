@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Frame pacing modes for projector output
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -65,18 +65,16 @@ impl GpuContext {
         log::info!("GPU adapter: {:?}", adapter.get_info());
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("FlexMap GPU Device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits {
-                        max_texture_dimension_2d: 8192,
-                        ..wgpu::Limits::downlevel_defaults()
-                    },
-                    memory_hints: wgpu::MemoryHints::Performance,
-                    ..Default::default()
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("FlexMap GPU Device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits {
+                    max_texture_dimension_2d: 8192,
+                    ..wgpu::Limits::downlevel_defaults()
                 },
-            )
+                memory_hints: wgpu::MemoryHints::Performance,
+                ..Default::default()
+            })
             .await
             .map_err(|e| format!("Failed to create GPU device: {}", e))?;
 

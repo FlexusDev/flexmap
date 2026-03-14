@@ -1,10 +1,10 @@
-use parking_lot::RwLock;
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use super::group::LayerGroup;
 use super::history::History;
 use super::layer::*;
 use super::project::*;
+use parking_lot::RwLock;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn geometry_center(geometry: &LayerGeometry) -> Point2D {
     match geometry {
@@ -97,11 +97,7 @@ fn apply_geometry_delta(
                 transform_point(vertices[2], pivot, dx, dy, d_rotation, sx, sy),
             ],
         },
-        LayerGeometry::Mesh {
-            cols,
-            rows,
-            points,
-        } => LayerGeometry::Mesh {
+        LayerGeometry::Mesh { cols, rows, points } => LayerGeometry::Mesh {
             cols: *cols,
             rows: *rows,
             points: points
@@ -167,7 +163,8 @@ impl SceneState {
     /// Push current layer + group state to undo stack before mutating
     fn push_undo(&self) {
         let proj = self.project.read();
-        self.history.push((proj.layers.clone(), proj.groups.clone()));
+        self.history
+            .push((proj.layers.clone(), proj.groups.clone()));
     }
 
     // --- Undo / Redo ---
@@ -223,7 +220,8 @@ impl SceneState {
     pub fn remove_layer(&self, layer_id: &str) -> Option<Layer> {
         let mut proj = self.project.write();
         if let Some(idx) = proj.layers.iter().position(|l| l.id == layer_id) {
-            self.history.push((proj.layers.clone(), proj.groups.clone()));
+            self.history
+                .push((proj.layers.clone(), proj.groups.clone()));
             let removed = proj.layers.remove(idx);
             drop(proj);
             self.mark_dirty();
@@ -246,7 +244,8 @@ impl SceneState {
             return false;
         }
 
-        self.history.push((proj.layers.clone(), proj.groups.clone()));
+        self.history
+            .push((proj.layers.clone(), proj.groups.clone()));
         let before_len = proj.layers.len();
         proj.layers.retain(|l| !id_set.contains(l.id.as_str()));
         let removed = proj.layers.len() != before_len;
@@ -298,7 +297,8 @@ impl SceneState {
             return Vec::new();
         }
 
-        self.history.push((proj.layers.clone(), proj.groups.clone()));
+        self.history
+            .push((proj.layers.clone(), proj.groups.clone()));
 
         let mut next_z = proj.layers.iter().map(|l| l.z_index).max().unwrap_or(-1) + 1;
         let mut duplicates = Vec::with_capacity(originals.len());
@@ -423,7 +423,9 @@ impl SceneState {
                     return None;
                 }
                 vertices[point_index] = point;
-                LayerGeometry::Triangle { vertices: *vertices }
+                LayerGeometry::Triangle {
+                    vertices: *vertices,
+                }
             }
             LayerGeometry::Mesh { points, .. } => {
                 if point_index >= points.len() {
@@ -528,7 +530,8 @@ impl SceneState {
     pub fn delete_group(&self, group_id: &str) -> bool {
         let mut proj = self.project.write();
         if let Some(idx) = proj.groups.iter().position(|g| g.id == group_id) {
-            self.history.push((proj.layers.clone(), proj.groups.clone()));
+            self.history
+                .push((proj.layers.clone(), proj.groups.clone()));
             for layer in proj.layers.iter_mut() {
                 if layer.group_id.as_deref() == Some(group_id) {
                     layer.group_id = None;
@@ -631,7 +634,11 @@ impl SceneState {
         // Read and clone geometry (drops read lock before write)
         let geometry = {
             let proj = self.project.read();
-            proj.layers.iter().find(|l| l.id == layer_id)?.geometry.clone()
+            proj.layers
+                .iter()
+                .find(|l| l.id == layer_id)?
+                .geometry
+                .clone()
         };
 
         let new_geometry = if let LayerGeometry::Mesh {
@@ -647,8 +654,10 @@ impl SceneState {
             let new_cols_usize = new_cols as usize;
             let new_rows_usize = new_rows as usize;
 
-            let mut new_points =
-                vec![crate::scene::layer::Point2D::new(0.0, 0.0); (new_rows_usize + 1) * (new_cols_usize + 1)];
+            let mut new_points = vec![
+                crate::scene::layer::Point2D::new(0.0, 0.0);
+                (new_rows_usize + 1) * (new_cols_usize + 1)
+            ];
 
             // Copy original grid points at even indices
             for r in 0..=rows {
@@ -924,7 +933,10 @@ mod tests {
         let state = SceneState::new();
         let id = add_quad(&state, "L1");
         assert!(state.set_layer_blend_mode(&id, BlendMode::Additive));
-        assert_eq!(state.get_layers_snapshot()[0].blend_mode, BlendMode::Additive);
+        assert_eq!(
+            state.get_layers_snapshot()[0].blend_mode,
+            BlendMode::Additive
+        );
     }
 
     #[test]
@@ -957,7 +969,10 @@ mod tests {
 
         let result = state.subdivide_mesh(&id);
         assert!(result.is_some());
-        if let Some(LayerGeometry::Mesh { cols, rows, points, .. }) = result {
+        if let Some(LayerGeometry::Mesh {
+            cols, rows, points, ..
+        }) = result
+        {
             assert_eq!(cols, 4);
             assert_eq!(rows, 4);
             assert_eq!(points.len(), (4 + 1) * (4 + 1)); // 25
@@ -993,7 +1008,10 @@ mod tests {
 
         assert_eq!(l1.group_id.as_deref(), Some(group.id.as_str()));
         assert_eq!(l2.group_id.as_deref(), Some(group.id.as_str()));
-        assert!(l3.group_id.is_none(), "non-member layer should not have group_id");
+        assert!(
+            l3.group_id.is_none(),
+            "non-member layer should not have group_id"
+        );
     }
 
     #[test]
@@ -1007,7 +1025,10 @@ mod tests {
 
         let layers = state.get_layers_snapshot();
         for layer in &layers {
-            assert!(layer.group_id.is_none(), "group_id should be cleared after delete_group");
+            assert!(
+                layer.group_id.is_none(),
+                "group_id should be cleared after delete_group"
+            );
         }
         assert!(state.get_groups().is_empty());
     }
@@ -1042,12 +1063,21 @@ mod tests {
         // Undo should revert both the group creation and group_id assignments
         state.undo();
 
-        assert!(state.get_groups().is_empty(), "group should be removed after undo");
+        assert!(
+            state.get_groups().is_empty(),
+            "group should be removed after undo"
+        );
         let layers = state.get_layers_snapshot();
         let l1 = layers.iter().find(|l| l.id == id1).unwrap();
         let l2 = layers.iter().find(|l| l.id == id2).unwrap();
-        assert!(l1.group_id.is_none(), "group_id should be cleared after undo");
-        assert!(l2.group_id.is_none(), "group_id should be cleared after undo");
+        assert!(
+            l1.group_id.is_none(),
+            "group_id should be cleared after undo"
+        );
+        assert!(
+            l2.group_id.is_none(),
+            "group_id should be cleared after undo"
+        );
 
         // Redo should restore the group
         state.redo();

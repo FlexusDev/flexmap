@@ -65,14 +65,19 @@ impl MediaFileBackend {
         // Check if already registered
         if self.sources.iter().any(|s| s.info.id == source_id) {
             // Already registered — return existing info
-            let existing = self.sources.iter().find(|s| s.info.id == source_id).unwrap();
+            let existing = self
+                .sources
+                .iter()
+                .find(|s| s.info.id == source_id)
+                .unwrap();
             return Ok(existing.info.clone());
         }
 
         // Read image dimensions without full decode
         let reader = image::ImageReader::open(path)
             .map_err(|e| InputError::ConnectionFailed(format!("Cannot open image: {}", e)))?;
-        let reader = reader.with_guessed_format()
+        let reader = reader
+            .with_guessed_format()
             .map_err(|e| InputError::ConnectionFailed(format!("Cannot detect format: {}", e)))?;
 
         // We need to decode to get dimensions reliably across formats

@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 use super::group::LayerGroup;
 use super::layer::Layer;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 2;
 

@@ -2,9 +2,9 @@
 //! Uses a snapshot-based approach: each undo step stores the full layer list
 //! and group list. This is simple, correct, and fast enough for typical counts.
 
-use parking_lot::RwLock;
 use super::group::LayerGroup;
 use super::layer::Layer;
+use parking_lot::RwLock;
 
 const MAX_HISTORY: usize = 50;
 

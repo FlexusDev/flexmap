@@ -482,6 +482,21 @@ function EditorCanvas() {
       while (running) {
         const t0 = performance.now();
         try {
+          if (compositedRef.current.img) {
+            if (frameCache.current.size > 0) {
+              frameCache.current.clear();
+              tmpCanvasMap.current.clear();
+              lastFrameGenMap.current.clear();
+              warpCacheMap.current.clear();
+            }
+            lastPollMs = 0;
+            lastDecodeMs = 0;
+            lastFrameCount = 0;
+            lastTotalBytes = 0;
+            await new Promise((r) => setTimeout(r, editorPreviewIntervalMs));
+            continue;
+          }
+
           const cache = frameCache.current;
           let tPoll = 0;
           let bytes = 0;

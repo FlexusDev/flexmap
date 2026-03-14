@@ -1,21 +1,23 @@
 //! Tauri IPC commands — control actions from the React UI to Rust backend
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use crate::scene::layer::*;
+use crate::audio::{AudioInputDevice, BpmConfig, BpmEngine, BpmState};
+use crate::input::adapter::{InstalledShaderSource, SourceInfo};
+use crate::persistence;
+use crate::renderer::engine::RenderState;
+use crate::renderer::projector::GpuProjector;
 use crate::scene::group::LayerGroup;
+use crate::scene::layer::*;
 use crate::scene::layer::{DimmerEffect, PixelMapEffect, SharedInputMapping};
 use crate::scene::project::*;
 use crate::scene::state::SceneState;
-use crate::audio::{AudioInputDevice, BpmConfig, BpmState, BpmEngine};
-use crate::persistence;
-use crate::input::adapter::{InstalledShaderSource, SourceInfo};
-use crate::renderer::engine::RenderState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{Emitter, Manager, State, Size, PhysicalSize, WebviewUrl, webview::WebviewWindowBuilder};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use tauri::window::WindowBuilder;
-use crate::renderer::projector::GpuProjector;
+use tauri::{
+    webview::WebviewWindowBuilder, Emitter, Manager, PhysicalSize, Size, State, WebviewUrl,
+};
 
 /// Helper: after any scene mutation, sync layers + calibration to the render state
 fn sync_render_state(scene: &SceneState, render: &Arc<RenderState>) {
@@ -101,7 +103,11 @@ fn resolve_main_window_ratio(project: &ProjectFile) -> Option<(u32, u32)> {
         }
     }
 
-    if lock_enabled { Some(ratio) } else { None }
+    if lock_enabled {
+        Some(ratio)
+    } else {
+        None
+    }
 }
 
 fn compute_locked_window_size(width: u32, height: u32, rw: u32, rh: u32) -> (u32, u32) {
@@ -144,7 +150,10 @@ pub(crate) fn apply_projector_aspect_lock(
             size.width,
             size.height,
             |resizable| win.set_resizable(resizable).map_err(|e| e.to_string()),
-            |w, h| win.set_size(Size::Physical(PhysicalSize::new(w, h))).map_err(|e| e.to_string()),
+            |w, h| {
+                win.set_size(Size::Physical(PhysicalSize::new(w, h)))
+                    .map_err(|e| e.to_string())
+            },
             win.is_fullscreen().map_err(|e| e.to_string())?,
             ratio,
         );
@@ -155,7 +164,10 @@ pub(crate) fn apply_projector_aspect_lock(
             size.width,
             size.height,
             |resizable| win.set_resizable(resizable).map_err(|e| e.to_string()),
-            |w, h| win.set_size(Size::Physical(PhysicalSize::new(w, h))).map_err(|e| e.to_string()),
+            |w, h| {
+                win.set_size(Size::Physical(PhysicalSize::new(w, h)))
+                    .map_err(|e| e.to_string())
+            },
             win.is_fullscreen().map_err(|e| e.to_string())?,
             ratio,
         );
@@ -264,8 +276,8 @@ pub async fn open_projector_window(
     }
 
     // Try GPU-native path: create a native window and attach a wgpu surface
-    let engine_state = app
-        .try_state::<Arc<parking_lot::RwLock<crate::renderer::engine::RenderEngine>>>();
+    let engine_state =
+        app.try_state::<Arc<parking_lot::RwLock<crate::renderer::engine::RenderEngine>>>();
 
     if let Some(engine_lock) = engine_state {
         // Clone Arcs out of State wrappers so we can move them into closures
@@ -299,17 +311,21 @@ pub async fn open_projector_window(
                 // SAFETY: The window is kept alive by Tauri's window manager
                 // and the render loop is stopped before the window is destroyed.
                 let surface = unsafe {
-                    use raw_window_handle::{HasWindowHandle, HasDisplayHandle};
-                    let raw_window = win.window_handle()
+                    use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+                    let raw_window = win
+                        .window_handle()
                         .map_err(|e| format!("Failed to get window handle: {}", e))?;
-                    let raw_display = win.display_handle()
+                    let raw_display = win
+                        .display_handle()
                         .map_err(|e| format!("Failed to get display handle: {}", e))?;
                     let target = wgpu::SurfaceTargetUnsafe::RawHandle {
                         raw_display_handle: raw_display.as_raw(),
                         raw_window_handle: raw_window.as_raw(),
                     };
                     let engine = engine_arc.read();
-                    engine.gpu.instance
+                    engine
+                        .gpu
+                        .instance
                         .create_surface_unsafe(target)
                         .map_err(|e| format!("Failed to create wgpu surface: {}", e))?
                 };
@@ -320,7 +336,8 @@ pub async fn open_projector_window(
                     let device = engine.gpu.device.clone();
                     let queue = engine.gpu.queue.clone();
 
-                    let projector_state = app_handle.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
+                    let projector_state =
+                        app_handle.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
                     let mut projector = projector_state.lock();
                     projector.start(
                         surface,
@@ -340,33 +357,31 @@ pub async fn open_projector_window(
 
                 // Listen for window resize / close events
                 let resize_app = app_handle.clone();
-                win.on_window_event(move |event| {
-                    match event {
-                        tauri::WindowEvent::Resized(size) => {
-                            let scene_state = resize_app.state::<SceneState>();
-                            let _ = apply_projector_aspect_lock(&resize_app, &scene_state);
-                            let rs = resize_app.state::<Arc<RenderState>>();
-                            let (w, h) = resize_app
-                                .get_window("projector")
-                                .and_then(|w| w.inner_size().ok())
-                                .map(|s| (s.width.max(1), s.height.max(1)))
-                                .unwrap_or((size.width.max(1), size.height.max(1)));
-                            *rs.output_width.write() = w;
-                            *rs.output_height.write() = h;
-                            rs.request_redraw();
-                        }
-                        tauri::WindowEvent::CloseRequested { .. } => {
-                            let p = resize_app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
-                            p.lock().stop();
-                            log::info!("GPU projector stopped via window close");
-                        }
-                        tauri::WindowEvent::Destroyed => {
-                            let p = resize_app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
-                            p.lock().stop();
-                            emit_projector_window_state(&resize_app);
-                        }
-                        _ => {}
+                win.on_window_event(move |event| match event {
+                    tauri::WindowEvent::Resized(size) => {
+                        let scene_state = resize_app.state::<SceneState>();
+                        let _ = apply_projector_aspect_lock(&resize_app, &scene_state);
+                        let rs = resize_app.state::<Arc<RenderState>>();
+                        let (w, h) = resize_app
+                            .get_window("projector")
+                            .and_then(|w| w.inner_size().ok())
+                            .map(|s| (s.width.max(1), s.height.max(1)))
+                            .unwrap_or((size.width.max(1), size.height.max(1)));
+                        *rs.output_width.write() = w;
+                        *rs.output_height.write() = h;
+                        rs.request_redraw();
                     }
+                    tauri::WindowEvent::CloseRequested { .. } => {
+                        let p = resize_app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
+                        p.lock().stop();
+                        log::info!("GPU projector stopped via window close");
+                    }
+                    tauri::WindowEvent::Destroyed => {
+                        let p = resize_app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
+                        p.lock().stop();
+                        emit_projector_window_state(&resize_app);
+                    }
+                    _ => {}
                 });
 
                 emit_projector_window_state(&app_handle);
@@ -375,10 +390,13 @@ pub async fn open_projector_window(
             })();
 
             let _ = tx.send(result);
-        }).map_err(|e| format!("Failed to run on main thread: {}", e))?;
+        })
+        .map_err(|e| format!("Failed to run on main thread: {}", e))?;
 
         // Wait for the main thread to finish
-        return rx.await.map_err(|_| "Main thread channel dropped".to_string())?;
+        return rx
+            .await
+            .map_err(|_| "Main thread channel dropped".to_string())?;
     }
 
     // Fallback: webview-based projector (GPU not ready yet)
@@ -443,7 +461,9 @@ pub async fn close_projector_window(app: tauri::AppHandle) -> Result<(), String>
 }
 
 #[tauri::command]
-pub async fn get_projector_window_state(app: tauri::AppHandle) -> Result<ProjectorWindowState, String> {
+pub async fn get_projector_window_state(
+    app: tauri::AppHandle,
+) -> Result<ProjectorWindowState, String> {
     Ok(current_projector_window_state(&app))
 }
 
@@ -658,9 +678,7 @@ pub async fn reorder_layers(
 /// Snapshot undo state before a drag/interaction begins.
 /// Call once at mousedown, NOT during mousemove.
 #[tauri::command]
-pub async fn begin_interaction(
-    state: State<'_, SceneState>,
-) -> Result<(), String> {
+pub async fn begin_interaction(state: State<'_, SceneState>) -> Result<(), String> {
     state.begin_interaction();
     Ok(())
 }
@@ -865,7 +883,9 @@ pub async fn is_dirty(state: State<'_, SceneState>) -> Result<bool, String> {
 #[tauri::command]
 pub async fn has_recovery(state: State<'_, SceneState>) -> Result<bool, String> {
     let path = state.project_path.read().clone();
-    Ok(persistence::has_recovery(path.as_ref().map(|p| std::path::Path::new(p.as_str()))))
+    Ok(persistence::has_recovery(
+        path.as_ref().map(|p| std::path::Path::new(p.as_str())),
+    ))
 }
 
 #[tauri::command]
@@ -874,7 +894,8 @@ pub async fn load_recovery(
     render: State<'_, Arc<RenderState>>,
 ) -> Result<ProjectFile, String> {
     let path = state.project_path.read().clone();
-    let project = persistence::load_recovery(path.as_ref().map(|p| std::path::Path::new(p.as_str())))?;
+    let project =
+        persistence::load_recovery(path.as_ref().map(|p| std::path::Path::new(p.as_str())))?;
     state.load_project(project.clone(), path);
     sync_render_state(&state, &render);
     Ok(project)
@@ -953,17 +974,25 @@ pub async fn set_installed_shader_sources(
     let with_code = sources.iter().filter(|s| s.source_code.is_some()).count();
     log::info!(
         "[ISF-diag] set_installed_shader_sources IPC: {} source(s) ({} with code, {} without)",
-        count, with_code, count - with_code
+        count,
+        with_code,
+        count - with_code
     );
     for source in &sources {
         log::info!(
             "[ISF-diag]   shader id={} name={} seed={} hash={:?} has_code={}",
-            source.id, source.name, source.seed, source.source_hash,
+            source.id,
+            source.name,
+            source.seed,
+            source.source_hash,
             source.source_code.is_some()
         );
     }
     let result = input.write().set_installed_shaders(sources);
-    log::info!("[ISF-diag] set_installed_shader_sources: backend reports {} installed", result);
+    log::info!(
+        "[ISF-diag] set_installed_shader_sources: backend reports {} installed",
+        result
+    );
     Ok(result)
 }
 
@@ -1039,7 +1068,8 @@ pub async fn connect_source(
 ) -> Result<bool, String> {
     log::info!(
         "[ISF-diag] connect_source: layer_id={} source_id={}",
-        layer_id, source_id
+        layer_id,
+        source_id
     );
 
     // Connect in input manager
@@ -1049,7 +1079,8 @@ pub async fn connect_source(
         .map_err(|e| {
             log::warn!(
                 "[ISF-diag] connect_source: InputManager.connect_source FAILED for {}: {}",
-                source_id, e
+                source_id,
+                e
             );
             e.to_string()
         })?;
@@ -1061,7 +1092,8 @@ pub async fn connect_source(
     if let Some(info) = source_info {
         log::info!(
             "[ISF-diag] connect_source: found source info protocol={} name={}",
-            info.protocol, info.name
+            info.protocol,
+            info.name
         );
         let assignment = SourceAssignment {
             source_id: info.id.clone(),
@@ -1172,11 +1204,15 @@ pub async fn install_syphon_framework() -> Result<String, String> {
     {
         let loaded = crate::input::syphon::try_reload();
         if loaded {
-            Ok("Syphon.framework loaded successfully. Refresh sources to see Syphon servers."
-                .to_string())
+            Ok(
+                "Syphon.framework loaded successfully. Refresh sources to see Syphon servers."
+                    .to_string(),
+            )
         } else {
-            Err("Syphon.framework could not be loaded. Check the application log for details."
-                .to_string())
+            Err(
+                "Syphon.framework could not be loaded. Check the application log for details."
+                    .to_string(),
+            )
         }
     }
 
@@ -1374,8 +1410,8 @@ pub(crate) fn preview_dims(w: u32, h: u32) -> (u32, u32) {
 /// on the small preview buffer. This is ~140x cheaper than swizzling the
 /// full-resolution source frame.
 pub(crate) fn encode_frame(f: &crate::input::adapter::FramePacket) -> FrameSnapshot {
-    use base64::Engine;
     use crate::input::adapter::PixelFormat;
+    use base64::Engine;
 
     let (pw, ph) = preview_dims(f.width, f.height);
     let mut data = if pw == f.width && ph == f.height {
@@ -1558,8 +1594,8 @@ pub async fn get_render_stats(
     app: tauri::AppHandle,
     render: State<'_, Arc<RenderState>>,
 ) -> Result<RenderStats, String> {
-    let engine_state = app
-        .try_state::<Arc<parking_lot::RwLock<crate::renderer::engine::RenderEngine>>>();
+    let engine_state =
+        app.try_state::<Arc<parking_lot::RwLock<crate::renderer::engine::RenderEngine>>>();
 
     match engine_state {
         Some(engine_lock) => {
@@ -1665,9 +1701,7 @@ pub struct ProjectorStats {
 }
 
 #[tauri::command]
-pub async fn get_projector_stats(
-    app: tauri::AppHandle,
-) -> Result<ProjectorStats, String> {
+pub async fn get_projector_stats(app: tauri::AppHandle) -> Result<ProjectorStats, String> {
     let projector = app.state::<Arc<parking_lot::Mutex<GpuProjector>>>();
     let p = projector.lock();
     Ok(ProjectorStats {
@@ -1695,7 +1729,9 @@ pub async fn subdivide_mesh(
     render: State<'_, Arc<RenderState>>,
 ) -> Result<Option<LayerGeometry>, String> {
     let new_geometry = state.subdivide_mesh(&layer_id);
-    if new_geometry.is_some() { sync_render_state(&state, &render); }
+    if new_geometry.is_some() {
+        sync_render_state(&state, &render);
+    }
     Ok(new_geometry)
 }
 
@@ -1799,9 +1835,7 @@ pub async fn set_group_shared_input(
 }
 
 #[tauri::command]
-pub async fn get_groups(
-    state: State<'_, SceneState>,
-) -> Result<Vec<LayerGroup>, String> {
+pub async fn get_groups(state: State<'_, SceneState>) -> Result<Vec<LayerGroup>, String> {
     Ok(state.get_groups())
 }
 
@@ -1874,7 +1908,11 @@ pub async fn get_system_stats(
         .unwrap_or((0.0, 0));
 
     let global_cpu = s.global_cpu_usage();
-    let cpu_name = s.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+    let cpu_name = s
+        .cpus()
+        .first()
+        .map(|c| c.brand().to_string())
+        .unwrap_or_default();
 
     Ok(SystemStats {
         process_cpu,

@@ -17,15 +17,9 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, HMODULE},
         Graphics::{
-            Direct3D::{
-                D3D_DRIVER_TYPE_UNKNOWN,
-                D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0,
-            },
+            Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0},
             Direct3D11::*,
-            Dxgi::{
-                CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
-                Common::*,
-            },
+            Dxgi::{Common::*, CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE},
         },
         System::Memory::*,
     },
@@ -112,16 +106,14 @@ impl D3D11Receiver {
     /// Create a D3D11 device on the specific DXGI adapter `index`.
     fn on_adapter(index: u32) -> Result<Self, String> {
         unsafe {
-            let factory: IDXGIFactory1 = CreateDXGIFactory1()
-                .map_err(|e| format!("CreateDXGIFactory1: {}", e))?;
+            let factory: IDXGIFactory1 =
+                CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1: {}", e))?;
 
             let adapter = factory
                 .EnumAdapters1(index)
                 .map_err(|e| format!("no adapter at index {}: {}", index, e))?;
 
-            let desc = adapter
-                .GetDesc1()
-                .map_err(|e| format!("GetDesc1: {}", e))?;
+            let desc = adapter.GetDesc1().map_err(|e| format!("GetDesc1: {}", e))?;
 
             let name: String = desc
                 .Description
@@ -142,8 +134,8 @@ impl D3D11Receiver {
             let mut context = None;
 
             D3D11CreateDevice(
-                &adapter,                    // explicit adapter
-                D3D_DRIVER_TYPE_UNKNOWN,     // required when adapter is non-null
+                &adapter,                // explicit adapter
+                D3D_DRIVER_TYPE_UNKNOWN, // required when adapter is non-null
                 HMODULE(std::ptr::null_mut()),
                 D3D11_CREATE_DEVICE_FLAG(0),
                 Some(&[D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1]),
@@ -239,14 +231,20 @@ impl D3D11Receiver {
             if let Err(e) = self.device.OpenSharedResource(handle, &mut shared_tex) {
                 log::warn!(
                     "[spout] OpenSharedResource failed for '{}' (handle=0x{:x}, fmt={}): {}",
-                    info.name, info.share_handle, info.format, e
+                    info.name,
+                    info.share_handle,
+                    info.format,
+                    e
                 );
                 return Err(format!("OpenSharedResource failed: {}", e));
             }
             let shared_tex = match shared_tex {
                 Some(t) => t,
                 None => {
-                    log::warn!("[spout] OpenSharedResource returned None for '{}'", info.name);
+                    log::warn!(
+                        "[spout] OpenSharedResource returned None for '{}'",
+                        info.name
+                    );
                     return Err("OpenSharedResource returned None".into());
                 }
             };
@@ -269,8 +267,15 @@ impl D3D11Receiver {
             // Map the staging texture for CPU read.
             // windows 0.61: Map uses an out-pointer for D3D11_MAPPED_SUBRESOURCE.
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            if let Err(e) = self.context.Map(&staging.texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) {
-                log::warn!("[spout] Map staging texture failed for '{}': {}", info.name, e);
+            if let Err(e) =
+                self.context
+                    .Map(&staging.texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            {
+                log::warn!(
+                    "[spout] Map staging texture failed for '{}': {}",
+                    info.name,
+                    e
+                );
                 return Err(format!("Map staging texture failed: {}", e));
             }
 
@@ -285,10 +290,8 @@ impl D3D11Receiver {
             let is_bgra = info.format == 87 || info.format == 91;
 
             for y in 0..info.height as usize {
-                let src_row = std::slice::from_raw_parts(
-                    src_ptr.add(y * row_pitch),
-                    pixel_row_bytes,
-                );
+                let src_row =
+                    std::slice::from_raw_parts(src_ptr.add(y * row_pitch), pixel_row_bytes);
                 let dst_offset = y * pixel_row_bytes;
 
                 if is_bgra {
@@ -296,15 +299,14 @@ impl D3D11Receiver {
                     for x in 0..info.width as usize {
                         let si = x * 4;
                         let di = dst_offset + x * 4;
-                        rgba_data[di] = src_row[si + 2];     // R ← B
+                        rgba_data[di] = src_row[si + 2]; // R ← B
                         rgba_data[di + 1] = src_row[si + 1]; // G ← G
-                        rgba_data[di + 2] = src_row[si];     // B ← R
+                        rgba_data[di + 2] = src_row[si]; // B ← R
                         rgba_data[di + 3] = src_row[si + 3]; // A ← A
                     }
                 } else {
                     // Already RGBA or similar — straight copy
-                    rgba_data[dst_offset..dst_offset + pixel_row_bytes]
-                        .copy_from_slice(src_row);
+                    rgba_data[dst_offset..dst_offset + pixel_row_bytes].copy_from_slice(src_row);
                 }
             }
 
@@ -349,8 +351,7 @@ fn discover_senders() -> Vec<SenderSnapshot> {
                 continue; // Empty slot
             }
 
-            let name_bytes =
-                std::slice::from_raw_parts(name_ptr, SPOUT_SENDER_NAME_LEN);
+            let name_bytes = std::slice::from_raw_parts(name_ptr, SPOUT_SENDER_NAME_LEN);
             let name_len = name_bytes
                 .iter()
                 .position(|&b| b == 0)
@@ -464,8 +465,7 @@ impl SpoutBackend {
             frame_cache: HashMap::new(),
             sequence_counters: HashMap::new(),
             // Force immediate discovery on first list_sources / connect
-            last_discovery: std::time::Instant::now()
-                - std::time::Duration::from_secs(10),
+            last_discovery: std::time::Instant::now() - std::time::Duration::from_secs(10),
             d3d11_tried_adapters: 0,
         };
 
@@ -496,7 +496,12 @@ impl SpoutBackend {
                 self.sources.len(),
                 self.sources
                     .iter()
-                    .map(|s| format!("{} ({}x{})", s.name, s.width.unwrap_or(0), s.height.unwrap_or(0)))
+                    .map(|s| format!(
+                        "{} ({}x{})",
+                        s.name,
+                        s.width.unwrap_or(0),
+                        s.height.unwrap_or(0)
+                    ))
                     .collect::<Vec<_>>()
                     .join(", ")
             );

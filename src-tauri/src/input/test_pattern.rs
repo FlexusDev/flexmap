@@ -65,7 +65,10 @@ impl TestPatternBackend {
         };
 
         // Per-source sequence counter to avoid shared mutable state
-        let counter = self.source_counters.entry(source_id.to_string()).or_insert(0);
+        let counter = self
+            .source_counters
+            .entry(source_id.to_string())
+            .or_insert(0);
         *counter += 1;
         let seq = *counter;
 
@@ -209,25 +212,33 @@ impl InputBackend for TestPatternBackend {
                 id: "test:color_bars".to_string(),
                 name: "Test: Color Bars".to_string(),
                 protocol: "test".to_string(),
-                width: w, height: h, fps: Some(30.0),
+                width: w,
+                height: h,
+                fps: Some(30.0),
             },
             SourceInfo {
                 id: "test:gradient".to_string(),
                 name: "Test: Gradient Sweep".to_string(),
                 protocol: "test".to_string(),
-                width: w, height: h, fps: Some(30.0),
+                width: w,
+                height: h,
+                fps: Some(30.0),
             },
             SourceInfo {
                 id: "test:checkerboard".to_string(),
                 name: "Test: Checkerboard".to_string(),
                 protocol: "test".to_string(),
-                width: w, height: h, fps: Some(30.0),
+                width: w,
+                height: h,
+                fps: Some(30.0),
             },
             SourceInfo {
                 id: "test:solid".to_string(),
                 name: "Test: Solid Color Cycle".to_string(),
                 protocol: "test".to_string(),
-                width: w, height: h, fps: Some(30.0),
+                width: w,
+                height: h,
+                fps: Some(30.0),
             },
         ]
     }
@@ -246,7 +257,11 @@ impl InputBackend for TestPatternBackend {
             self.start_time = Instant::now();
         }
 
-        log::info!("Test pattern connected: {} (active: {})", source_id, self.active_sources.len());
+        log::info!(
+            "Test pattern connected: {} (active: {})",
+            source_id,
+            self.active_sources.len()
+        );
         Ok(())
     }
 
@@ -258,7 +273,11 @@ impl InputBackend for TestPatternBackend {
     /// Disconnect a specific source (called by InputManager when a layer unbinds)
     fn disconnect_source(&mut self, source_id: &str) {
         self.active_sources.remove(source_id);
-        log::info!("Test pattern disconnected: {} (active: {})", source_id, self.active_sources.len());
+        log::info!(
+            "Test pattern disconnected: {} (active: {})",
+            source_id,
+            self.active_sources.len()
+        );
     }
 
     fn poll_frame(&mut self) -> Option<FramePacket> {

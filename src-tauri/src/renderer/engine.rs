@@ -7,6 +7,7 @@
 
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use super::buffer_cache::BufferCache;
@@ -208,6 +209,14 @@ struct BlitCache {
     source_bg: wgpu::BindGroup,
     dest_bg: wgpu::BindGroup,
     uniform_bg: wgpu::BindGroup,
+}
+
+pub struct PreviewReadback {
+    device: Arc<wgpu::Device>,
+    staging_buffer: wgpu::Buffer,
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
 }
 
 impl RenderEngine {
@@ -552,18 +561,41 @@ impl RenderEngine {
     /// Read back the preview staging buffer. Call after render_preview + queue.submit.
     /// Returns RGBA pixels ready for the frontend.
     pub fn read_preview_pixels(&self, bytes_per_row: u32) -> Vec<u8> {
-        let buffer_slice = self.preview_staging_buffer.slice(..);
+        match Self::read_preview_pixels_from_snapshot(self.snapshot_preview_readback(bytes_per_row))
+        {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                log::warn!("Preview readback failed: {}", error);
+                Vec::new()
+            }
+        }
+    }
+
+    pub fn snapshot_preview_readback(&self, bytes_per_row: u32) -> PreviewReadback {
+        PreviewReadback {
+            device: self.gpu.device.clone(),
+            staging_buffer: self.preview_staging_buffer.clone(),
+            width: self.preview_width,
+            height: self.preview_height,
+            bytes_per_row,
+        }
+    }
+
+    pub fn read_preview_pixels_from_snapshot(snapshot: PreviewReadback) -> Result<Vec<u8>, String> {
+        let buffer_slice = snapshot.staging_buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            let _ = tx.send(result);
         });
-        let _ = self.gpu.device.poll(wgpu::PollType::Wait);
-        rx.recv().unwrap().unwrap();
+        let _ = snapshot.device.poll(wgpu::PollType::Wait);
+        rx.recv()
+            .map_err(|_| "preview readback channel dropped".to_string())?
+            .map_err(|error| format!("preview staging map failed: {error}"))?;
 
         let data = buffer_slice.get_mapped_range();
-        let w = self.preview_width as usize;
-        let h = self.preview_height as usize;
-        let bpr = bytes_per_row as usize;
+        let w = snapshot.width as usize;
+        let h = snapshot.height as usize;
+        let bpr = snapshot.bytes_per_row as usize;
         let mut pixels = Vec::with_capacity(w * h * 4);
 
         for row in 0..h {
@@ -572,14 +604,14 @@ impl RenderEngine {
             pixels.extend_from_slice(&data[start..end]);
         }
         drop(data);
-        self.preview_staging_buffer.unmap();
+        snapshot.staging_buffer.unmap();
 
         // BGRA -> RGBA swizzle
         for chunk in pixels.chunks_exact_mut(4) {
             chunk.swap(0, 2);
         }
 
-        pixels
+        Ok(pixels)
     }
 
     /// Pre-populate the buffer cache for all visible layers.

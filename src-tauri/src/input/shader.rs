@@ -174,7 +174,8 @@ impl ShaderPatternBackend {
                 pattern: IsfPattern::Noise,
                 input_bias: 0.0,
                 warnings: vec![
-                    "No ISF source text found. This source cannot run real ISF code yet.".to_string(),
+                    "No ISF source text found. This source cannot run real ISF code yet."
+                        .to_string(),
                 ],
                 supports_runtime: false,
             };
@@ -212,10 +213,7 @@ impl ShaderPatternBackend {
             warnings.push("Could not parse ISF JSON header; using runtime defaults.".to_string());
         }
 
-        if lower.contains("audiofft")
-            || lower.contains("audiodata")
-            || lower.contains("sound")
-        {
+        if lower.contains("audiofft") || lower.contains("audiodata") || lower.contains("sound") {
             warnings.push(
                 "Audio-specific ISF inputs detected; using fallback values until audio mapping is configured."
                     .to_string(),
@@ -249,7 +247,9 @@ impl ShaderPatternBackend {
         if is_first {
             if let Some(src) = installed_source {
                 let has_code = src.source_code.is_some();
-                let runtime_ready = self.installed_runtime.get(source_id)
+                let runtime_ready = self
+                    .installed_runtime
+                    .get(source_id)
                     .map(|r| r.compiled.supports_runtime)
                     .unwrap_or(false);
                 log::info!(
@@ -257,7 +257,10 @@ impl ShaderPatternBackend {
                     source_id, has_code, runtime_ready, src.seed
                 );
             } else {
-                log::info!("[ISF-diag] generate_frame: first frame for builtin {}", source_id);
+                log::info!(
+                    "[ISF-diag] generate_frame: first frame for builtin {}",
+                    source_id
+                );
             }
         }
 
@@ -452,7 +455,8 @@ impl ShaderPatternBackend {
 
                 let (value, energy) = match runtime.compiled.pattern {
                     IsfPattern::Plasma => {
-                        let wave = (nx * (8.0 + profile.density) + time * profile.speed_a + phase).sin()
+                        let wave = (nx * (8.0 + profile.density) + time * profile.speed_a + phase)
+                            .sin()
                             + (ny * (9.0 + profile.density * 0.8) - time * profile.speed_b).cos()
                             + ((nx + ny) * (4.0 + profile.density * 0.4) + time * 0.9).sin();
                         let value = (wave / 3.0) + input_bias * 0.35;
@@ -462,26 +466,34 @@ impl ShaderPatternBackend {
                         (value, energy)
                     }
                     IsfPattern::Kaleido => {
-                        let mirrored = (angle * (6.0 + profile.density * 0.6) + time * profile.speed_a).sin().abs();
-                        let rings = (radius * (8.0 + profile.density * 0.7) - time * profile.speed_b * 1.9).sin();
-                        let value = (mirrored * 1.2 - 0.2) * 0.65 + rings * 0.35 + input_bias * 0.25;
+                        let mirrored = (angle * (6.0 + profile.density * 0.6)
+                            + time * profile.speed_a)
+                            .sin()
+                            .abs();
+                        let rings = (radius * (8.0 + profile.density * 0.7)
+                            - time * profile.speed_b * 1.9)
+                            .sin();
+                        let value =
+                            (mirrored * 1.2 - 0.2) * 0.65 + rings * 0.35 + input_bias * 0.25;
                         let energy =
                             (1.0 - radius * 1.2).clamp(0.15, 1.0) + beat * 0.3 + beat_pulse * 0.12;
                         (value, energy)
                     }
                     IsfPattern::Tunnel => {
                         let tunnel = ((9.5 / radius) - time * profile.speed_a * 2.6).sin();
-                        let spokes = (angle * (7.0 + profile.density * 0.8) + time * profile.speed_b * 1.8).cos();
+                        let spokes = (angle * (7.0 + profile.density * 0.8)
+                            + time * profile.speed_b * 1.8)
+                            .cos();
                         let pulse = (time * 1.8 + phase).sin() * 0.5 + 0.5;
                         let value = tunnel * 0.6 + spokes * 0.4 + input_bias * 0.2;
-                        let energy = (0.35 + pulse * 0.65)
-                            * (1.0 - radius * 0.8).clamp(0.25, 1.0)
+                        let energy = (0.35 + pulse * 0.65) * (1.0 - radius * 0.8).clamp(0.25, 1.0)
                             + beat * 0.25
                             + beat_pulse * 0.08;
                         (value, energy)
                     }
                     IsfPattern::Grid => {
-                        let gx = (nx * (12.0 + profile.density) + time * profile.speed_a + phase).sin();
+                        let gx =
+                            (nx * (12.0 + profile.density) + time * profile.speed_a + phase).sin();
                         let gy = (ny * (12.0 + profile.density) - time * profile.speed_b).sin();
                         let cells = gx.signum() * gy.signum();
                         let scan = (ny * 90.0 + time * 12.0).sin() * 0.5 + 0.5;
@@ -490,8 +502,12 @@ impl ShaderPatternBackend {
                         (value, energy)
                     }
                     IsfPattern::Ripple => {
-                        let ripple = (radius * (16.0 + profile.density) - time * profile.speed_a * 2.4 + phase).sin();
-                        let swirl = (angle * (3.0 + profile.density * 0.35) + time * profile.speed_b).cos();
+                        let ripple = (radius * (16.0 + profile.density)
+                            - time * profile.speed_a * 2.4
+                            + phase)
+                            .sin();
+                        let swirl =
+                            (angle * (3.0 + profile.density * 0.35) + time * profile.speed_b).cos();
                         let value = ripple * 0.7 + swirl * 0.3 + input_bias * 0.3;
                         let energy = (1.0 - radius).clamp(0.2, 1.0) * (0.6 + 0.4 * level)
                             + beat * 0.22
@@ -499,7 +515,11 @@ impl ShaderPatternBackend {
                         (value, energy)
                     }
                     IsfPattern::Noise => {
-                        let noise = pseudo_noise(nx * profile.density * 14.0, ny * profile.density * 12.0, time * 0.8);
+                        let noise = pseudo_noise(
+                            nx * profile.density * 14.0,
+                            ny * profile.density * 12.0,
+                            time * 0.8,
+                        );
                         let contour = (noise * std::f32::consts::TAU + phase).sin();
                         let shimmer = (noise + time * 0.15).cos() * 0.5 + 0.5;
                         let value = contour + input_bias * 0.35;
@@ -633,7 +653,9 @@ impl InputBackend for ShaderPatternBackend {
         let with_code = sources.iter().filter(|s| s.source_code.is_some()).count();
         log::info!(
             "[ISF-diag] set_installed_sources: received {} source(s) ({} with code, {} without)",
-            total, with_code, total - with_code
+            total,
+            with_code,
+            total - with_code
         );
 
         self.installed_sources = sources.into_iter().map(|s| (s.id.clone(), s)).collect();
@@ -662,7 +684,9 @@ impl InputBackend for ShaderPatternBackend {
                 compile_fallback += 1;
                 log::warn!(
                     "[ISF-diag] compile fallback for {}: pattern={:?}, warnings={:?}",
-                    source.id, compiled.pattern, compiled.warnings
+                    source.id,
+                    compiled.pattern,
+                    compiled.warnings
                 );
             }
 
@@ -681,7 +705,8 @@ impl InputBackend for ShaderPatternBackend {
 
         log::info!(
             "[ISF-diag] set_installed_sources: compiled {} runtime-ready, {} fallback",
-            compile_ok, compile_fallback
+            compile_ok,
+            compile_fallback
         );
 
         self.installed_profile_cache
@@ -811,7 +836,11 @@ fn summarize_input_bias(kind: &str, default: Option<&serde_json::Value>) -> f32 
                             count += 1.0;
                         }
                     }
-                    if count > 0.0 { (sum / count) * 0.1 } else { 0.0 }
+                    if count > 0.0 {
+                        (sum / count) * 0.1
+                    } else {
+                        0.0
+                    }
                 }
             } else {
                 0.0
@@ -883,7 +912,11 @@ fn generate_error_frame(width: u32, height: u32, t: f32) -> Vec<u8> {
             let diag = (nx - ny).abs();
             let anti = (nx - (1.0 - ny)).abs();
             let stripe = ((x + y) as f32 * 0.25 + t * 12.0).sin() * 0.5 + 0.5;
-            let mark = if diag < 0.025 || anti < 0.025 { 1.0 } else { 0.0 };
+            let mark = if diag < 0.025 || anti < 0.025 {
+                1.0
+            } else {
+                0.0
+            };
             let r = (0.2 + 0.75 * mark + 0.25 * stripe) * pulse;
             let g = 0.04 + 0.06 * stripe;
             let b = 0.04 + 0.08 * stripe;

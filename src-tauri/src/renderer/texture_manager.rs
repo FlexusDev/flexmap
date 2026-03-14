@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::input::adapter::{FramePacket, PixelFormat};
+use std::collections::HashMap;
 
 /// Manages GPU textures keyed by source_id (not layer_id).
 /// Multiple layers sharing the same source share a single GPU texture upload.
@@ -116,8 +116,14 @@ impl TextureManager {
         // Choose GPU format and upload data based on pixel format.
         // BGRA and RGBA write directly — no clone, no swizzle.
         let (gpu_format, upload_data) = match frame.pixel_format {
-            PixelFormat::Bgra8 => (wgpu::TextureFormat::Bgra8Unorm, std::borrow::Cow::Borrowed(&frame.data[..])),
-            PixelFormat::Rgba8 => (wgpu::TextureFormat::Rgba8Unorm, std::borrow::Cow::Borrowed(&frame.data[..])),
+            PixelFormat::Bgra8 => (
+                wgpu::TextureFormat::Bgra8Unorm,
+                std::borrow::Cow::Borrowed(&frame.data[..]),
+            ),
+            PixelFormat::Rgba8 => (
+                wgpu::TextureFormat::Rgba8Unorm,
+                std::borrow::Cow::Borrowed(&frame.data[..]),
+            ),
             PixelFormat::Rgb8 => {
                 // Convert RGB to RGBA (only format that needs conversion)
                 let mut rgba = Vec::with_capacity((frame.width * frame.height * 4) as usize);
@@ -125,11 +131,15 @@ impl TextureManager {
                     rgba.extend_from_slice(chunk);
                     rgba.push(255);
                 }
-                (wgpu::TextureFormat::Rgba8Unorm, std::borrow::Cow::Owned(rgba))
+                (
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    std::borrow::Cow::Owned(rgba),
+                )
             }
         };
 
-        let managed = self.ensure_source_texture(device, source_id, frame.width, frame.height, gpu_format);
+        let managed =
+            self.ensure_source_texture(device, source_id, frame.width, frame.height, gpu_format);
 
         let bytes_per_row = 4 * frame.width;
 
@@ -149,7 +159,10 @@ impl TextureManager {
         );
 
         // Bump generation counter
-        let gen = self.source_generation.entry(source_id.to_string()).or_insert(0);
+        let gen = self
+            .source_generation
+            .entry(source_id.to_string())
+            .or_insert(0);
         *gen += 1;
     }
 
@@ -173,8 +186,7 @@ impl TextureManager {
 
         // Ensure this layer is bound to that source
         if !self.layer_to_source.contains_key(layer_id) {
-            self.layer_to_source
-                .insert(layer_id.to_string(), source_id);
+            self.layer_to_source.insert(layer_id.to_string(), source_id);
         }
     }
 

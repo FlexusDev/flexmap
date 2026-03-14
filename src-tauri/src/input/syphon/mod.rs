@@ -230,8 +230,7 @@ impl SyphonBackend {
             clients: HashMap::new(),
             frame_cache: HashMap::new(),
             sequence_counters: HashMap::new(),
-            last_discovery: std::time::Instant::now()
-                - std::time::Duration::from_secs(10),
+            last_discovery: std::time::Instant::now() - std::time::Duration::from_secs(10),
             bridge_available,
             prev_server_count: None,
         };
@@ -259,15 +258,9 @@ impl SyphonBackend {
         self.prev_server_count = Some(count);
 
         if count_changed {
-            log::info!(
-                "Syphon: refresh complete — {} server(s) discovered",
-                count
-            );
+            log::info!("Syphon: refresh complete — {} server(s) discovered", count);
         } else {
-            log::debug!(
-                "Syphon: refresh complete — {} server(s) (unchanged)",
-                count
-            );
+            log::debug!("Syphon: refresh complete — {} server(s) (unchanged)", count);
         }
 
         self.sources = servers
@@ -328,7 +321,10 @@ impl SyphonBackend {
             return false;
         }
 
-        log::info!("Syphon: Metal client created successfully for uuid={}", uuid);
+        log::info!(
+            "Syphon: Metal client created successfully for uuid={}",
+            uuid
+        );
         self.clients.insert(
             source_id.to_string(),
             ActiveClient {
@@ -464,19 +460,17 @@ impl InputBackend for SyphonBackend {
             if self.frame_cache.contains_key(source_id) {
                 return self.return_cached_frame(source_id);
             }
-            log::debug!("Syphon: no cached frame for {} — trying force-poll", source_id);
+            log::debug!(
+                "Syphon: no cached frame for {} — trying force-poll",
+                source_id
+            );
         }
 
         let mut width: u32 = 0;
         let mut height: u32 = 0;
         let mut is_bgra: i32 = 1;
         unsafe {
-            ffi::syphon_get_frame_info(
-                client.handle,
-                &mut width,
-                &mut height,
-                &mut is_bgra,
-            );
+            ffi::syphon_get_frame_info(client.handle, &mut width, &mut height, &mut is_bgra);
         }
 
         if width == 0 || height == 0 {
@@ -549,7 +543,11 @@ impl InputBackend for SyphonBackend {
                 total_poll_ms,
                 width,
                 height,
-                if client.is_bgra { "BGRA-native" } else { "RGBA" }
+                if client.is_bgra {
+                    "BGRA-native"
+                } else {
+                    "RGBA"
+                }
             );
         }
 

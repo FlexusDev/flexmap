@@ -18,6 +18,8 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
     setBpmConfig,
     refreshBpmState,
     tapTempo,
+    performanceProfile,
+    setPerformanceProfile,
     previewQuality,
     setPreviewQuality,
     project,
@@ -30,6 +32,8 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
     setBpmConfig: s.setBpmConfig,
     refreshBpmState: s.refreshBpmState,
     tapTempo: s.tapTempo,
+    performanceProfile: s.performanceProfile,
+    setPerformanceProfile: s.setPerformanceProfile,
     previewQuality: s.previewQuality,
     setPreviewQuality: s.setPreviewQuality,
     project: s.project,
@@ -81,6 +85,11 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
         </div>
 
         <div className="p-4 space-y-4">
+          <PerformanceProfileSection
+            profile={performanceProfile}
+            onChange={setPerformanceProfile}
+          />
+
           <PreviewQualitySection
             quality={previewQuality}
             onChange={(q) => void setPreviewQuality(q)}
@@ -236,6 +245,62 @@ const QUALITY_PRESETS = [
   { value: 0.75, label: "75%", tag: "High" },
   { value: 1.0, label: "100%", tag: "Full" },
 ] as const;
+
+const PERFORMANCE_PROFILES = [
+  {
+    value: "balanced",
+    label: "Balanced",
+    tag: "Stable",
+    description: "Lower preview traffic and CPU load for live sets.",
+  },
+  {
+    value: "max_fps",
+    label: "Max FPS",
+    tag: "Smoothest",
+    description: "Higher preview update rate with more CPU/GPU work.",
+  },
+] as const;
+
+interface PerformanceProfileSectionProps {
+  profile: "balanced" | "max_fps";
+  onChange: (profile: "balanced" | "max_fps") => void;
+}
+
+function PerformanceProfileSection({
+  profile,
+  onChange,
+}: PerformanceProfileSectionProps) {
+  return (
+    <div className="border border-aura-border rounded p-3 bg-aura-bg/40">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs text-aura-text">Performance Mode</div>
+        <div className="text-[11px] text-aura-text-dim">
+          Use `Balanced` for dense scenes and live playback.
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {PERFORMANCE_PROFILES.map((preset) => (
+          <button
+            key={preset.value}
+            type="button"
+            className={`rounded px-3 py-2 text-left transition-colors ${
+              profile === preset.value
+                ? "bg-emerald-600 text-white"
+                : "bg-aura-hover text-aura-text-dim hover:text-aura-text"
+            }`}
+            onClick={() => onChange(preset.value)}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium">{preset.label}</span>
+              <span className="text-[10px] opacity-75">{preset.tag}</span>
+            </div>
+            <div className="mt-1 text-[10px] opacity-80">{preset.description}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface PreviewQualitySectionProps {
   quality: number;

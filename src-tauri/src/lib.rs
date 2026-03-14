@@ -560,11 +560,13 @@ pub fn run() {
             std::thread::spawn(move || {
                 log::info!("Frame pump thread started");
                 let frame_interval = std::time::Duration::from_millis(33); // ~30fps
+                let composited_preview_interval = std::time::Duration::from_millis(66);
                 let mut log_counter = 0u64;
                 let mut reconnect_timer = std::time::Instant::now();
                 let reconnect_interval = std::time::Duration::from_secs(10);
                 let mut last_uploaded_sequence: std::collections::HashMap<String, u64> =
                     std::collections::HashMap::new();
+                let mut last_composited_preview_at: Option<std::time::Instant> = None;
 
                 loop {
                     let start = std::time::Instant::now();
@@ -747,11 +749,10 @@ pub fn run() {
                         let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
 
                         // PHASE 4: Generate preview snapshots for the editor.
-                        // Always keep the cache warm when there are bound sources so frames
-                        // are immediately available when a consumer registers.
                         let t_preview = std::time::Instant::now();
                         let preview_cache = app_handle_pump.state::<Arc<PreviewCache>>();
-                        if !all_polled_source_frames.is_empty() {
+                        let preview_consumers = *preview_cache.consumers.read();
+                        if preview_consumers.editor || preview_consumers.projector_fallback {
                             let mut frames = preview_cache.frames.write();
                             let mut versions = preview_cache.frame_versions.write();
                             let mut removed_versions = preview_cache.removed_versions.write();
@@ -791,13 +792,19 @@ pub fn run() {
                                     removed_versions.remove(layer_id);
                                 }
                             }
+                        } else {
+                            last_composited_preview_at = None;
                         }
                         let preview_ms = t_preview.elapsed().as_secs_f64() * 1000.0;
 
                         // PHASE 5: GPU composited preview — render scene at preview
                         // resolution and cache for the editor canvas.
                         let t_composited = std::time::Instant::now();
-                        {
+                        let should_render_composited_preview = preview_consumers.editor
+                            && last_composited_preview_at
+                                .map(|instant| instant.elapsed() >= composited_preview_interval)
+                                .unwrap_or(true);
+                        if should_render_composited_preview {
                             let preview_quality = *render_state.preview_quality.read();
                             let out_w = *render_state.output_width.read();
                             let out_h = *render_state.output_height.read();
@@ -807,32 +814,50 @@ pub fn run() {
                             let bpm = *render_state.bpm.read();
                             let calibration = render_state.calibration.read().clone();
 
-                            let mut eng = engine_lock.write();
-                            if eng.preview_width != pw || eng.preview_height != ph {
-                                eng.resize_preview(pw, ph);
-                            }
-                            eng.prepare_all_buffers(&layer_snapshot, &group_snapshot, bpm);
-                            eng.refresh_dynamic_uniforms(&layer_snapshot, &group_snapshot, bpm);
-                            let bpr = eng.render_preview(
-                                &layer_snapshot,
-                                &group_snapshot,
-                                &calibration,
-                                bpm,
-                            );
-                            let pixels = eng.read_preview_pixels(bpr);
-                            drop(eng);
+                            let readback = {
+                                let mut eng = engine_lock.write();
+                                if eng.preview_width != pw || eng.preview_height != ph {
+                                    eng.resize_preview(pw, ph);
+                                }
+                                eng.prepare_all_buffers(&layer_snapshot, &group_snapshot, bpm);
+                                eng.refresh_dynamic_uniforms(&layer_snapshot, &group_snapshot, bpm);
+                                let bpr = eng.render_preview(
+                                    &layer_snapshot,
+                                    &group_snapshot,
+                                    &calibration,
+                                    bpm,
+                                );
+                                eng.snapshot_preview_readback(bpr)
+                            };
 
-                            // Encode and cache
-                            use base64::Engine as _;
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&pixels);
-                            let snapshot = Arc::new(commands::FrameSnapshot {
-                                width: pw,
-                                height: ph,
-                                data_b64: b64,
-                            });
-                            let composited_cache = app_handle_pump.state::<Arc<CompositedPreviewCache>>();
-                            *composited_cache.frame.write() = Some(snapshot);
-                            composited_cache.version.fetch_add(1, std::sync::atomic::Ordering::Release);
+                            match renderer::engine::RenderEngine::read_preview_pixels_from_snapshot(
+                                readback,
+                            ) {
+                                Ok(pixels) => {
+                                    use base64::Engine as _;
+                                    let b64 =
+                                        base64::engine::general_purpose::STANDARD.encode(&pixels);
+                                    let snapshot = Arc::new(commands::FrameSnapshot {
+                                        width: pw,
+                                        height: ph,
+                                        data_b64: b64,
+                                    });
+                                    let composited_cache =
+                                        app_handle_pump.state::<Arc<CompositedPreviewCache>>();
+                                    *composited_cache.frame.write() = Some(snapshot);
+                                    composited_cache.version.fetch_add(
+                                        1,
+                                        std::sync::atomic::Ordering::Release,
+                                    );
+                                    last_composited_preview_at = Some(std::time::Instant::now());
+                                }
+                                Err(error) => {
+                                    log::warn!(
+                                        "Skipping composited preview update after readback error: {}",
+                                        error
+                                    );
+                                }
+                            }
                         }
                         let composited_ms = t_composited.elapsed().as_secs_f64() * 1000.0;
 

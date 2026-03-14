@@ -1,6 +1,6 @@
+use super::layer::{DimmerEffect, PixelMapEffect, SharedInputMapping};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use super::layer::{DimmerEffect, PixelMapEffect, SharedInputMapping};
 
 /// A named group of layers that share a pixel mapping effect
 #[derive(Debug, Clone, Serialize, Deserialize)]
